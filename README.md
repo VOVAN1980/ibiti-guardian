@@ -42,7 +42,7 @@ Hands-free trade execution and market intelligence powered by a customized speec
 Define how much execution authority the AI has:
 - **Manual**: Direct manual control. The AI is fully blocked from executing any trade or transaction.
 - **Guarded**: Standard operating mode. The AI analyzes market data and requests your explicit authorization (via biometrics/PIN) before signing any transaction.
-- **Full Autonomy**: Automatic AI execution. The AI carries out market actions independently, strictly bounded by your configured budgets and policy constraints.
+- **Full Autonomy** *(in development)*: Automatic AI execution. The architecture, policy engine, and market limit infrastructure are fully built to support autonomous trading — the AI will carry out market actions independently, strictly bounded by configured budgets and policy constraints. This mode is not yet available in the current release.
 
 ### 3. Heuristic Policy Engine & SandboxGuard
 A double-layered shield validating every transaction *before* it leaves your device:
@@ -60,6 +60,12 @@ Unified management across DeFi and CeFi:
 - **Supported CEXs**: Direct, encrypted API integration for spot trading on **MEXC**, **OKX**, **Gate.io**, and **Binance**.
 - **Supported Web3 Networks**: Multi-chain support for **BSC, Ethereum, Polygon, Arbitrum, Optimism, Base, Solana, and Tron**.
 - **Embedded Web3 Wallets**: Seamless social login (Google/Apple) and embedded non-custodial wallet creation powered by Privy.
+
+### 🚧 Coming Soon
+The following features are architecturally designed and partially implemented, but not yet available in the current release:
+- **Autonomous Trading Bot**: The policy engine, market limits, and execution pipeline are built to support fully autonomous AI-driven trading. The bot will operate within strict user-defined budgets, per-transaction caps, and risk thresholds. *(Phase 2)*
+- **PassKey Authentication**: WebAuthn/FIDO2 passkey-based authentication for passwordless, phishing-resistant device login. *(Phase 2)*
+- **EPK On-Chain Mainnet**: The Eternal Permission Kernel smart contract is deployed on BSC Testnet; mainnet deployment is pending audit completion. Local policy enforcement is fully operational. *(Phase 2)*
 
 ---
 
