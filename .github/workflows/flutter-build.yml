@@ -1,0 +1,61 @@
+name: Flutter Build APK
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.41.3"
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Create Moralis secrets file
+        run: |
+          mkdir -p secrets
+          cat > secrets/moralis.json <<EOF
+          {
+            "MORALIS_API_KEY": "${{ secrets.MORALIS_API_KEY }}"
+          }
+          EOF
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Verify analysis
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Run Policy and Sandbox tests
+        run: |
+          flutter test test/services/policy/guardian_policy_engine_test.dart
+          flutter test test/services/policy/sandbox_guard_test.dart
+
+      - name: Build APK Debug
+        run: flutter build apk --debug
+
+      - name: Upload Debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk

@@ -1,0 +1,15 @@
+include: package:flutter_lints/flutter.yaml
+analyzer:
+  exclude:
+    - "_backup_*/**"
+    - "lib/legacy_archive/**"
+    - "_archive/**"
+    - "test/_archive/**"
+    - "lib/**/_archive/**"
+  errors:
+    unused_element: ignore
+    deprecated_member_use: ignore
+    use_build_context_synchronously: ignore
+linter:
+  rules:
+    avoid_print: false
