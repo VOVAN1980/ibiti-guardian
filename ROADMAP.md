@@ -4,7 +4,7 @@ This roadmap outlines the planned development phases for IBITI Guardian as it ev
 
 ---
 
-## ЁЯУЕ Phase 1: Hackathon Release (Current)
+##  Phase 1: Hackathon Release (Current)
 - [x] **Voice AI Core**: Stable Whisper STT and custom GPT-4o TTS optimized for crypto terminology and clear Russian/English output.
 - [x] **Heuristic Policy Engine**: Enforcement of per-transaction limits, daily budgets, minimum order size, and allowed networks/tokens.
 - [x] **SandboxGuard**: RPC transaction pre-flight simulation and state checking before execution.
