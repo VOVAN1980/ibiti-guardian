@@ -34,6 +34,12 @@ android {
         jvmTarget = "21"
     }
 
+    packaging {
+        resources {
+            excludes += "META-INF/versions/9/OSGI-INF/MANIFEST.MF"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.ibiti.guardian"
         minSdk = 28

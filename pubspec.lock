@@ -833,10 +833,10 @@ packages:
     dependency: "direct main"
     description:
       name: privy_flutter
-      sha256: "55eb7c944d8ec531a49263df8f91a19e992e3eb5fe90b3751c59f0827e6f1756"
+      sha256: "3f3b3215b0ea41ad059ed5a11a9edadcfffa72b6efed45e9694c089281ef643e"
       url: "https://pub.dev"
     source: hosted
-    version: "0.6.0"
+    version: "0.10.1"
   protobuf:
     dependency: "direct main"
     description:
