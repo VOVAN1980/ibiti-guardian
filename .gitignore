@@ -99,3 +99,6 @@ android/app/build/
 *.db
 *.sqlite
 git_push_out.txt
+
+# личный скрипт обновления GitHub (локальный)
+update-github.bat
