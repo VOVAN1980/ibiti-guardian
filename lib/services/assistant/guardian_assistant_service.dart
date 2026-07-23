@@ -147,10 +147,7 @@ class GuardianAssistantService {
     if (languageCode == 'ru') {
       return AssistantResponse.info(
         'Текущий режим: ${s.mode.name}. '
-        'Лимит на одну операцию: \$${s.perTxLimit.toStringAsFixed(0)}. '
-        'Дневной лимит: \$${s.dailyLimit.toStringAsFixed(0)}. '
-        'Лимит на получателя: \$${s.perRecipientLimit.toStringAsFixed(0)}. '
-        'Лимит на контракт: \$${s.perContractLimit.toStringAsFixed(0)}. '
+        'Дневной лимит торговли: \$${s.dailyLimit.toStringAsFixed(0)}. '
         'Разрешённые действия: $actions. '
         'Разрешённые активы: $assets. '
         'Разрешённые сети: $networks. '
@@ -161,10 +158,7 @@ class GuardianAssistantService {
     }
     return AssistantResponse.info(
       'Current mode: ${s.mode.name}. '
-      'Per transaction limit: \$${s.perTxLimit.toStringAsFixed(0)}. '
-      'Daily limit: \$${s.dailyLimit.toStringAsFixed(0)}. '
-      'Per recipient limit: \$${s.perRecipientLimit.toStringAsFixed(0)}. '
-      'Per contract limit: \$${s.perContractLimit.toStringAsFixed(0)}. '
+      'Daily trading limit: \$${s.dailyLimit.toStringAsFixed(0)}. '
       'Allowed actions: $actions. '
       'Allowed assets: $assets. '
       'Allowed networks: $networks. '
@@ -578,8 +572,7 @@ class GuardianAssistantService {
             final s = AiControlService.instance.settings;
             capText = 'Я в режиме Full Autonomy. '
                 'Могу подготовить и исполнить транзакции '
-                'в рамках лимитов: \$${s.perTxLimit.toStringAsFixed(0)} на операцию, '
-                '\$${s.dailyLimit.toStringAsFixed(0)} в день. '
+                'в рамках дневного лимита \$${s.dailyLimit.toStringAsFixed(0)}. '
                 'Знаю баланс, активы, рынок. Могу открыть любой экран или модальное окно.';
             break;
         }
@@ -604,8 +597,7 @@ class GuardianAssistantService {
             final s = AiControlService.instance.settings;
             capText = 'I am in Full Autonomy mode. '
                 'I can prepare and execute transactions '
-                'within limits: \$${s.perTxLimit.toStringAsFixed(0)} per tx, '
-                '\$${s.dailyLimit.toStringAsFixed(0)} per day. '
+                'within a daily limit of \$${s.dailyLimit.toStringAsFixed(0)}. '
                 'I know your balance, assets and market. I can open any screen or modal.';
             break;
         }
@@ -3600,8 +3592,7 @@ class GuardianAssistantService {
     // AI mode + limits always included when market query detected
     buffer.writeln('[AI Context]');
     buffer
-        .writeln('Mode: $mode | Per-tx: \$${ai.perTxLimit.toStringAsFixed(0)} '
-            '| Daily: \$${ai.dailyLimit.toStringAsFixed(0)}');
+        .writeln('Mode: $mode | Daily: \$${ai.dailyLimit.toStringAsFixed(0)}');
     if (mandate.allowedAssets.isNotEmpty) {
       buffer.writeln('Mandate assets: ${mandate.allowedAssets.join(", ")}');
     }
@@ -3992,25 +3983,6 @@ class GuardianAssistantService {
     final delegation = DelegationController.instance;
 
     if (isBuy) {
-      final perTxLimit = settings.perTxLimit;
-      if (txValueUsdt > perTxLimit) {
-        final msg = isRu
-            ? 'Сумма ордера (\$${txValueUsdt.toStringAsFixed(2)}) превышает лимит одной транзакции (\$${perTxLimit.toStringAsFixed(2)}).'
-            : 'Order value (\$${txValueUsdt.toStringAsFixed(2)}) exceeds single transaction limit (\$${perTxLimit.toStringAsFixed(2)}).';
-        await MarketMemoryService.instance.record(
-          action: 'buy',
-          symbol: symbol,
-          source: source.name,
-          aiMode: modeStr,
-          result: 'blocked',
-          amount: orderAmount,
-          priceThen: price,
-          reason: msg,
-          rawInput: intent.rawInput,
-        );
-        return AssistantResponse.info(msg, speechText: msg);
-      }
-
       if (!delegation.canSpend(txValueUsdt)) {
         final msg = isRu
             ? 'Сумма ордера (\$${txValueUsdt.toStringAsFixed(2)}) превышает оставшийся дневной бюджет. ${delegation.usageSummary()}'

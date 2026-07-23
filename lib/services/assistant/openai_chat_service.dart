@@ -145,7 +145,7 @@ If a buy/sell trade amount or coin is missing, return explicitIntent of type buy
 
 ━━━ AI MODE & POLICY ━━━
 Current Mode: ${aiSettings.mode.name.toUpperCase()}
-Limits: Max ${aiSettings.perTxLimit}\$ per tx, ${aiSettings.dailyLimit}\$ per day.
+Daily trading limit: ${aiSettings.dailyLimit}\$ per day.
 Permitted Actions: ${aiSettings.allowedActions.map((e) => e.name).join(", ")}.
 EPK State: ${epkState.isActive ? 'ACTIVE' : 'PAUSED'}, daily limit ${epkState.dailyLimit}\$.
 If an action is blocked by mode or limits, explain the restriction clearly and guide the user on where to change it in settings.
@@ -1322,10 +1322,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 - Saved recipients: ${AddressBookService.instance.entries.length}
 - AI mode: ${aiSettings.mode.name}
 - Allowed AI actions: ${aiSettings.allowedActions.map((e) => e.name).join(', ')}
-- AI per tx limit USD: ${aiSettings.perTxLimit.toStringAsFixed(2)}
 - AI daily limit USD: ${aiSettings.dailyLimit.toStringAsFixed(2)}
-- AI per contract limit USD: ${aiSettings.perContractLimit.toStringAsFixed(2)}
-- AI per recipient limit USD: ${aiSettings.perRecipientLimit.toStringAsFixed(2)}
 - AI mandate goal: ${mandate.goal.name}
 - AI mandate assets: ${mandate.allowedAssets.isEmpty ? 'any' : mandate.allowedAssets.join(', ')}
 - AI mandate networks: ${mandate.allowedNetworks.isEmpty ? 'any' : mandate.allowedNetworks.join(', ')}

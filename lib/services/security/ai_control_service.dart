@@ -34,10 +34,7 @@ enum AiPermissionDuration { oneHour, oneDay, oneWeek, untilRevoked }
 class AiControlSettings {
   final AiMode mode;
   final List<AiAction> allowedActions;
-  final double perTxLimit;
   final double dailyLimit;
-  final double perContractLimit;
-  final double perRecipientLimit;
   final double minTradeBalance;
   final AiTrustedScope trustedScope;
   final AiPermissionDuration duration;
@@ -62,10 +59,7 @@ class AiControlSettings {
       AiAction.approve,
       AiAction.contactPayments,
     ],
-    this.perTxLimit = 50.0,
     this.dailyLimit = 500.0,
-    this.perContractLimit = 100.0,
-    this.perRecipientLimit = 50.0,
     this.minTradeBalance = 10.0,
     this.trustedScope = AiTrustedScope.trustedPlusApproved,
     this.duration = AiPermissionDuration.oneDay,
@@ -92,10 +86,7 @@ class AiControlSettings {
   AiControlSettings copyWith({
     AiMode? mode,
     List<AiAction>? allowedActions,
-    double? perTxLimit,
     double? dailyLimit,
-    double? perContractLimit,
-    double? perRecipientLimit,
     double? minTradeBalance,
     AiTrustedScope? trustedScope,
     AiPermissionDuration? duration,
@@ -108,10 +99,7 @@ class AiControlSettings {
     return AiControlSettings(
       mode: mode ?? this.mode,
       allowedActions: allowedActions ?? this.allowedActions,
-      perTxLimit: perTxLimit ?? this.perTxLimit,
       dailyLimit: dailyLimit ?? this.dailyLimit,
-      perContractLimit: perContractLimit ?? this.perContractLimit,
-      perRecipientLimit: perRecipientLimit ?? this.perRecipientLimit,
       minTradeBalance: minTradeBalance ?? this.minTradeBalance,
       trustedScope: trustedScope ?? this.trustedScope,
       duration: duration ?? this.duration,
@@ -126,10 +114,7 @@ class AiControlSettings {
   Map<String, dynamic> toJson() => {
         'mode': mode.name,
         'allowedActions': allowedActions.map((e) => e.name).toList(),
-        'perTxLimit': perTxLimit,
         'dailyLimit': dailyLimit,
-        'perContractLimit': perContractLimit,
-        'perRecipientLimit': perRecipientLimit,
         'minTradeBalance': minTradeBalance,
         'trustedScope': trustedScope.name,
         'duration': duration.name,
@@ -150,10 +135,7 @@ class AiControlSettings {
                   .firstWhere((a) => a.name == e, orElse: () => AiAction.send))
               .toList() ??
           const [AiAction.send, AiAction.approve, AiAction.revoke],
-      perTxLimit: (json['perTxLimit'] ?? 50.0).toDouble(),
       dailyLimit: (json['dailyLimit'] ?? 500.0).toDouble(),
-      perContractLimit: (json['perContractLimit'] ?? 100.0).toDouble(),
-      perRecipientLimit: (json['perRecipientLimit'] ?? 50.0).toDouble(),
       minTradeBalance: (json['minTradeBalance'] ?? 10.0).toDouble(),
       trustedScope: AiTrustedScope.values.firstWhere(
           (e) => e.name == json['trustedScope'],
@@ -386,16 +368,10 @@ class AiControlService extends ChangeNotifier {
   }
 
   Future<void> updateLimits({
-    double? perTx,
     double? daily,
-    double? perContract,
-    double? perRecipient,
   }) async {
     _settings = _settings.copyWith(
-      perTxLimit: perTx,
       dailyLimit: daily,
-      perContractLimit: perContract,
-      perRecipientLimit: perRecipient,
     );
     await _save();
     _syncEpkLimits();
@@ -494,7 +470,6 @@ class AiControlService extends ChangeNotifier {
   /// always matches the values visible in AI Center and EPK Center.
   void _syncEpkLimits() {
     EPKPolicyManager.instance.updateLimits(
-      perTx: _settings.perTxLimit,
       daily: _settings.dailyLimit,
     );
   }

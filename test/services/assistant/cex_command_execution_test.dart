@@ -152,7 +152,6 @@ void main() {
       AiControlService.instance.setSettingsForTest(const AiControlSettings(
         mode: AiMode.fullAutonomy,
         activeSources: ['mexc', 'okx'],
-        perTxLimit: 50000.0,
         dailyLimit: 500000.0,
       ));
 
@@ -358,7 +357,6 @@ void main() {
       AiControlService.instance.setSettingsForTest(const AiControlSettings(
         mode: AiMode.fullAutonomy,
         activeSources: ['okx'],
-        perTxLimit: 50000.0,
         dailyLimit: 500000.0,
       ));
 
@@ -816,7 +814,6 @@ void main() {
       AiControlService.instance.setSettingsForTest(const AiControlSettings(
         mode: AiMode.fullAutonomy,
         activeSources: ['mexc'],
-        perTxLimit: 5000.0,
         dailyLimit: 50000.0,
       ));
 

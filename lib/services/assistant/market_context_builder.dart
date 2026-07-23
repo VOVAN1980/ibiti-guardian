@@ -129,8 +129,7 @@ class MarketContextBuilder {
     // AI mode + limits always included when market query detected
     buffer.writeln('[AI Context]');
     buffer
-        .writeln('Mode: $mode | Per-tx: \$${ai.perTxLimit.toStringAsFixed(0)} '
-            '| Daily: \$${ai.dailyLimit.toStringAsFixed(0)}');
+        .writeln('Mode: $mode | Daily: \$${ai.dailyLimit.toStringAsFixed(0)}');
     if (mandate.allowedAssets.isNotEmpty) {
       buffer.writeln('Mandate assets: ${mandate.allowedAssets.join(", ")}');
     }

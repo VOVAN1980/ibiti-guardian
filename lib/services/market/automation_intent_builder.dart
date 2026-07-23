@@ -67,7 +67,7 @@ class AutomationIntentBuilder {
 
     final settings = AiControlService.instance.settings;
     final mandate = settings.mandate;
-    final perTxLimit = settings.perTxLimit;
+    final perTxLimit = mandate.maxPositionUsd;
 
     // ─ 1. Early-resolve target chain for same-chain source preference ─────────
     // If user already holds the target, use that chain as the preferred source

@@ -72,8 +72,8 @@ class TradingSizeCalculator {
     final mandate = settings.mandate;
 
     // ── 1. Hard ceiling ──────────────────────────────────────────────────────
-    // Strictest wins: min of perTxLimit and mandate.maxPositionUsd.
-    final hardCap = math.min(settings.perTxLimit, mandate.maxPositionUsd);
+    // Per-trade size is bounded by the autonomy mandate position cap.
+    final hardCap = mandate.maxPositionUsd;
 
     // ── 2. Gas ratio floor ───────────────────────────────────────────────────
     // Trade must be ≥ _gasRatioFloor × expected gas cost to be gas-efficient.

@@ -126,22 +126,6 @@ class GuardianPolicyEngine {
       );
     }
 
-    // ── AI Per-Tx Limit Check (Check 0c) ─────────────────────────────────────
-    // AI Center defines a hard per-transaction cap.
-    // Policy profile has its own per-action limit.
-    // Strictest wins: if amount exceeds AI cap, block before profile check.
-    if (tx.amount != null && tx.amount! > aiSettings.perTxLimit) {
-      rules.add('AI_PER_TX_LIMIT_EXCEEDED');
-      return PolicyResult.block(
-        'Amount exceeds your AI per-transaction limit '
-        '(\$${aiSettings.perTxLimit.toStringAsFixed(0)}). '
-        'Adjust in AI Center → AI Limits.',
-        rules: rules,
-        severity: PolicySeverity.warning,
-        epkAvailable: epkAvail,
-      );
-    }
-
     // Check 1: Real On-Chain RPC Simulation Revert
     if (!rpcSim.success) {
       rules.add('RPC_REVERT_DETECTED');
@@ -363,22 +347,18 @@ class GuardianPolicyEngine {
   ) {
     final epkAvail = path == ExecutionPath.epkProtected;
 
-    if (tx.isUnlimitedApproval && !profile.allowUnlimitedApprove) {
-      rules.add('PROFILE_UNLIMITED_DENIED');
+    // Unlimited approval = effectively infinite allowance → always exceeds the
+    // Approve limit. Treat it as over-limit and block (the classic wallet-drainer
+    // vector). Finite approvals are capped by approveLimitUsd. A single "Approve
+    // limit" now covers both cases — no separate unlimited toggle.
+    if (tx.isUnlimitedApproval ||
+        (tx.amount != null && tx.amount! > profile.approveLimitUsd)) {
+      rules.add('APPROVE_LIMIT_EXCEEDED');
       return PolicyResult.block(
-        'Unlimited approvals are disabled in your active policy profile.',
-        severity: PolicySeverity.danger,
-        rules: rules,
-        epkAvailable: epkAvail,
-      );
-    }
-
-    if (!tx.isUnlimitedApproval &&
-        tx.amount != null &&
-        tx.amount! > profile.approveLimitUsd) {
-      rules.add('APPROVE_PROFILE_LIMIT_EXCEEDED');
-      return PolicyResult.block(
-        'Approve amount exceeds your profile limit (\$${profile.approveLimitUsd.toStringAsFixed(0)}).',
+        tx.isUnlimitedApproval
+            ? 'Unlimited approval exceeds your Approve limit (\$${profile.approveLimitUsd.toStringAsFixed(0)}). '
+                'It would let the contract spend your entire balance.'
+            : 'Approve amount exceeds your Approve limit (\$${profile.approveLimitUsd.toStringAsFixed(0)}).',
         severity: PolicySeverity.danger,
         rules: rules,
         epkAvailable: epkAvail,

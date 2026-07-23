@@ -273,19 +273,9 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
             ]),
             const SizedBox(height: 20),
 
-            // ── BLOCK 2: AI Limits ─────────────────────────────────────────
+            // ── BLOCK 2: Market & Trading ──────────────────────────────────
             _sectionHeader(t.t('policyAiLimitsSection')),
             _card([
-              _editableRow(
-                label: t.t('policyLimitPerTx'),
-                value: '\$${ai.perTxLimit.toStringAsFixed(0)}',
-                onEdit: () async {
-                  final v = await _editUsd(
-                      t.t('policyEditPerTxTitle'), ai.perTxLimit);
-                  if (v != null) await _ai.updateLimits(perTx: v);
-                },
-              ),
-              _divider(),
               _editableRow(
                 label: t.t('policyLimitDaily'),
                 value: '\$${ai.dailyLimit.toStringAsFixed(0)}',
@@ -295,26 +285,6 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                   if (v != null) {
                     await _ai.updateLimits(daily: v);
                   }
-                },
-              ),
-              _divider(),
-              _editableRow(
-                label: t.t('policyLimitPerRecipient'),
-                value: '\$${ai.perRecipientLimit.toStringAsFixed(0)}',
-                onEdit: () async {
-                  final v = await _editUsd(
-                      t.t('policyEditPerRecipientTitle'), ai.perRecipientLimit);
-                  if (v != null) await _ai.updateLimits(perRecipient: v);
-                },
-              ),
-              _divider(),
-              _editableRow(
-                label: t.t('policyLimitPerContract'),
-                value: '\$${ai.perContractLimit.toStringAsFixed(0)}',
-                onEdit: () async {
-                  final v = await _editUsd(
-                      t.t('policyEditPerContractTitle'), ai.perContractLimit);
-                  if (v != null) await _ai.updateLimits(perContract: v);
                 },
               ),
               _divider(),
@@ -579,13 +549,6 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                 value: !p.allowUnknownContracts,
                 onTap: () =>
                     _store.setAllowUnknownContracts(!p.allowUnknownContracts),
-              ),
-              _divider(),
-              _toggleRow(
-                label: t.t('policyWalletUnlimitedApprove'),
-                value: !p.allowUnlimitedApprove,
-                onTap: () =>
-                    _store.setAllowUnlimitedApprove(!p.allowUnlimitedApprove),
               ),
             ]),
             const SizedBox(height: 20),

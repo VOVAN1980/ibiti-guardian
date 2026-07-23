@@ -19,16 +19,13 @@ import 'package:ibiti_guardian/services/swap/swap_provider.dart'
 IntentData _intent([String raw = 'test']) =>
     IntentData(type: IntentType.unknown, rawInput: raw);
 
-/// Default AI settings: guarded mode with all relevant actions allowed and
-/// a generous per-tx limit so gate checks don't interfere with later tests.
+/// Default AI settings: guarded mode with all relevant actions allowed.
 AiControlSettings _guardedSettings({
-  double perTxLimit = 10000,
   List<AiAction>? allowedActions,
   AiMode mode = AiMode.guarded,
 }) {
   return AiControlSettings(
     mode: mode,
-    perTxLimit: perTxLimit,
     allowedActions: allowedActions ??
         const [
           AiAction.send,
@@ -250,60 +247,8 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 3. Amount exceeds AI per-tx limit → blocks
-  // ═══════════════════════════════════════════════════════════════════════════
-  group('AI Per-Tx Limit', () {
-    test('amount exceeding per-tx limit is blocked', () {
-      AiControlService.instance.setSettingsForTest(
-        _guardedSettings(perTxLimit: 100),
-      );
-
-      final result = GuardianPolicyEngine.checkV3(
-        _sendTx(amount: 150),
-        _cleanSim(),
-        _rpcOk(),
-        _defiProfile(), // profile limit 1000 → not the blocker
-        ExecutionPath.localProtected,
-      );
-
-      expect(result.blocked, isTrue);
-      expect(result.appliedRules, contains('AI_PER_TX_LIMIT_EXCEEDED'));
-    });
-
-    test('amount exactly at per-tx limit is NOT blocked', () {
-      AiControlService.instance.setSettingsForTest(
-        _guardedSettings(perTxLimit: 100),
-      );
-
-      final result = GuardianPolicyEngine.checkV3(
-        _sendTx(amount: 100),
-        _cleanSim(),
-        _rpcOk(),
-        _defiProfile(),
-        ExecutionPath.localProtected,
-      );
-
-      expect(result.blocked, isFalse,
-          reason: 'Boundary: amount == limit should pass');
-    });
-
-    test('null amount bypasses per-tx limit check', () {
-      AiControlService.instance.setSettingsForTest(
-        _guardedSettings(perTxLimit: 0),
-      );
-
-      final result = GuardianPolicyEngine.checkV3(
-        _sendTx(amount: null),
-        _cleanSim(),
-        _rpcOk(),
-        _defiProfile(),
-        ExecutionPath.localProtected,
-      );
-
-      expect(result.appliedRules, isNot(contains('AI_PER_TX_LIMIT_EXCEEDED')));
-    });
-  });
-
+  // 3. (Removed) The generic AI per-transaction limit was retired — each action
+  //    type is now bounded by its own send/swap/approve limit instead.
   // ═══════════════════════════════════════════════════════════════════════════
   // 4. RPC simulation failure → blocks
   // ═══════════════════════════════════════════════════════════════════════════
@@ -635,31 +580,32 @@ void main() {
   // 14. Approve unlimited when disabled → blocks
   // ═══════════════════════════════════════════════════════════════════════════
   group('Approve V3', () {
-    test('unlimited approve blocked when profile disallows it', () {
+    test('unlimited approve is always blocked by the approve limit', () {
       final result = GuardianPolicyEngine.checkV3(
         _approveTx(isUnlimited: true),
         _cleanSim(),
         _rpcOk(),
-        _safeProfile(), // allowUnlimitedApprove = false
+        _safeProfile(),
         ExecutionPath.localProtected,
       );
 
       expect(result.blocked, isTrue);
-      expect(result.appliedRules, contains('PROFILE_UNLIMITED_DENIED'));
+      expect(result.appliedRules, contains('APPROVE_LIMIT_EXCEEDED'));
     });
 
-    test('unlimited approve allowed when profile permits it', () {
+    test('unlimited approve blocked even on a permissive profile', () {
+      // The old allowUnlimitedApprove escape hatch was removed: an infinite
+      // allowance always exceeds the approve limit, so it is always blocked.
       final result = GuardianPolicyEngine.checkV3(
         _approveTx(isUnlimited: true),
         _cleanSim(),
         _rpcOk(),
-        _defiProfile(), // allowUnlimitedApprove = true
+        _defiProfile(),
         ExecutionPath.localProtected,
       );
 
-      expect(result.blocked, isFalse);
-      expect(result.requiresConfirmation, isTrue);
-      expect(result.appliedRules, contains('APPROVE_CONFIRM'));
+      expect(result.blocked, isTrue);
+      expect(result.appliedRules, contains('APPROVE_LIMIT_EXCEEDED'));
     });
 
     // ═════════════════════════════════════════════════════════════════════════
@@ -675,7 +621,7 @@ void main() {
       );
 
       expect(result.blocked, isTrue);
-      expect(result.appliedRules, contains('APPROVE_PROFILE_LIMIT_EXCEEDED'));
+      expect(result.appliedRules, contains('APPROVE_LIMIT_EXCEEDED'));
     });
 
     test('approve at profile limit is NOT blocked', () {
@@ -950,7 +896,7 @@ void main() {
   group('Gate Priority', () {
     test('manual mode blocks before per-tx limit check', () {
       AiControlService.instance.setSettingsForTest(
-        _guardedSettings(mode: AiMode.manual, perTxLimit: 0),
+        _guardedSettings(mode: AiMode.manual),
       );
 
       final result = GuardianPolicyEngine.checkV3(
@@ -980,23 +926,6 @@ void main() {
       );
 
       expect(result.appliedRules, contains('AI_ACTION_NOT_ALLOWED'));
-      expect(result.appliedRules, isNot(contains('RPC_REVERT_DETECTED')));
-    });
-
-    test('per-tx limit blocks before RPC check', () {
-      AiControlService.instance.setSettingsForTest(
-        _guardedSettings(perTxLimit: 5),
-      );
-
-      final result = GuardianPolicyEngine.checkV3(
-        _sendTx(amount: 100),
-        _criticalSim(),
-        _rpcRevert(),
-        _safeProfile(),
-        ExecutionPath.localProtected,
-      );
-
-      expect(result.appliedRules, contains('AI_PER_TX_LIMIT_EXCEEDED'));
       expect(result.appliedRules, isNot(contains('RPC_REVERT_DETECTED')));
     });
 

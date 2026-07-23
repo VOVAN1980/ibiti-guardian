@@ -442,6 +442,7 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
       sourceTokenDecimals: srcDecimals,
       targetTokenDecimals: dstDecimals,
       slippageBps: (_slippage * 100).toInt(),
+      origin: IntentOrigin.wallet,
     );
 
     setState(() {

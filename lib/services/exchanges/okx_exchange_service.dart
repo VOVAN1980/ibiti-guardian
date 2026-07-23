@@ -77,13 +77,28 @@ class OkxExchangeService implements ExchangeService {
   Stream<List<LiveTicker>> get tickerStream => _tickerController.stream;
 
   @override
-  List<LiveTicker> get currentTickers => _tickers.values.toList();
+  List<LiveTicker> get currentTickers => _dedupeByBase(_tickers.values);
+
+  /// Deduplicate tickers by baseAsset for display.
+  /// When both USDC and USDT pairs exist, keep the one with higher 24h volume.
+  /// Raw _tickers map retains both for correct execution via findBestPair().
+  List<LiveTicker> _dedupeByBase(Iterable<LiveTicker> tickers) {
+    final best = <String, LiveTicker>{};
+    for (final t in tickers) {
+      final existing = best[t.baseAsset];
+      if (existing == null || t.quoteVolume24h > existing.quoteVolume24h) {
+        best[t.baseAsset] = t;
+      }
+    }
+    return best.values.toList();
+  }
 
   // ── Category views ────────────────────────────────────────────────────────
 
   @override
   List<LiveTicker> get viewNewListings {
-    final list = _tickers.values
+    final deduped = _dedupeByBase(_tickers.values);
+    final list = deduped
         .where((t) =>
             t.quoteVolume24h > 500 &&
             t.quoteVolume24h < 500000 &&
@@ -97,7 +112,8 @@ class OkxExchangeService implements ExchangeService {
   @override
   List<LiveTicker> get viewFastGrowth {
     final avgVol = _avgQuoteVolume();
-    final list = _tickers.values
+    final deduped = _dedupeByBase(_tickers.values);
+    final list = deduped
         .where((t) => t.priceChangePercent24h > 0.5 && t.quoteVolume24h > 500)
         .map((t) {
       final score = calcMomentumScore(
@@ -117,7 +133,8 @@ class OkxExchangeService implements ExchangeService {
 
   @override
   List<LiveTicker> get viewMemeTrend {
-    final list = _tickers.values.where((t) {
+    final deduped = _dedupeByBase(_tickers.values);
+    final list = deduped.where((t) {
       final base = t.baseAsset.toUpperCase();
       final isMeme = _memeKeywords.any((kw) => base.contains(kw));
       final isLowCap = t.lastPrice < 0.001 && t.priceChangePercent24h.abs() > 1;
@@ -130,7 +147,8 @@ class OkxExchangeService implements ExchangeService {
 
   @override
   List<LiveTicker> get viewMajors {
-    final list = _tickers.values
+    final deduped = _dedupeByBase(_tickers.values);
+    final list = deduped
         .where((t) => _majorBases.contains(t.baseAsset))
         .toList()
       ..sort((a, b) => b.quoteVolume24h.compareTo(a.quoteVolume24h));
@@ -139,7 +157,8 @@ class OkxExchangeService implements ExchangeService {
 
   @override
   List<LiveTicker> get topGainers24h {
-    final list = _tickers.values
+    final deduped = _dedupeByBase(_tickers.values);
+    final list = deduped
         .where((t) => t.priceChangePercent24h > 0 && t.quoteVolume24h > 500)
         .toList()
       ..sort(
@@ -440,14 +459,10 @@ class OkxExchangeService implements ExchangeService {
       _emitThrottle = null;
       if (_dirty) {
         _dirty = false;
-        final updatedTickers = _updatedSymbols
-            .map((s) => _tickers[s])
-            .whereType<LiveTicker>()
-            .toList();
         _updatedSymbols.clear();
-        if (updatedTickers.isNotEmpty) {
-          _tickerController.add(updatedTickers);
-        }
+        // Always emit deduped list — raw _tickers may contain both
+        // USDC and USDT pairs for the same base; currentTickers dedupes.
+        _tickerController.add(currentTickers);
       }
     });
   }
@@ -597,6 +612,7 @@ class OkxExchangeService implements ExchangeService {
           } else if (symbol.endsWith('USDC')) {
             base = symbol.substring(0, symbol.length - 4);
           }
+          final normalizedSymbol = symbol;
           final lastPrice = _toDouble(tickerData['last']);
           if (lastPrice <= 0) return;
 
@@ -605,7 +621,7 @@ class OkxExchangeService implements ExchangeService {
           final quoteVol = _toDouble(tickerData['volCcy24h']);
 
           final ticker = LiveTicker(
-            symbol: symbol,
+            symbol: normalizedSymbol,
             baseAsset: base,
             lastPrice: lastPrice,
             priceChangePercent24h: changePct,
@@ -619,7 +635,7 @@ class OkxExchangeService implements ExchangeService {
               priceChangePercent24h: changePct,
             ),
           );
-          _tickers[symbol] = ticker;
+          _tickers[normalizedSymbol] = ticker;
           controller.add(ticker);
         } catch (e) {
           _log.e('Dedicated parse: $e');

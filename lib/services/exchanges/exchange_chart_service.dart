@@ -234,7 +234,16 @@ class ExchangeChartService {
 
   Future<List<Candle>> _fetchFromGateio(
       String symbol, String sourcePair, _KlineConfig config) async {
-    final pair = sourcePair.isNotEmpty ? sourcePair : '${symbol}_USDT';
+    // Gate.io REST requires "BTC_USDT" format, but WS normalizes to "BTCUSDT".
+    // Normalize: insert underscore before quote asset if missing.
+    var pair = sourcePair.isNotEmpty ? sourcePair : '${symbol}_USDT';
+    if (!pair.contains('_')) {
+      if (pair.endsWith('USDT')) {
+        pair = '${pair.substring(0, pair.length - 4)}_USDT';
+      } else if (pair.endsWith('USDC')) {
+        pair = '${pair.substring(0, pair.length - 4)}_USDC';
+      }
+    }
     final uri = Uri.parse('$_gateioBase/api/v4/spot/candlesticks').replace(
       queryParameters: {
         'currency_pair': pair,
@@ -284,7 +293,16 @@ class ExchangeChartService {
 
   Future<List<Candle>> _fetchFromOkx(
       String symbol, String sourcePair, _KlineConfig config) async {
-    final pair = sourcePair.isNotEmpty ? sourcePair : '$symbol-USDT';
+    // OKX REST requires "BTC-USDT" format, but WS normalizes to "BTCUSDT".
+    // Normalize: insert hyphen before quote asset if missing.
+    var pair = sourcePair.isNotEmpty ? sourcePair : '$symbol-USDT';
+    if (!pair.contains('-')) {
+      if (pair.endsWith('USDT')) {
+        pair = '${pair.substring(0, pair.length - 4)}-USDT';
+      } else if (pair.endsWith('USDC')) {
+        pair = '${pair.substring(0, pair.length - 4)}-USDC';
+      }
+    }
     final uri = Uri.parse('$_okxBase/api/v5/market/candles').replace(
       queryParameters: {
         'instId': pair,

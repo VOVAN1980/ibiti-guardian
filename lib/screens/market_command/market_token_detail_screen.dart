@@ -1781,6 +1781,7 @@ class _TpSlSheetState extends State<_TpSlSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final l = LocalizationService.instance;
     final bottomPad = MediaQuery.of(context).viewInsets.bottom +
         MediaQuery.of(context).padding.bottom;
 
@@ -1809,9 +1810,9 @@ class _TpSlSheetState extends State<_TpSlSheet> {
                 const Icon(Icons.shield_outlined,
                     size: 20, color: Color(0xFFFF9100)),
                 const SizedBox(width: 8),
-                const Text(
-                  'Take Profit / Stop Loss',
-                  style: TextStyle(
+                Text(
+                  l.t('tpSlTitle'),
+                  style: const TextStyle(
                     color: Colors.white,
                     fontSize: 17,
                     fontWeight: FontWeight.w700,
@@ -1823,7 +1824,7 @@ class _TpSlSheetState extends State<_TpSlSheet> {
             Align(
               alignment: Alignment.centerLeft,
               child: Text(
-                'Entry: \$${PriceFormatter.price(asset.price)}',
+                l.t('tpSlEntry', {'price': '\$${PriceFormatter.price(asset.price)}'}),
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.5),
                   fontSize: 13,
@@ -1851,7 +1852,7 @@ class _TpSlSheetState extends State<_TpSlSheet> {
                                 : Colors.white.withValues(alpha: 0.1)),
                       ),
                       child: Center(
-                          child: Text('▲ Take Profit',
+                          child: Text(l.t('tpSlTakeProfit'),
                               style: TextStyle(
                                 color: _isTakeProfit
                                     ? const Color(0xFF00C853)
@@ -1880,7 +1881,7 @@ class _TpSlSheetState extends State<_TpSlSheet> {
                                 : Colors.white.withValues(alpha: 0.1)),
                       ),
                       child: Center(
-                          child: Text('▼ Stop Loss',
+                          child: Text(l.t('tpSlStopLoss'),
                               style: TextStyle(
                                 color: !_isTakeProfit
                                     ? const Color(0xFFFF1744)
@@ -2000,7 +2001,7 @@ class _TpSlSheetState extends State<_TpSlSheet> {
                       borderRadius: BorderRadius.circular(12)),
                 ),
                 child: Text(
-                  _isTakeProfit ? 'Set Take Profit' : 'Set Stop Loss',
+                  _isTakeProfit ? l.t('tpSlSetTakeProfit') : l.t('tpSlSetStopLoss'),
                   style: const TextStyle(
                       fontWeight: FontWeight.w700, fontSize: 16),
                 ),
@@ -2061,6 +2062,7 @@ class _PriceAlertSheetState extends State<_PriceAlertSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final l = LocalizationService.instance;
     return ListenableBuilder(
       listenable: MarketPriceAlertService.instance,
       builder: (context, _) {
@@ -2093,8 +2095,8 @@ class _PriceAlertSheetState extends State<_PriceAlertSheet> {
                     const Icon(Icons.notifications_active_rounded,
                         size: 20, color: Color(0xFFFFD700)),
                     const SizedBox(width: 8),
-                    const Text(
-                      'Price Alert — ',
+                    Text(
+                      l.t('priceAlertTitle'),
                       style: TextStyle(
                         color: Colors.white,
                         fontSize: 17,
@@ -2107,7 +2109,7 @@ class _PriceAlertSheetState extends State<_PriceAlertSheet> {
                 Align(
                   alignment: Alignment.centerLeft,
                   child: Text(
-                    'Current: \$${_formatPrice(asset.price)}',
+                    l.t('priceAlertCurrent', {'price': '\$${_formatPrice(asset.price)}'}),
                     style: TextStyle(
                       color: Colors.white.withValues(alpha: 0.5),
                       fontSize: 13,
@@ -2134,7 +2136,7 @@ class _PriceAlertSheetState extends State<_PriceAlertSheet> {
                                     : Colors.white.withValues(alpha: 0.1)),
                           ),
                           child: Center(
-                              child: Text('▲ Above',
+                              child: Text(l.t('priceAlertAbove'),
                                   style: TextStyle(
                                     color: _isAbove
                                         ? const Color(0xFF00C853)
@@ -2163,7 +2165,7 @@ class _PriceAlertSheetState extends State<_PriceAlertSheet> {
                                     : Colors.white.withValues(alpha: 0.1)),
                           ),
                           child: Center(
-                              child: Text('▼ Below',
+                              child: Text(l.t('priceAlertBelow'),
                                   style: TextStyle(
                                     color: !_isAbove
                                         ? const Color(0xFFFF1744)
@@ -2223,8 +2225,8 @@ class _PriceAlertSheetState extends State<_PriceAlertSheet> {
                       shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12)),
                     ),
-                    child: const Text('Set Alert',
-                        style: TextStyle(
+                    child: Text(l.t('priceAlertSetAlert'),
+                        style: const TextStyle(
                             fontWeight: FontWeight.w700, fontSize: 16)),
                   ),
                 ),
@@ -2232,7 +2234,7 @@ class _PriceAlertSheetState extends State<_PriceAlertSheet> {
                   const SizedBox(height: 16),
                   Align(
                     alignment: Alignment.centerLeft,
-                    child: Text('Active Alerts',
+                    child: Text(l.t('priceAlertActiveAlerts'),
                         style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.5),
                             fontSize: 13,
@@ -2273,13 +2275,13 @@ class _PriceAlertSheetState extends State<_PriceAlertSheet> {
                                   size: 18),
                               const SizedBox(width: 10),
                               Text(
-                                  '${alert.isAbove ? "Above" : "Below"} \$${_formatPrice(alert.targetPrice)}',
+                                  '${alert.isAbove ? l.t('priceAlertAbovePrice', {'price': '\$${_formatPrice(alert.targetPrice)}'}) : l.t('priceAlertBelowPrice', {'price': '\$${_formatPrice(alert.targetPrice)}'})}',
                                   style: const TextStyle(
                                       color: Colors.white,
                                       fontSize: 14,
                                       fontWeight: FontWeight.w600)),
                               const Spacer(),
-                              Text('← swipe',
+                              Text(l.t('priceAlertSwipeHint'),
                                   style: TextStyle(
                                       color:
                                           Colors.white.withValues(alpha: 0.25),

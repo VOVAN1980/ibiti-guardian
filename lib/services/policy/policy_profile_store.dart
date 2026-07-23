@@ -46,7 +46,6 @@ class PolicyProfileStore extends ChangeNotifier {
         swapLimitUsd: (map['swapLimitUsd'] as num?)?.toDouble() ?? 500.0,
         approveLimitUsd: (map['approveLimitUsd'] as num?)?.toDouble() ?? 100.0,
         allowUnknownContracts: map['allowUnknownContracts'] as bool? ?? false,
-        allowUnlimitedApprove: map['allowUnlimitedApprove'] as bool? ?? false,
         trustedAddresses: List<String>.from(map['trustedAddresses'] ?? []),
         trustedContracts: List<String>.from(map['trustedContracts'] ?? []),
         actionExpiries: (map['actionExpiries'] as Map<String, dynamic>?)?.map(
@@ -106,7 +105,6 @@ class PolicyProfileStore extends ChangeNotifier {
           swapLimitUsd: 10000.0,
           approveLimitUsd: 5000.0,
           allowUnknownContracts: true,
-          allowUnlimitedApprove: false,
         ),
     };
 
@@ -177,34 +175,21 @@ class PolicyProfileStore extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> setAllowUnlimitedApprove(bool allowed) async {
-    _currentProfile = _currentProfile.copyWith(allowUnlimitedApprove: allowed);
-    await _save(_currentProfile);
-    await _syncDependents();
-    notifyListeners();
-  }
 
   Future<void> _syncDependents() async {
-    final unifiedPerTx = [
-      _currentProfile.sendLimitUsd,
-      _currentProfile.swapLimitUsd,
-      _currentProfile.approveLimitUsd,
-    ].reduce((a, b) => a < b ? a : b);
     final unifiedDaily = _currentProfile.sendLimitUsd;
 
     final ai = AiControlService.instance.settings;
-    if (ai.perTxLimit != unifiedPerTx || ai.dailyLimit != unifiedDaily) {
+    if (ai.dailyLimit != unifiedDaily) {
       await AiControlService.instance.updateLimits(
         daily: unifiedDaily,
-        perTx: unifiedPerTx,
       );
     }
 
     final epk = EPKPolicyManager.instance.state;
-    if (epk.perTxLimit != unifiedPerTx || epk.dailyLimit != unifiedDaily) {
+    if (epk.dailyLimit != unifiedDaily) {
       EPKPolicyManager.instance.updateLimits(
         daily: unifiedDaily,
-        perTx: unifiedPerTx,
       );
     }
   }
@@ -217,7 +202,6 @@ class PolicyProfileStore extends ChangeNotifier {
       'swapLimitUsd': p.swapLimitUsd,
       'approveLimitUsd': p.approveLimitUsd,
       'allowUnknownContracts': p.allowUnknownContracts,
-      'allowUnlimitedApprove': p.allowUnlimitedApprove,
       'trustedAddresses': p.trustedAddresses,
       'trustedContracts': p.trustedContracts,
       'actionExpiries':

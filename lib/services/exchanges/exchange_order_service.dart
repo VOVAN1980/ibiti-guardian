@@ -184,22 +184,6 @@ class ExchangeOrderService {
           return ExchangeOrderResult(isSuccess: false, errorMessage: msg);
         }
 
-        final perTxLimit = settings.perTxLimit;
-        if (txValueUsdt > perTxLimit) {
-          final msg = 'Blocked by AI Policy: Order value (\$${txValueUsdt.toStringAsFixed(2)}) exceeds single transaction limit (\$${perTxLimit.toStringAsFixed(2)}).';
-          await MarketMemoryService.instance.record(
-            action: 'buy',
-            symbol: symbol,
-            source: source,
-            aiMode: modeStr,
-            result: 'blocked',
-            amount: amount,
-            priceThen: price,
-            reason: msg,
-            rawInput: 'CEX spot order on $exchangeId',
-          );
-          return ExchangeOrderResult(isSuccess: false, errorMessage: msg);
-        }
       }
 
       // 4. Check Symbol Rules & Existence

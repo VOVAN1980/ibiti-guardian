@@ -238,15 +238,6 @@ class _EPKControlScreenState extends State<EPKControlScreen> {
                   valueColor: profile.allowUnknownContracts
                       ? GuardianColors.warning
                       : GuardianColors.success),
-              _divider(),
-              _row(
-                  LocalizationService.instance.t('epkUnlimitedApprove'),
-                  profile.allowUnlimitedApprove
-                      ? LocalizationService.instance.t('epkAllowed')
-                      : LocalizationService.instance.t('epkBlocked'),
-                  valueColor: profile.allowUnlimitedApprove
-                      ? GuardianColors.warning
-                      : GuardianColors.success),
             ]),
             const SizedBox(height: 20),
 

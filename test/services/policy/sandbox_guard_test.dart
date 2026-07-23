@@ -120,7 +120,6 @@ AiControlSettings _fullAutonomySettings({
 }) {
   return AiControlSettings(
     mode: AiMode.fullAutonomy,
-    perTxLimit: 10000,
     dailyLimit: 50000,
     allowedActions: allowedActions ?? AiAction.values,
     mandate: mandate ?? const AutonomyMandate(),

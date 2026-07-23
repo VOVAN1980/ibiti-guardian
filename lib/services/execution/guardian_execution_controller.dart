@@ -891,6 +891,10 @@ class GuardianExecutionController {
     final amount = tx.amount ?? 0.0;
     if (amount <= 0) return null;
 
+    // Daily TRADING limit only — plain wallet operations are bounded by their
+    // own send/swap limits, not the trading budget.
+    if (tx.sourceIntent.origin == IntentOrigin.wallet) return null;
+
     final settings = AiControlService.instance.settings;
     final dailyLimit = settings.dailyLimit;
 
@@ -966,13 +970,6 @@ class GuardianExecutionController {
       );
     }
 
-    if (amount > 0 && amount > settings.perTxLimit) {
-      return AssistantResponse.error(
-        'This action exceeds your AI per-transaction limit of \$${settings.perTxLimit.toStringAsFixed(2)}.',
-        intent: tx.sourceIntent,
-      );
-    }
-
     if (!mandate.allowsNetwork(tx.chainKey)) {
       return AssistantResponse.error(
         'This network is outside the active AI autonomy mandate.',
@@ -997,16 +994,6 @@ class GuardianExecutionController {
       );
     }
 
-    if (tx.type == TransactionType.send &&
-        amount > 0 &&
-        amount > settings.perRecipientLimit &&
-        !_isTrustedAddress(tx.toAddress, profile)) {
-      return AssistantResponse.error(
-        'This recipient is outside your AI recipient limit of \$${settings.perRecipientLimit.toStringAsFixed(2)} unless trusted first.',
-        intent: tx.sourceIntent,
-      );
-    }
-
     final contractTarget = _contractTarget(tx);
     final venueTarget = tx.routerAddress ?? tx.spenderAddress;
     if (!mandate.allowsVenue(venueTarget)) {
@@ -1021,16 +1008,6 @@ class GuardianExecutionController {
         staticSim.flags.contains(SimulationFlag.unknownContract)) {
       return AssistantResponse.error(
         'Full autonomy is blocked for unknown contracts under the current AI mandate.',
-        intent: tx.sourceIntent,
-      );
-    }
-
-    if (contractTarget != null &&
-        amount > 0 &&
-        amount > settings.perContractLimit &&
-        !_isTrustedContract(contractTarget, profile)) {
-      return AssistantResponse.error(
-        'This contract interaction exceeds your AI contract limit of \$${settings.perContractLimit.toStringAsFixed(2)} unless the contract is trusted.',
         intent: tx.sourceIntent,
       );
     }

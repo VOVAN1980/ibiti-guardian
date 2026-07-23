@@ -548,10 +548,7 @@ void main() {
         AiControlService.instance.setSettingsForTest(AiControlSettings(
           mode: mode,
           activeSources: const ['mexc'],
-          perTxLimit: 50000.0,
           dailyLimit: 500000.0,
-          perContractLimit: 50000.0,
-          perRecipientLimit: 50000.0,
         ));
 
         if (tc['focusedSymbol'] != null) {

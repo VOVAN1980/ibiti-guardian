@@ -268,29 +268,8 @@ class _WalletSendModalState extends State<WalletSendModal>
       }
     }
 
-    // ── Policy limit check ───────────────────────────────────────────────────
-    final aiSettings = AiControlService.instance.settings;
-    final numericAmount = double.tryParse(amountStr.replaceAll(',', '.')) ?? 0;
-    if (numericAmount > 0 &&
-        _selectedAsset != null &&
-        _selectedAsset!.priceUsd > 0) {
-      final usdValue = numericAmount * _selectedAsset!.priceUsd;
-      if (aiSettings.perTxLimit > 0 && usdValue > aiSettings.perTxLimit) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(
-            t.t('walletSendExceedsLimit', {
-              'default':
-                  '\$${usdValue.toStringAsFixed(2)} exceeds the per-transaction limit of \$${aiSettings.perTxLimit.toStringAsFixed(0)}',
-              'ru':
-                  'Сумма \$${usdValue.toStringAsFixed(2)} превышает лимит \$${aiSettings.perTxLimit.toStringAsFixed(0)} на транзакцию',
-            }),
-          ),
-          backgroundColor: GuardianColors.warning,
-        ));
-        return;
-      }
-    }
-
+    // Wallet sends are bounded by the wallet Send limit (enforced in the policy
+    // engine during preview), not the trading per-operation limit.
     final atomicAmount = parseDecimalToAtomic(amountStr, _tokenDecimals);
     if (atomicAmount <= BigInt.zero) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
@@ -371,6 +350,7 @@ class _WalletSendModalState extends State<WalletSendModal>
         rawAmount: atomicAmount,
         tokenSymbol: _tokenSymbol,
         sourceTokenDecimals: _tokenDecimals,
+        origin: IntentOrigin.wallet,
       ),
     );
   }

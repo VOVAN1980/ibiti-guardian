@@ -384,6 +384,7 @@ class _WalletTradeModalState extends State<WalletTradeModal> {
       sourceTokenDecimals: srcDecimals,
       targetTokenDecimals: dstDecimals,
       slippageBps: (_slippage * 100).toInt(),
+      origin: IntentOrigin.market,
     );
 
     setState(() {

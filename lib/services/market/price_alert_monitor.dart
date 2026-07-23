@@ -5,6 +5,7 @@ import 'package:ibiti_guardian/services/exchanges/exchange_interface.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_registry.dart';
 import 'package:ibiti_guardian/services/wallet/market_price_alert_service.dart';
 import 'package:ibiti_guardian/services/alerts/sound_service.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
 // ─── Price Alert Monitor ────────────────────────────────────────────────────────
@@ -118,7 +119,10 @@ class PriceAlertMonitor {
   Future<void> _fireAlert(MarketPriceAlert alert, double currentPrice) async {
     final symbol = alert.symbol;
     final direction = alert.isAbove ? '▲' : '▼';
-    final verb = alert.isAbove ? 'rose above' : 'fell below';
+    final l = LocalizationService.instance;
+    final verb = alert.isAbove
+        ? l.t('priceAlertNotifRoseAbove')
+        : l.t('priceAlertNotifFellBelow');
 
     _log.i('FIRED: $symbol $direction \$${alert.targetPrice} '
         '(current: \$$currentPrice)');
@@ -129,9 +133,16 @@ class PriceAlertMonitor {
     // 2. Show a clean, tappable notification (like SMS — default system sound)
     try {
       await NotificationService.instance.showPriceAlert(
-        title: '$direction Price Alert — $symbol',
-        body: '$symbol $verb \$${alert.targetPrice.toStringAsFixed(2)}. '
-            'Current price: \$${currentPrice.toStringAsFixed(2)}',
+        title: l.t('priceAlertNotifTitle', {
+          'direction': direction,
+          'symbol': symbol,
+        }),
+        body: l.t('priceAlertNotifBody', {
+          'symbol': symbol,
+          'verb': verb,
+          'target': alert.targetPrice.toStringAsFixed(2),
+          'current': currentPrice.toStringAsFixed(2),
+        }),
         payload: {
           'type': 'price_alert',
           'symbol': symbol,

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/market/rocket_alert_settings.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 
@@ -19,6 +20,7 @@ class RocketAlertSettingsCard extends StatelessWidget {
       listenable: RocketAlertSettings.instance,
       builder: (context, _) {
         final s = RocketAlertSettings.instance;
+        final l = LocalizationService.instance;
         return Padding(
           padding: const EdgeInsets.fromLTRB(16, 6, 16, 4),
           child: Container(
@@ -41,9 +43,9 @@ class RocketAlertSettingsCard extends StatelessWidget {
                       const Text('🚀',
                           style: TextStyle(fontSize: 18)),
                       const SizedBox(width: 8),
-                      const Expanded(
+                      Expanded(
                         child: Text(
-                          'Rocket Alerts',
+                          l.t('rocketAlertsTitle'),
                           style: TextStyle(
                             color: GuardianColors.textPrimary,
                             fontSize: 15,
@@ -82,7 +84,7 @@ class RocketAlertSettingsCard extends StatelessWidget {
                       children: [
                         // ── Threshold % ──
                         _SettingRow(
-                          label: 'Threshold',
+                          label: l.t('rocketAlertsThreshold'),
                           options: const [5, 10, 20, 50],
                           selectedValue: s.thresholdPct.round(),
                           suffix: '%',
@@ -91,7 +93,7 @@ class RocketAlertSettingsCard extends StatelessWidget {
                         const SizedBox(height: 10),
                         // ── Window ──
                         _SettingRow(
-                          label: 'Window',
+                          label: l.t('rocketAlertsWindow'),
                           options: const [1, 5, 15, 30],
                           selectedValue: s.windowMinutes,
                           suffix: 'm',
@@ -104,7 +106,7 @@ class RocketAlertSettingsCard extends StatelessWidget {
                             SizedBox(
                               width: 72,
                               child: Text(
-                                'Scope',
+                                l.t('rocketAlertsScope'),
                                 style: TextStyle(
                                   color: GuardianColors.textSecondary
                                       .withValues(alpha: 0.7),
@@ -119,8 +121,8 @@ class RocketAlertSettingsCard extends StatelessWidget {
                                   final isSelected = s.scope == scope;
                                   final label = scope ==
                                           RocketAlertScope.favorites
-                                      ? '★ Favorites'
-                                      : 'All Market';
+                                      ? l.t('rocketAlertsScopeFavorites')
+                                      : l.t('rocketAlertsScopeAll');
                                   return Expanded(
                                     child: Padding(
                                       padding: EdgeInsets.only(
@@ -174,7 +176,7 @@ class RocketAlertSettingsCard extends StatelessWidget {
                         const SizedBox(height: 10),
                         // ── Cooldown ──
                         _SettingRow(
-                          label: 'Cooldown',
+                          label: l.t('rocketAlertsCooldown'),
                           options: const [5, 15, 30, 60],
                           selectedValue: s.cooldownMinutes,
                           suffix: 'm',

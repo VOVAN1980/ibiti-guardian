@@ -263,6 +263,7 @@ class ExchangeAccountStore {
     String? passphrase,
   }) async {
     final id = _canonicalId(exchangeId);
+    _log.i('[VERIFY] exchange=$id keyLen=${apiKey.length} secretLen=${secret.length}');
     try {
       if (id == 'mexc') {
         return await _verifyMexc(apiKey, secret);
@@ -278,7 +279,8 @@ class ExchangeAccountStore {
           errorMessage: 'Unsupported exchange: $exchangeId',
         );
       }
-    } catch (e) {
+    } catch (e, st) {
+      _log.e('[VERIFY] EXCEPTION for $id: $e\n$st');
       return ExchangeValidationResult(
         isValid: false,
         errorMessage: 'Network or configuration error: $e',
@@ -296,6 +298,7 @@ class ExchangeAccountStore {
     final response = await http.get(Uri.parse(url), headers: {
       'X-MEXC-APIKEY': apiKey,
     });
+    _log.i('[verifyMexc] status=${response.statusCode}');
 
     if (response.statusCode != 200) {
       final msg = _parseErrorMsg(response.body, 'Invalid API Key or Secret');
@@ -334,21 +337,26 @@ class ExchangeAccountStore {
   // ── Binance Validation ─────────────────────────────────────────────────────
   Future<ExchangeValidationResult> _verifyBinance(String apiKey, String secret) async {
     final timestamp = DateTime.now().millisecondsSinceEpoch;
-    final queryString = 'timestamp=$timestamp';
+    final queryString = 'timestamp=$timestamp&recvWindow=10000';
     final signature = _hmacSha256(secret, queryString);
 
-    final url = 'https://api.binance.com/api/v3/account?timestamp=$timestamp&signature=$signature';
+    final url = 'https://api.binance.com/api/v3/account?timestamp=$timestamp&recvWindow=10000&signature=$signature';
+    _log.i('[verifyBinance] recvWindow=10000');
     final response = await http.get(Uri.parse(url), headers: {
       'X-MBX-APIKEY': apiKey,
     });
 
+    _log.i('[verifyBinance] status=${response.statusCode}');
+
     if (response.statusCode != 200) {
       final msg = _parseErrorMsg(response.body, 'Invalid API Key or Secret');
+      _log.e('[verifyBinance] FAILED: $msg');
       return ExchangeValidationResult(isValid: false, errorMessage: msg);
     }
 
     final data = jsonDecode(response.body);
     final canTrade = data['canTrade'] == true;
+    _log.i('[verifyBinance] canTrade=$canTrade');
 
     if (!canTrade) {
       return ExchangeValidationResult(
@@ -367,6 +375,7 @@ class ExchangeAccountStore {
         }
       }
     }
+    _log.i('[verifyBinance] SUCCESS usdtBalance=$usdtBalance');
 
     return ExchangeValidationResult(
       isValid: true,
@@ -390,6 +399,8 @@ class ExchangeAccountStore {
       final requestPath = '/api/v5/account/balance?ccy=$targetCcy';
       const body = '';
       
+      _log.i('[verifyOkx] domain=$domain isEea=$isEea');
+
       final prehash = '$timestamp$method$requestPath$body';
       final keyBytes = utf8.encode(secret);
       final prehashBytes = utf8.encode(prehash);
@@ -397,8 +408,9 @@ class ExchangeAccountStore {
       final digest = hmac.convert(prehashBytes);
       final signature = base64.encode(digest.bytes);
 
+      final fullUrl = '$domain$requestPath';
       final response = await http.get(
-        Uri.parse('$domain$requestPath'),
+        Uri.parse(fullUrl),
         headers: {
           'OK-ACCESS-KEY': apiKey,
           'OK-ACCESS-SIGN': signature,
@@ -408,6 +420,8 @@ class ExchangeAccountStore {
           'Content-Type': 'application/json',
         },
       ).timeout(const Duration(seconds: 10));
+
+      _log.i('[verifyOkx] domain=$domain status=${response.statusCode}');
 
       if (response.statusCode != 200) {
         final err = _parseErrorMsg(response.body, 'HTTP ${response.statusCode}');

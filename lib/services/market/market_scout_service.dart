@@ -417,14 +417,12 @@ class MarketScoutService {
         return 'Guarded — I can build full buy/sell plans and prepare swaps. '
             'I work with: $assets on $networks. '
             'Allowed actions: $actions. '
-            'Per-tx limit: \$${settings.perTxLimit.toStringAsFixed(0)}. '
             'You confirm before anything executes.';
       case AiMode.fullAutonomy:
         return 'Full Autonomy — I can prepare and execute trades automatically '
             'within your mandate: $assets on $networks. '
             'Allowed actions: $actions. '
-            'Per-tx limit: \$${settings.perTxLimit.toStringAsFixed(0)}, '
-            'daily: \$${settings.dailyLimit.toStringAsFixed(0)}. '
+            'Daily limit: \$${settings.dailyLimit.toStringAsFixed(0)}. '
             'Policy and EPK are enforced on every trade.';
     }
   }

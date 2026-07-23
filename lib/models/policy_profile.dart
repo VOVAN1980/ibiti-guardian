@@ -23,9 +23,6 @@ class PolicyProfile {
   /// Whether interaction with an unverified/unknown contract is allowed
   final bool allowUnknownContracts;
 
-  /// Whether unlimited token spending approvals are allowed
-  final bool allowUnlimitedApprove;
-
   /// List of specifically trusted destination addresses (bypasses some checks)
   final List<String> trustedAddresses;
 
@@ -38,7 +35,6 @@ class PolicyProfile {
     required this.swapLimitUsd,
     required this.approveLimitUsd,
     required this.allowUnknownContracts,
-    required this.allowUnlimitedApprove,
     this.actionExpiries = const {},
     this.trustedAddresses = const [],
     this.trustedContracts = const [],
@@ -51,7 +47,6 @@ class PolicyProfile {
         swapLimitUsd: 500.0,
         approveLimitUsd: 100.0,
         allowUnknownContracts: false,
-        allowUnlimitedApprove: false,
         actionExpiries: {},
       );
 
@@ -62,7 +57,6 @@ class PolicyProfile {
         swapLimitUsd: 5000.0,
         approveLimitUsd: 5000.0,
         allowUnknownContracts: true,
-        allowUnlimitedApprove: true,
         actionExpiries: {},
       );
 
@@ -73,7 +67,6 @@ class PolicyProfile {
     double? swapLimitUsd,
     double? approveLimitUsd,
     bool? allowUnknownContracts,
-    bool? allowUnlimitedApprove,
     List<String>? trustedAddresses,
     List<String>? trustedContracts,
     Map<String, DateTime>? actionExpiries,
@@ -85,8 +78,6 @@ class PolicyProfile {
       approveLimitUsd: approveLimitUsd ?? this.approveLimitUsd,
       allowUnknownContracts:
           allowUnknownContracts ?? this.allowUnknownContracts,
-      allowUnlimitedApprove:
-          allowUnlimitedApprove ?? this.allowUnlimitedApprove,
       trustedAddresses: trustedAddresses ?? this.trustedAddresses,
       trustedContracts: trustedContracts ?? this.trustedContracts,
       actionExpiries: actionExpiries ?? this.actionExpiries,

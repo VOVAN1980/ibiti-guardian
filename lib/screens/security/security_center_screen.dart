@@ -284,7 +284,6 @@ class _SecurityCenterScreenState extends State<SecurityCenterScreen> {
         ),
         _StatusLine(
           text: t.t('securityAiLimitsLine', {
-            'tx': settings.perTxLimit.toStringAsFixed(0),
             'daily': settings.dailyLimit.toStringAsFixed(0),
           }),
         ),
