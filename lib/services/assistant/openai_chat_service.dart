@@ -24,6 +24,10 @@ import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/services/assistant/user_memory_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
+import 'package:ibiti_guardian/services/audit_log_service.dart';
+import 'package:ibiti_guardian/services/wallet/market_watchlist_service.dart';
+import 'package:ibiti_guardian/services/moralis/moralis_tx_history_service.dart';
+import 'package:ibiti_guardian/models/on_chain_tx.dart';
 
 /// Uses gpt-4o-mini to resolve user intent into structured JSON.
 class OpenAIChatService {
@@ -333,6 +337,71 @@ $personalContext
                   "Use when user asks general market questions like 'что на рынке', 'market overview', 'analyze the market', 'обзор рынка', 'какие тренды'. "
                   "Returns cached data — no external API calls needed."
         }
+      },
+      // ── Phase K: expanded knowledge tools ──────────────────────────────
+      {
+        "type": "function",
+        "function": {
+          "name": "get_transaction_history",
+          "description":
+              "Fetch the user's recent on-chain transaction history (last 10 transactions). "
+                  "Returns: hash, type (send/receive/swap/approval), token, value, date, success status. "
+                  "Use when user asks: 'когда я отправлял', 'история', 'last transactions', 'что было', 'кому переводил'."
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_audit_log",
+          "description":
+              "Fetch the session action log: recent executed operations (sends, swaps, revokes, network switches). "
+                  "Use when user asks: 'что я делал', 'what did I do', 'лог действий', 'мои операции', 'покажи лог'."
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_address_book",
+          "description":
+              "Fetch the user's saved contacts (address book). Returns list of {label, address}. "
+                  "Use when user asks: 'мои контакты', 'адресная книга', 'contacts', 'кому я отправлял', "
+                  "or when user mentions a name to send to (e.g. 'отправь Алисе')."
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_pending_transactions",
+          "description":
+              "Check if there are any in-flight (pending/submitted) transactions. "
+                  "Returns active tx details and recent tx history count. "
+                  "Use when user asks: 'есть что-то в обработке', 'pending', 'прошла ли транзакция', 'статус'."
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "manage_watchlist",
+          "description":
+              "Add or remove a token from the user's market watchlist (starred tokens). "
+                  "Use when user says: 'добавь в отслеживание', 'убери из вотчлиста', 'follow SOL', "
+                  "'звёздочку на BTC', 'watch ETH', 'unwatch DOGE'.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "action": {
+                "type": "string",
+                "enum": ["add", "remove"],
+                "description": "Whether to add or remove from watchlist."
+              },
+              "symbol": {
+                "type": "string",
+                "description": "Token symbol, e.g. BTC, ETH, SOL"
+              }
+            },
+            "required": ["action", "symbol"]
+          }
+        }
       }
     ];
     const actionToolNames = {
@@ -340,6 +409,7 @@ $personalContext
       'scan_security_risks',
       'panic_revoke_all',
       'safe_revoke_review',
+      'manage_watchlist',
     };
     final advertisedTools = allowActionTools
         ? tools
@@ -1060,6 +1130,166 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
           'timestamp': ts,
         });
 
+      // ── Phase K: expanded knowledge tool handlers ─────────────────────
+      case 'get_transaction_history':
+        _setActivity('Загружаю историю транзакций...');
+        if (!wallet.isConnected) {
+          _setActivity(null);
+          return '{"error": "Wallet disconnected"}';
+        }
+        try {
+          final page = await MoralisTxHistoryService.fetch(
+            address: wallet.address,
+            chainKey: wallet.chainKey,
+          );
+          final txList = page.transactions.take(10).map((tx) => {
+                'hash': tx.shortHash,
+                'type': tx.type.name,
+                'token': tx.tokenSymbol ?? (tx.type == OnChainTxType.swap
+                    ? '${tx.sellSymbol} → ${tx.buySymbol}'
+                    : 'native'),
+                'value': tx.type == OnChainTxType.swap
+                    ? '${tx.sellValue?.toStringAsFixed(4)} → ${tx.buyValue?.toStringAsFixed(4)}'
+                    : tx.value.toStringAsFixed(4),
+                'date': tx.blockTimestamp.toIso8601String(),
+                'success': tx.isSuccess,
+                'summary': tx.summary,
+              }).toList();
+          _setActivity(null);
+          return jsonEncode({
+            'transactions': txList,
+            'count': txList.length,
+            'chain': wallet.chainKey,
+            'timestamp': ts,
+          });
+        } catch (e) {
+          _setActivity(null);
+          return jsonEncode({'error': 'History fetch failed: $e'});
+        }
+
+      case 'get_audit_log':
+        _setActivity('Читаю лог действий...');
+        final entries = AuditLogService.instance.entries.take(10).map((e) => {
+              'action': e.actionLabel,
+              'summary': e.summary,
+              'success': e.result.success,
+              'source': e.executionSource.name,
+              'time': e.initiatedAt.toIso8601String(),
+            }).toList();
+        _setActivity(null);
+        return jsonEncode({
+          'entries': entries,
+          'count': entries.length,
+          'total_session': AuditLogService.instance.entries.length,
+          'timestamp': ts,
+        });
+
+      case 'get_address_book':
+        _setActivity('Загружаю контакты...');
+        final contacts = AddressBookService.instance.entries.map((e) {
+          final addr = e.address;
+          final short = addr.length > 10
+              ? '${addr.substring(0, 6)}...${addr.substring(addr.length - 4)}'
+              : addr;
+          return {'label': e.label, 'address': short, 'full_address': addr};
+        }).toList();
+        _setActivity(null);
+        return jsonEncode({
+          'contacts': contacts,
+          'count': contacts.length,
+          'timestamp': ts,
+        });
+
+      case 'get_pending_transactions':
+        _setActivity('Проверяю статус транзакций...');
+        final reg = TxRegistry.instance;
+        final active = reg.activeTx;
+        final recentTerminal = reg.history
+            .where((e) => e.isTerminal)
+            .toList()
+            .reversed
+            .take(5)
+            .map((e) => {
+                  'hash': e.txHash.length > 16
+                      ? '${e.txHash.substring(0, 10)}...${e.txHash.substring(e.txHash.length - 6)}'
+                      : e.txHash,
+                  'status': e.status.name,
+                  'operation': e.operationLabel,
+                  'asset': e.assetLabel,
+                  'time': e.timestamp.toIso8601String(),
+                })
+            .toList();
+        _setActivity(null);
+        return jsonEncode({
+          'has_pending': reg.hasPending,
+          'active_tx': active != null
+              ? {
+                  'hash': active.txHash.length > 16
+                      ? '${active.txHash.substring(0, 10)}...${active.txHash.substring(active.txHash.length - 6)}'
+                      : active.txHash,
+                  'status': active.status.name,
+                  'operation': active.operationLabel,
+                  'asset': active.assetLabel,
+                }
+              : null,
+          'recent_completed': recentTerminal,
+          'total_history': reg.history.length,
+          'timestamp': ts,
+        });
+
+      case 'manage_watchlist':
+        try {
+          final args = jsonDecode(argumentsJson);
+          final action = args['action']?.toString() ?? 'add';
+          final symbol = (args['symbol']?.toString() ?? '').toUpperCase();
+          if (symbol.isEmpty) {
+            return jsonEncode({'error': 'Symbol is required'});
+          }
+
+          final isAdd = action == 'add';
+          _setActivity(isAdd
+              ? 'Добавляю $symbol в отслеживание...'
+              : 'Убираю $symbol из отслеживания...');
+
+          // MarketWatchlistService uses asset IDs (lowercase symbol for simplicity)
+          final assetId = symbol.toLowerCase();
+          final alreadyWatched =
+              MarketWatchlistService.instance.contains(assetId);
+
+          if (isAdd && alreadyWatched) {
+            _setActivity(null);
+            return jsonEncode({
+              'success': true,
+              'action': 'already_watched',
+              'symbol': symbol,
+              'message': '$symbol is already in your watchlist.',
+              'timestamp': ts,
+            });
+          }
+          if (!isAdd && !alreadyWatched) {
+            _setActivity(null);
+            return jsonEncode({
+              'success': true,
+              'action': 'not_in_watchlist',
+              'symbol': symbol,
+              'message': '$symbol is not in your watchlist.',
+              'timestamp': ts,
+            });
+          }
+
+          await MarketWatchlistService.instance.toggle(assetId);
+          _setActivity(null);
+          return jsonEncode({
+            'success': true,
+            'action': action,
+            'symbol': symbol,
+            'timestamp': ts,
+          });
+        } catch (e) {
+          _setActivity(null);
+          return jsonEncode({'error': 'Watchlist operation failed: $e'});
+        }
+
       default:
         return '{"error": "Unknown tool: $name"}';
     }
@@ -1080,6 +1310,11 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
         'read_url',
         'scan_security_risks',
         'get_market_overview',
+        // Phase K: expanded knowledge read-only tools
+        'get_transaction_history',
+        'get_audit_log',
+        'get_address_book',
+        'get_pending_transactions',
       };
       return readOnlyTools.contains(toolName);
     }
