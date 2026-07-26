@@ -100,8 +100,11 @@ class OpenAIChatService {
 
   /// Neural Intent Resolver: converts natural language into structured JSON.
   /// Now includes stateful memory and automated language recovery.
-  Future<Map<String, dynamic>> solve(String input,
-      [String languageCode = 'ru']) async {
+  Future<Map<String, dynamic>> solve(
+    String input, [
+    String languageCode = 'ru',
+    bool allowActionTools = true,
+  ]) async {
     await init();
 
     if (_apiKey == null) {
@@ -123,7 +126,15 @@ class OpenAIChatService {
 
     final systemPrompt = '''
 You are IBITI Guardian, an AI assistant and voice OS for the IBITI Guardian app.
-App language is: $languageCode. Always respond in the user's language.
+The preferred app language is: $languageCode.
+Always infer the language of the CURRENT user message and answer in that
+language. Understand mixed language and surzhyk naturally. Use the preferred
+app language only when the current message does not provide enough evidence.
+${allowActionTools ? '' : '''
+This is a conversation-only turn. The user has not authorized an app action.
+Answer or explain naturally. Do not propose, simulate, or claim that you opened,
+changed, bought, sold, sent, swapped, scanned, revoked, or executed anything.
+'''}
 
 ━━━ OUTPUT FORMAT (STRICT JSON) ━━━
 You must return a JSON object with this exact schema:
@@ -324,6 +335,19 @@ $personalContext
         }
       }
     ];
+    const actionToolNames = {
+      'manage_trusted_list',
+      'scan_security_risks',
+      'panic_revoke_all',
+      'safe_revoke_review',
+    };
+    final advertisedTools = allowActionTools
+        ? tools
+        : tools.where((tool) {
+            final function = tool['function'];
+            if (function is! Map) return false;
+            return !actionToolNames.contains(function['name']);
+          }).toList();
 
     // Inject a tool-routing hint as a system message (NOT in user input).
     // Putting it in user content risks the model echoing it back.
@@ -353,7 +377,7 @@ $personalContext
           // because it conflicts with 'tools'. With tools active, the model
           // returns tool_calls OR a final message. We enforce JSON via the system prompt.
           'messages': currentMessages,
-          'tools': tools,
+          'tools': advertisedTools,
           'tool_choice': 'auto',
         };
 
@@ -654,7 +678,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 
       final body = jsonDecode(response.body);
       final content = body['choices'][0]['message']['content'] as String;
-      
+
       Map<String, dynamic>? decoded;
       try {
         decoded = Map<String, dynamic>.from(jsonDecode(content) as Map);

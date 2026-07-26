@@ -26,9 +26,11 @@ class TranscriptionService {
 
   /// Transcribe [audioBytes] (m4a/aac format from MicRecorderService).
   /// [languageCode] hint speeds up Whisper (e.g. 'ru', 'en').
+  /// When [autoDetectLanguage] is true no language hint is sent, allowing a
+  /// user to switch languages without changing the app setting first.
   /// Returns the transcript text, or null on failure.
   Future<String?> transcribe(Uint8List audioBytes,
-      {String? languageCode}) async {
+      {String? languageCode, bool autoDetectLanguage = false}) async {
     final apiKey = await ApiKeyProvider.getOpenAiKey();
     if (apiKey == null) {
       _log.w('No API key available');
@@ -36,26 +38,33 @@ class TranscriptionService {
     }
 
     // Detect language from settings if not explicitly provided.
-    final lang = languageCode ??
-        SettingsService.instance.settings.languageCode
-            .trim()
-            .toLowerCase()
-            .split('_')
-            .first;
+    final String? lang = autoDetectLanguage
+        ? null
+        : languageCode ??
+            SettingsService.instance.settings.languageCode
+                .trim()
+                .toLowerCase()
+                .split('_')
+                .first;
 
-    _log.d('Uploading ${audioBytes.length}B to Whisper (lang=$lang)');
+    _log.d(
+      'Uploading ${audioBytes.length}B to Whisper '
+      '(lang=${lang ?? 'auto'})',
+    );
 
     try {
       final request = http.MultipartRequest('POST', Uri.parse(_endpoint))
         ..headers['Authorization'] = 'Bearer $apiKey'
         ..fields['model'] = _model
         ..fields['response_format'] = 'text'
-        ..fields['language'] = lang
         ..files.add(http.MultipartFile.fromBytes(
           'file',
           audioBytes,
           filename: 'audio.m4a',
         ));
+      if (lang != null && lang.isNotEmpty) {
+        request.fields['language'] = lang;
+      }
 
       final streamed =
           await request.send().timeout(const Duration(seconds: 30));
@@ -74,12 +83,14 @@ class TranscriptionService {
             ..headers['Authorization'] = 'Bearer $apiKey'
             ..fields['model'] = _model
             ..fields['response_format'] = 'text'
-            ..fields['language'] = lang
             ..files.add(http.MultipartFile.fromBytes(
               'file',
               audioBytes,
               filename: 'audio.m4a',
             ));
+          if (lang != null && lang.isNotEmpty) {
+            retryReq.fields['language'] = lang;
+          }
           final retryRes = await retryReq.send().timeout(const Duration(seconds: 30));
           final retryBody = await retryRes.stream.bytesToString();
           if (retryRes.statusCode == 200) {

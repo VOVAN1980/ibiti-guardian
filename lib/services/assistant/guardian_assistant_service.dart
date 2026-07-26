@@ -311,6 +311,8 @@ class GuardianAssistantService {
     'солана': 'SOL',
     'solana': 'SOL',
     'usdt': 'USDT',
+    'юсдт': 'USDT',
+    'ю эс ди ти': 'USDT',
     'тезер': 'USDT',
     'tether': 'USDT',
     'usdc': 'USDC',
@@ -339,6 +341,137 @@ class GuardianAssistantService {
       if (lower.contains(sym)) return sym.toUpperCase();
     }
     return null;
+  }
+
+  /// Read-only balance questions must never enter the voice trade resolver.
+  ///
+  /// The trade resolver intentionally has a narrow buy/sell schema. Sending a
+  /// question such as "сколько у меня USDT?" through that schema can coerce it
+  /// into a buy proposal before the existing balance fast path gets a chance
+  /// to answer. Explicit execution intents remain on their original route.
+  static bool _isExplicitBalanceReadQuestion(String input) {
+    final lower = input.trim().toLowerCase();
+    final localIntent = IntentParser.parse(input);
+    if (localIntent.isExecutionIntent || _isTradingCommand(lower)) {
+      return false;
+    }
+
+    return lower.contains('баланс') ||
+        lower.contains('balance') ||
+        lower.contains('сколько у меня') ||
+        lower.contains('сколько у нас') ||
+        lower.contains('сколько usdt') ||
+        lower.contains('сколько юсдт') ||
+        lower.contains('how much do i have') ||
+        lower.contains('what do i have');
+  }
+
+  /// Returns true only when a voice transcript contains an explicit request
+  /// to perform an app action.
+  ///
+  /// Mentioning an action in a question or discussion is not authorization.
+  /// For example, "Стоит ли покупать SOL?" and "Чем Safe Scan отличается от
+  /// Panic Mode?" must remain ordinary conversation. Existing deterministic
+  /// action routes are only enabled for imperative or explicit polite
+  /// requests such as "Купи SOL" or "Можешь открыть кошелёк?".
+  static bool _isExplicitVoiceActionRequest(String input) {
+    final lower = input.trim().toLowerCase();
+    if (lower.isEmpty) return false;
+
+    final informationalStart = RegExp(
+      r'^(что|чем|как|почему|зачем|когда|где|кто|какой|какая|какие|'
+      r'стоит ли|можно ли|нужно ли|расскажи|объясни|поясни|'
+      r'what|why|how|when|where|who|which|should|is it|tell me|explain)'
+      r'(?:\s|[?!,.]|$)',
+      caseSensitive: false,
+    );
+
+    const actionVerbs = <String>[
+      'купи',
+      'продай',
+      'слей',
+      'обменяй',
+      'поменяй',
+      'отправь',
+      'переведи',
+      'открой',
+      'покажи',
+      'закрой',
+      'запусти',
+      'включи',
+      'выключи',
+      'установи',
+      'измени',
+      'создай',
+      'отмени',
+      'сканируй',
+      'проверь',
+      'отзови',
+      'заблокируй',
+      'buy',
+      'sell',
+      'swap',
+      'send',
+      'transfer',
+      'receive',
+      'open',
+      'show',
+      'close',
+      'start',
+      'enable',
+      'disable',
+      'set',
+      'change',
+      'create',
+      'cancel',
+      'scan',
+      'check',
+      'revoke',
+      'block',
+    ];
+
+    bool beginsWithAction(String text) {
+      return actionVerbs.any(
+        (verb) => RegExp(
+          '^${RegExp.escape(verb)}' r'(?:\s|[?!,.]|$)',
+          caseSensitive: false,
+        ).hasMatch(text),
+      );
+    }
+
+    final politePrefix = RegExp(
+      r'^(пожалуйста[,\s]+|давай\s+|можешь(?:\s+ли)?\s+|'
+      r'не мог(?:ла|ли)? бы ты\s+|'
+      r'please[,\s]+|can you\s+|could you\s+|would you\s+)',
+      caseSensitive: false,
+    );
+
+    const explicitShorthands = {
+      'настройки кошелька',
+      'wallet settings',
+    };
+
+    // A command may follow an ordinary sentence, for example:
+    // "Мы тестируем. Купи SOL на 5". Inspect each sentence independently so
+    // prompt-injection preambles cannot hide a real imperative.
+    final sentences = lower
+        .split(RegExp(r'[.!?]+'))
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty);
+
+    for (final sentence in sentences) {
+      if (informationalStart.hasMatch(sentence)) continue;
+      if (explicitShorthands.contains(sentence)) return true;
+      if (beginsWithAction(sentence)) return true;
+
+      final politeMatch = politePrefix.firstMatch(sentence);
+      if (politeMatch != null &&
+          beginsWithAction(sentence.substring(politeMatch.end).trimLeft())) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   // ── Modal Open Fast-Path ──────────────────────────────────────────────────
@@ -2485,6 +2618,8 @@ class GuardianAssistantService {
 
     // 1e. Vocabulary expansion — rewrite slang before the rest of the pipeline
     final expanded = memory.expandVocab(trimmed);
+    final voiceConversationOnly = source == AssistantInputSource.voice &&
+        !_isExplicitVoiceActionRequest(expanded);
     // -- Pipeline: mode/limits checks -> fast-path -> intent -> LLM --------
 
     if (_isModeStatusQuestion(expanded)) {
@@ -2503,12 +2638,27 @@ class GuardianAssistantService {
     // IntentParser would match 'отправ' → sendAsset (empty params) → orchestrate
     // would fail with "не удалось создать транзакцию". This fast-path dispatches
     // the actual UI commands and returns a friendly voice ack.
-    final modalOpenFastPath = _modalOpenFastPath(expanded, detectedLang);
-    if (modalOpenFastPath != null) return modalOpenFastPath;
+    if (!voiceConversationOnly) {
+      final modalOpenFastPath = _modalOpenFastPath(expanded, detectedLang);
+      if (modalOpenFastPath != null) return modalOpenFastPath;
+    }
+
+    // A voice balance question is read-only. Give the existing balance fast
+    // path first refusal and, even if live portfolio data is unavailable,
+    // never coerce the question through the buy/sell-only trade resolver.
+    final isVoiceBalanceRead = source == AssistantInputSource.voice &&
+        _isExplicitBalanceReadQuestion(expanded);
+    if (isVoiceBalanceRead) {
+      final balanceFastPath =
+          await _fastPathCommand(expanded, detectedLang, source);
+      if (balanceFastPath != null) return balanceFastPath;
+    }
 
     // ── Primary OpenAI & Local Fallback voice/chat trade intent pipeline ──────
-    final isVoiceOrChat = source == AssistantInputSource.voice || source == AssistantInputSource.marketChat;
-    if (isVoiceOrChat) {
+    final isVoiceOrChat =
+        (source == AssistantInputSource.voice && !voiceConversationOnly) ||
+            source == AssistantInputSource.marketChat;
+    if (isVoiceOrChat && !isVoiceBalanceRead) {
       IntentData? resolvedTradeIntent;
       bool hasTradeIntent = false;
 
@@ -2606,7 +2756,7 @@ class GuardianAssistantService {
     final parsedIntent =
         _resolveAddressBookRecipient(IntentParser.parse(expanded));
 
-    if (parsedIntent.type != IntentType.unknown) {
+    if (parsedIntent.type != IntentType.unknown && !voiceConversationOnly) {
       if (parsedIntent.isExecutionIntent &&
           AiControlService.instance.settings.mode == AiMode.manual) {
         return _manualExecutionBlockedResponse(detectedLang);
@@ -2700,9 +2850,11 @@ class GuardianAssistantService {
       }
     }
 
-    final fastPath = await _fastPathCommand(expanded, detectedLang, source);
-    if (fastPath != null) {
-      return fastPath;
+    if (!voiceConversationOnly) {
+      final fastPath = await _fastPathCommand(expanded, detectedLang, source);
+      if (fastPath != null) {
+        return fastPath;
+      }
     }
 
     // LLM fallback — panic/safe/scan are already handled by _fastPathCommand()
@@ -2711,23 +2863,31 @@ class GuardianAssistantService {
     // Market context is compact — only what the assistant needs to reason.
     // Built from cache (no new API calls).
     final enrichedInput = _enrichWithMarketContext(expanded);
-    final aiResult = await _openai.solve(enrichedInput, detectedLang);
-    final directive = AssistantDirective.fromJson(aiResult);
-
-    final mergedUiCommands = _mergeUiCommands(
-      _mergeUiCommands(
-        directive.uiCommands,
-        _fallbackUiCommandsForIntent(directive.explicitIntent),
-      ),
-      _fallbackUiCommandsForText(expanded),
+    final aiResult = await _openai.solve(
+      enrichedInput,
+      detectedLang,
+      !voiceConversationOnly,
     );
+    final directive = AssistantDirective.fromJson(aiResult);
+    final effectiveIntent =
+        voiceConversationOnly ? null : directive.explicitIntent;
+
+    final mergedUiCommands = voiceConversationOnly
+        ? const <UICommand>[]
+        : _mergeUiCommands(
+            _mergeUiCommands(
+              directive.uiCommands,
+              _fallbackUiCommandsForIntent(effectiveIntent),
+            ),
+            _fallbackUiCommandsForText(expanded),
+          );
     final filteredUiCommands = _commandsAllowedForMode(
-      directive.explicitIntent,
+      effectiveIntent,
       mergedUiCommands,
     );
 
-    if (directive.explicitIntent != null &&
-        directive.explicitIntent!.isExecutionIntent &&
+    if (effectiveIntent != null &&
+        effectiveIntent.isExecutionIntent &&
         AiControlService.instance.settings.mode == AiMode.manual) {
       return _manualExecutionBlockedResponse(detectedLang);
     }
@@ -2740,12 +2900,12 @@ class GuardianAssistantService {
       UICommandBus.instance.dispatchAll(permFilteredCmds);
     }
 
-    final String actionName = directive.explicitIntent != null
-        ? directive.explicitIntent!.type.name
+    final String actionName = effectiveIntent != null
+        ? effectiveIntent.type.name
         : 'CHAT';
 
     AssistantSessionContext.instance.update(
-      symbol: directive.explicitIntent?.tokenSymbol,
+      symbol: effectiveIntent?.tokenSymbol,
       intentType: actionName,
       topic: expanded,
     );
@@ -2769,7 +2929,7 @@ class GuardianAssistantService {
 
     if (mode == AssistantToneMode.companion ||
         mode == AssistantToneMode.analyst ||
-        directive.explicitIntent == null) {
+        effectiveIntent == null) {
       String finalDisplay = directive.displayMessage;
       String finalSpeech = directive.speechText;
       if (finalDisplay.isEmpty) {
@@ -2785,7 +2945,7 @@ class GuardianAssistantService {
     }
 
     // Operator Mode
-    final intent = directive.explicitIntent!;
+    final intent = effectiveIntent!;
 
     // Resolve specific tokens if it's a swap to fill missing backend data for demo
     if (intent.type == IntentType.swapAsset &&
@@ -3733,7 +3893,7 @@ class GuardianAssistantService {
         symbol = rawSymbol.toUpperCase();
       }
     }
-    
+
     // Resolve slang/aliases if any
     if (symbol != null) {
       final canonicalSym = _assetAliases[symbol.toLowerCase()];
@@ -4011,7 +4171,7 @@ class GuardianAssistantService {
         'price': price,
         'quoteAsset': quoteAsset,
       };
-      
+
       final modalCmd = UICommand(
         type: UICommandType.openModal,
         target: 'cex_trade',
@@ -4176,7 +4336,7 @@ class GuardianAssistantService {
       if (!isConnected) continue;
       final adapter = ExchangeOrderService.instance.adapterFor(ex);
       if (adapter == null) continue;
-      
+
       String quoteAsset = 'USDT';
       if (ex == 'okx') {
         final region = await ExchangeAccountStore.instance.getOkxRegion() ?? 'global';
@@ -4186,7 +4346,7 @@ class GuardianAssistantService {
       }
       final price = _resolveLivePrice(exchangeId: ex, baseSymbol: tokenSymbol, quoteAsset: quoteAsset);
       if (price == null || price <= 0.0) continue;
-      
+
       return {
         'exchangeId': ex,
         'quoteAsset': quoteAsset,

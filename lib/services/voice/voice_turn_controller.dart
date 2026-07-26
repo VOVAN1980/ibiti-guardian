@@ -8,6 +8,7 @@ import 'package:ibiti_guardian/services/voice/tts_service.dart';
 import 'package:ibiti_guardian/services/voice/speech_formatter.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/services/assistant/assistant_session_context.dart';
+import 'package:ibiti_guardian/services/assistant/language_detector.dart';
 
 /// State of a single voice interaction turn.
 enum VoiceTurnState {
@@ -38,6 +39,10 @@ class VoiceTurnController extends ChangeNotifier {
   static final VoiceTurnController instance = VoiceTurnController._();
 
   static const _log = GuardianLogger('VoiceTurn');
+  static const _debugTranscriptEnabled = bool.fromEnvironment(
+    'GUARDIAN_DEBUG_TRANSCRIPT',
+    defaultValue: false,
+  );
 
   /// App language check — used for user-facing error messages.
   bool get _isRu =>
@@ -226,17 +231,11 @@ class VoiceTurnController extends ChangeNotifier {
     final pipelineStart = DateTime.now();
 
     // ── Step 1: Transcribe ────────────────────────────────────────────────────
-    final langCode = SettingsService.instance.settings.languageCode
-        .trim()
-        .toLowerCase()
-        .split('_')
-        .first;
-
     final sttStart = DateTime.now();
     String? transcript;
     try {
       transcript = await _stt
-          .transcribe(audioBytes, languageCode: langCode)
+          .transcribe(audioBytes, autoDetectLanguage: true)
           .timeout(_sttTimeout);
     } on TimeoutException {
       _log.w('STT timeout after ${_sttTimeout.inSeconds}s');
@@ -280,7 +279,10 @@ class VoiceTurnController extends ChangeNotifier {
     }
 
     _lastTranscript = transcript;
-    _log.d('Transcript received: "$transcript"');
+    final conversationLangCode = LanguageDetector.detect(transcript);
+    if (_debugTranscriptEnabled) {
+      _log.d('[GuardianTranscript] USER: $transcript');
+    }
 
     // ── Step 2: Process through Guardian pipeline ─────────────────────────────
     _setState(VoiceTurnState.thinking);
@@ -289,7 +291,11 @@ class VoiceTurnController extends ChangeNotifier {
     String speechText;
     try {
       final response = await GuardianAssistantService.instance
-          .process(transcript, languageCode: langCode, source: AssistantInputSource.voice)
+          .process(
+            transcript,
+            languageCode: conversationLangCode,
+            source: AssistantInputSource.voice,
+          )
           .timeout(_llmTimeout);
 
       // Guard after every await.
@@ -301,12 +307,16 @@ class VoiceTurnController extends ChangeNotifier {
       final rawText = response.speechText.isNotEmpty
           ? response.speechText
           : response.message;
+      if (_debugTranscriptEnabled) {
+        _log.d('[GuardianTranscript] GUARDIAN: $rawText');
+      }
 
       // Smart truncation: cut at sentence boundary, not mid-word.
       speechText = _smartTruncate(rawText, 1200);
 
       // Normalize for natural speech: numbers, crypto, markdown, pauses.
-      speechText = SpeechFormatter.normalize(speechText, lang: langCode);
+      speechText =
+          SpeechFormatter.normalize(speechText, lang: conversationLangCode);
       _lastResponse = speechText;
     } on TimeoutException {
       _log.w('LLM timeout after ${_llmTimeout.inSeconds}s');

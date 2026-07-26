@@ -21,6 +21,10 @@ import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/services/assistant/openai_chat_service.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/models/app_settings.dart';
+import 'package:ibiti_guardian/models/portfolio_summary.dart';
+import 'package:ibiti_guardian/models/wallet_asset.dart';
+import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
+import 'package:ibiti_guardian/services/voice/transcription_service.dart';
 
 class MockExchangeExecutionAdapter implements ExchangeExecutionAdapter {
   final Map<String, double> balances = {};
@@ -1226,7 +1230,7 @@ void main() {
       ScreenContextService.instance.clearFocusedToken();
     });
 
-    test('solveTradeIntent intercepts capability questions correctly', () async {
+    test('voice capability questions use the conversational brain', () async {
       final overrides = MockHttpOverrides();
       await HttpOverrides.runWithHttpOverrides(() async {
         overrides.mockResponses['completions'] = jsonEncode({
@@ -1234,8 +1238,10 @@ void main() {
             {
               'message': {
                 'content': jsonEncode({
-                  'type': 'capabilityQuestion',
-                  'confidence': 1.0,
+                  'displayMessage': 'CAPABILITY_EXPLANATION',
+                  'speechText': 'CAPABILITY_EXPLANATION',
+                  'uiCommands': <Map<String, dynamic>>[],
+                  'explicitIntent': null,
                 })
               }
             }
@@ -1255,7 +1261,303 @@ void main() {
         );
 
         expect(response.type, ResponseType.info);
-        expect(response.message, contains('В Guarded я открою окно покупки для подтверждения'));
+        expect(response.message, 'CAPABILITY_EXPLANATION');
+        expect(dispatchedCommands, isEmpty);
+        expect(overrides.requestedUrls, hasLength(1));
+      }, overrides);
+    });
+
+    test(
+        'voice balance questions bypass trade resolver and never open a buy flow',
+        () async {
+      final overrides = MockHttpOverrides();
+      await HttpOverrides.runWithHttpOverrides(() async {
+        // If the balance guard fails, this deliberately wrong provider result
+        // would turn the read-only question into a USDT buy intent.
+        overrides.mockResponses['completions'] = jsonEncode({
+          'choices': [
+            {
+              'message': {
+                'content': jsonEncode({
+                  'type': 'buyAsset',
+                  'tokenSymbol': 'USDT',
+                  'amount': 10,
+                  'isQuantity': false,
+                  'confidence': 1.0,
+                })
+              }
+            }
+          ]
+        });
+
+        SettingsService.instance.settingsForTest = AppSettings(
+          openaiApiKey: 'mock_key',
+          isNeuralOperatorEnabled: true,
+        );
+        await OpenAIChatService.instance.init();
+
+        VaultPortfolioListener.instance.setSummaryForTest(PortfolioSummary(
+          totalBalanceUsd: 321.5,
+          assetsCount: 1,
+          allAssets: [
+            WalletAsset(
+              name: 'Tether USD',
+              symbol: 'USDT',
+              address: 'usdt_address',
+              balance: 321.5,
+              logoUrl: '',
+              priceUsd: 1.0,
+              valueUsd: 321.5,
+              decimals: 6,
+              chainId: 56,
+              chainKey: 'bsc',
+            ),
+          ],
+          address: '0x9999999999999999999999999999999999999999',
+          networkName: 'BSC',
+          chainKey: 'bsc',
+        ));
+
+        for (final input in [
+          'сколько у меня USDT?',
+          'сколько у меня юсдт?',
+          'какой баланс USDT?',
+        ]) {
+          overrides.requestedUrls.clear();
+          dispatchedCommands.clear();
+          mockMexc.ordersPlaced.clear();
+
+          final response = await GuardianAssistantService.instance.process(
+            input,
+            source: AssistantInputSource.voice,
+          );
+
+          expect(response.type, ResponseType.info, reason: input);
+          expect(response.message, contains('USDT'), reason: input);
+          expect(response.message, contains('321.5000'), reason: input);
+          expect(overrides.requestedUrls, isEmpty, reason: input);
+          expect(dispatchedCommands, isEmpty, reason: input);
+          expect(mockMexc.ordersPlaced, isEmpty, reason: input);
+        }
+      }, overrides);
+    });
+
+    test(
+        'voice discussion uses the conversational brain and suppresses action output',
+        () async {
+      final overrides = MockHttpOverrides();
+      await HttpOverrides.runWithHttpOverrides(() async {
+        // The response deliberately contains a hallucinated buy intent and UI
+        // command. A conversational voice turn must keep only its text.
+        overrides.mockResponses['completions'] = jsonEncode({
+          'choices': [
+            {
+              'message': {
+                'content': jsonEncode({
+                  'type': 'buyAsset',
+                  'confidence': 1.0,
+                  'tokenSymbol': 'SOL',
+                  'amount': 20,
+                  'displayMessage': 'SOL_SELL_DISCUSSION',
+                  'speechText': 'SOL_SELL_DISCUSSION',
+                  'uiCommands': [
+                    {'type': 'openModal', 'target': 'wallet_buy'}
+                  ],
+                  'explicitIntent': {
+                    'type': 'buyAsset',
+                    'params': {
+                      'tokenSymbol': 'SOL',
+                      'amount': 20,
+                      'isQuantity': false,
+                    }
+                  },
+                })
+              }
+            }
+          ]
+        });
+
+        OpenAIChatService.instance.clearHistory();
+        SettingsService.instance.settingsForTest = AppSettings(
+          openaiApiKey: 'mock_key',
+          isNeuralOperatorEnabled: true,
+        );
+        await OpenAIChatService.instance.init();
+        dispatchedCommands.clear();
+        mockMexc.ordersPlaced.clear();
+
+        final response = await GuardianAssistantService.instance.process(
+          'Почему люди продают SOL?',
+          languageCode: 'ru',
+          source: AssistantInputSource.voice,
+        );
+
+        expect(response.message, 'SOL_SELL_DISCUSSION');
+        expect(response.uiCommands, isEmpty);
+        expect(dispatchedCommands, isEmpty);
+        expect(mockMexc.ordersPlaced, isEmpty);
+        expect(overrides.requestedUrls, hasLength(1));
+
+        final request =
+            jsonDecode(overrides.requestBodies.single) as Map<String, dynamic>;
+        final tools = request['tools'] as List<dynamic>;
+        final toolNames = tools
+            .map((tool) =>
+                ((tool as Map<String, dynamic>)['function']
+                    as Map<String, dynamic>)['name'])
+            .toSet();
+        expect(toolNames, contains('web_search'));
+        expect(toolNames, contains('get_market_overview'));
+        expect(toolNames, isNot(contains('panic_revoke_all')));
+        expect(toolNames, isNot(contains('safe_revoke_review')));
+        expect(toolNames, isNot(contains('manage_trusted_list')));
+      }, overrides);
+    });
+
+    test(
+        'voice Safe Scan versus Panic question never opens a security modal',
+        () async {
+      final overrides = MockHttpOverrides();
+      await HttpOverrides.runWithHttpOverrides(() async {
+        overrides.mockResponses['completions'] = jsonEncode({
+          'choices': [
+            {
+              'message': {
+                'content': jsonEncode({
+                  'displayMessage': 'SAFE_PANIC_EXPLANATION',
+                  'speechText': 'SAFE_PANIC_EXPLANATION',
+                  'uiCommands': [
+                    {'type': 'openModal', 'target': 'panic'}
+                  ],
+                  'explicitIntent': {
+                    'type': 'scanApprovals',
+                    'params': <String, dynamic>{},
+                  },
+                })
+              }
+            }
+          ]
+        });
+
+        OpenAIChatService.instance.clearHistory();
+        SettingsService.instance.settingsForTest = AppSettings(
+          openaiApiKey: 'mock_key',
+          isNeuralOperatorEnabled: true,
+        );
+        await OpenAIChatService.instance.init();
+        dispatchedCommands.clear();
+
+        final response = await GuardianAssistantService.instance.process(
+          'Чем Safe Scan отличается от Panic Mode?',
+          languageCode: 'ru',
+          source: AssistantInputSource.voice,
+        );
+
+        expect(response.message, 'SAFE_PANIC_EXPLANATION');
+        expect(response.uiCommands, isEmpty);
+        expect(dispatchedCommands, isEmpty);
+        expect(overrides.requestedUrls, hasLength(1));
+      }, overrides);
+    });
+
+    test('voice question about buying is not a buy command', () async {
+      final overrides = MockHttpOverrides();
+      await HttpOverrides.runWithHttpOverrides(() async {
+        overrides.mockResponses['completions'] = jsonEncode({
+          'choices': [
+            {
+              'message': {
+                'content': jsonEncode({
+                  'displayMessage': 'SOL_BUY_EXPLANATION',
+                  'speechText': 'SOL_BUY_EXPLANATION',
+                  'uiCommands': <Map<String, dynamic>>[],
+                  'explicitIntent': null,
+                })
+              }
+            }
+          ]
+        });
+
+        OpenAIChatService.instance.clearHistory();
+        SettingsService.instance.settingsForTest = AppSettings(
+          openaiApiKey: 'mock_key',
+          isNeuralOperatorEnabled: true,
+        );
+        await OpenAIChatService.instance.init();
+        dispatchedCommands.clear();
+        mockMexc.ordersPlaced.clear();
+
+        final response = await GuardianAssistantService.instance.process(
+          'Как купить SOL и какие здесь риски?',
+          languageCode: 'ru',
+          source: AssistantInputSource.voice,
+        );
+
+        expect(response.message, 'SOL_BUY_EXPLANATION');
+        expect(dispatchedCommands, isEmpty);
+        expect(mockMexc.ordersPlaced, isEmpty);
+        expect(overrides.requestedUrls, hasLength(1));
+      }, overrides);
+    });
+
+    test('voice transcription auto-detect does not force app language',
+        () async {
+      final overrides = MockHttpOverrides();
+      await HttpOverrides.runWithHttpOverrides(() async {
+        overrides.mockResponses['audio/transcriptions'] = 'hello';
+        SettingsService.instance.settingsForTest = AppSettings(
+          languageCode: 'ru',
+          openaiApiKey: 'mock_key',
+        );
+
+        final transcript = await TranscriptionService.instance.transcribe(
+          Uint8List.fromList(const [1, 2, 3, 4]),
+          autoDetectLanguage: true,
+        );
+
+        expect(transcript, 'hello');
+        expect(overrides.requestedUrls.single, contains('audio/transcriptions'));
+        expect(overrides.requestBodies.single, contains('name="model"'));
+        expect(overrides.requestBodies.single, isNot(contains('name="language"')));
+      }, overrides);
+    });
+
+    test('voice explicit buy still reaches the trade resolver', () async {
+      final overrides = MockHttpOverrides();
+      await HttpOverrides.runWithHttpOverrides(() async {
+        overrides.mockResponses['completions'] = jsonEncode({
+          'choices': [
+            {
+              'message': {
+                'content': jsonEncode({
+                  'type': 'buyAsset',
+                  'tokenSymbol': 'SOL',
+                  'amount': 20,
+                  'isQuantity': false,
+                  'confidence': 1.0,
+                })
+              }
+            }
+          ]
+        });
+
+        SettingsService.instance.settingsForTest = AppSettings(
+          openaiApiKey: 'mock_key',
+          isNeuralOperatorEnabled: true,
+        );
+        await OpenAIChatService.instance.init();
+        mockMexc.balances['USDT'] = 200.0;
+
+        final response = await GuardianAssistantService.instance.process(
+          'купи SOL на 20 долларов',
+          source: AssistantInputSource.voice,
+        );
+
+        expect(
+          overrides.requestedUrls.any((url) => url.contains('completions')),
+          true,
+        );
+        expect(response.type, isNot(ResponseType.error));
       }, overrides);
     });
   });
