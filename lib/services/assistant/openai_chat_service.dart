@@ -17,8 +17,6 @@ import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 
 /// OpenAI Chat service — replaces GeminiService entirely.
 import 'package:ibiti_guardian/services/assistant/language_detector.dart';
-import 'package:ibiti_guardian/services/policy/policy_profile_store.dart'
-    as policy_store;
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
@@ -219,35 +217,6 @@ $personalContext
       {
         "type": "function",
         "function": {
-          "name": "manage_trusted_list",
-          "description":
-              "Add or remove a specific blockchain address or contract from the user's trusted whitelist (Trust List). Use when user asks to 'trust this address', 'whiten contact', or 'remove from trusted'.",
-          "parameters": {
-            "type": "object",
-            "properties": {
-              "action": {
-                "type": "string",
-                "enum": ["add", "remove"],
-                "description": "Whether to add or remove the address."
-              },
-              "address": {
-                "type": "string",
-                "description": "The 0x blockchain address."
-              },
-              "type": {
-                "type": "string",
-                "enum": ["address", "contract"],
-                "description":
-                    "Whether it's a person/wallet (address) or a smart contract (contract)."
-              }
-            },
-            "required": ["action", "address", "type"]
-          }
-        }
-      },
-      {
-        "type": "function",
-        "function": {
           "name": "get_fiat_rate",
           "description":
               "Fetch the CURRENT real-time exchange rate between any two fiat currencies (e.g. USD to UAH, USD to EUR, EUR to GBP). Always call this when user asks about currency rates.",
@@ -405,7 +374,6 @@ $personalContext
       }
     ];
     const actionToolNames = {
-      'manage_trusted_list',
       'scan_security_risks',
       'panic_revoke_all',
       'safe_revoke_review',
@@ -1006,38 +974,18 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
               'Panic revoke flow initiated. All critical approvals will be revoked immediately.',
         });
 
+      // Security policy belongs to the user alone. The assistant may explain the
+      // Trust List but must never mutate it: model context can carry text that
+      // came from read_url / web_search, i.e. from a third party, and that text
+      // is indistinguishable from a spoken user command once it is in the window.
+      // The tool is no longer advertised; this case is the code-level refusal in
+      // case the model invents the call anyway.
       case 'manage_trusted_list':
-        final args = jsonDecode(argumentsJson);
-        final action = args['action'];
-        final address = args['address'];
-        final type = args['type'];
-        final isAdd = action == 'add';
-        final isContract = type == 'contract';
-
-        _setActivity(
-            isAdd ? 'Добавляю в доверенные...' : 'Удаляю из доверенных...');
-        final pStore = policy_store.PolicyProfileStore.instance;
-
-        if (isAdd) {
-          if (isContract) {
-            await pStore.addTrustedContract(address);
-          } else {
-            await pStore.addTrustedAddress(address);
-          }
-        } else {
-          if (isContract) {
-            await pStore.removeTrustedContract(address);
-          } else {
-            await pStore.removeTrustedAddress(address);
-          }
-        }
-
-        _setActivity(null);
         return jsonEncode({
-          'success': true,
-          'action': action,
-          'address': address,
-          'type': type,
+          'error': 'policy_change_requires_user',
+          'message':
+              'The Trust List is part of the security policy and can only be '
+              'changed by the user in Settings > Trusted list.',
           'timestamp': ts,
         });
 
@@ -1296,7 +1244,8 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
   }
 
   /// Code-level tool permission gate. In Manual mode, only read-only tools are allowed.
-  /// Mutating tools (panic, safe_revoke, manage_trusted_list) require Guarded or above.
+  /// Action tools (panic, safe_revoke) require Guarded or above. They only open a
+  /// confirmation modal for the user and never mutate security policy themselves.
   static bool _isToolAllowedByMode(String toolName) {
     final settings = AiControlService.instance.settings;
     if (settings.mode == AiMode.manual) {
