@@ -1,7 +1,7 @@
 import 'dart:collection';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 import 'package:ibiti_guardian/services/voice/tts_service.dart';
-import 'package:ibiti_guardian/services/voice/speech_normalizer.dart';
+import 'package:ibiti_guardian/services/voice/speech_formatter.dart';
 import 'package:ibiti_guardian/services/alerts/sound_service.dart';
 
 /// Unified audio coordinator — ensures only ONE audio source plays at a time,
@@ -29,7 +29,7 @@ class AudioManager {
   AudioPriority _activePriority = AudioPriority.none;
 
   /// TTS queue — sequential utterances without cutting each other.
-  final Queue<String> _ttsQueue = Queue<String>();
+  final Queue<_QueuedSpeech> _ttsQueue = Queue<_QueuedSpeech>();
   bool _isSpeakingTts = false;
 
   // ── TTS (priority: normal) ──────────────────────────────────────────────────
@@ -47,10 +47,10 @@ class AudioManager {
     }
 
     // Normalize for natural speech before queueing.
-    final normalized = SpeechNormalizer.normalize(text, lang: lang);
+    final normalized = SpeechFormatter.normalize(text, lang: lang);
     if (normalized.isEmpty) return;
 
-    _ttsQueue.addLast(normalized);
+    _ttsQueue.addLast(_QueuedSpeech(normalized, lang));
     if (!_isSpeakingTts) {
       await _drainTtsQueue();
     }
@@ -67,9 +67,9 @@ class AudioManager {
         break;
       }
 
-      final text = _ttsQueue.removeFirst();
+      final item = _ttsQueue.removeFirst();
       try {
-        await _tts.speak(text);
+        await _tts.speak(item.text, languageCode: item.languageCode);
       } catch (e) {
         _log.e('TTS queue item failed', e);
       }
@@ -222,6 +222,13 @@ class AudioManager {
       _activePriority = AudioPriority.none;
     }
   }
+}
+
+class _QueuedSpeech {
+  const _QueuedSpeech(this.text, this.languageCode);
+
+  final String text;
+  final String languageCode;
 }
 
 /// Audio priority levels.

@@ -41,6 +41,8 @@ import 'package:ibiti_guardian/services/exchanges/okx_exchange_service.dart';
 import 'package:ibiti_guardian/services/market/market_multi_action_parser.dart';
 import 'package:ibiti_guardian/services/wallet/market_price_alert_service.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
+import 'package:ibiti_guardian/services/policy/policy_profile_store.dart';
+import 'package:ibiti_guardian/models/policy_profile.dart';
 import 'package:ibiti_guardian/services/assistant/market_voice_brain.dart';
 
 
@@ -134,38 +136,140 @@ class GuardianAssistantService {
 
   AssistantResponse _limitsStatusResponse(String languageCode) {
     final s = AiControlService.instance.settings;
-    final actions = s.allowedActions.map((e) => e.name).join(', ');
-    final assets = s.mandate.allowedAssets.isEmpty
-        ? 'any'
-        : s.mandate.allowedAssets.join(', ');
-    final networks = s.mandate.allowedNetworks.isEmpty
-        ? 'any'
-        : s.mandate.allowedNetworks.join(', ');
-    final venues = s.mandate.allowedVenues.isEmpty
-        ? 'any'
-        : s.mandate.allowedVenues.join(', ');
+    final policy = PolicyProfileStore.instance.current;
+    final isRu = languageCode == 'ru';
+    final actions = s.allowedActions
+        .map((action) => _aiActionLabel(action, isRu: isRu))
+        .join(', ');
+    final assets = _allowedListLabel(
+      s.mandate.allowedAssets,
+      isRu: isRu,
+      ruAll: 'любые активы',
+      enAll: 'any assets',
+    );
+    final networks = _allowedListLabel(
+      s.mandate.allowedNetworks,
+      isRu: isRu,
+      ruAll: 'любые сети',
+      enAll: 'any networks',
+    );
+    final venues = _allowedListLabel(
+      s.mandate.allowedVenues,
+      isRu: isRu,
+      ruAll: 'любые подключённые площадки',
+      enAll: 'any connected venues',
+    );
     if (languageCode == 'ru') {
       return AssistantResponse.info(
-        'Текущий режим: ${s.mode.name}. '
+        'Текущий режим ИИ: ${_aiModeLabel(s.mode, isRu: true)}. '
+        'Профиль безопасности: ${_policyModeLabel(policy.mode, isRu: true)}. '
+        'Лимит одного перевода: \$${policy.sendLimitUsd.toStringAsFixed(0)}. '
+        'Лимит одного обмена: \$${policy.swapLimitUsd.toStringAsFixed(0)}. '
+        'Лимит разрешения токена: \$${policy.approveLimitUsd.toStringAsFixed(0)}. '
         'Дневной лимит торговли: \$${s.dailyLimit.toStringAsFixed(0)}. '
+        'Минимальный баланс для торговли: \$${s.minTradeBalance.toStringAsFixed(0)}. '
+        'Максимальный размер одной позиции: \$${s.mandate.maxPositionUsd.toStringAsFixed(0)}. '
+        'Максимальная комиссия сети: \$${s.mandate.maxGasUsd.toStringAsFixed(0)}. '
+        'Максимальное проскальзывание: ${s.mandate.maxSlippageBps.toStringAsFixed(0)} базисных пунктов. '
+        'Максимальный дневной убыток: \$${s.mandate.maxDailyLossUsd.toStringAsFixed(0)}. '
+        'Максимальная дневная просадка: ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%. '
+        'Максимум открытых позиций: ${s.mandate.maxOpenPositions}. '
+        'Остановка после убыточных сделок подряд: ${s.mandate.stopAfterLosses}. '
         'Разрешённые действия: $actions. '
         'Разрешённые активы: $assets. '
         'Разрешённые сети: $networks. '
         'Разрешённые площадки: $venues. '
-        'Макс. дневной лимит: \$${s.mandate.maxPositionUsd.toStringAsFixed(0)}. '
-        'Максимальная дневная просадка: ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%.',
+        'Неизвестные контракты: ${policy.allowUnknownContracts ? 'разрешены' : 'запрещены'}.',
       );
     }
     return AssistantResponse.info(
-      'Current mode: ${s.mode.name}. '
+      'Current AI mode: ${_aiModeLabel(s.mode, isRu: false)}. '
+      'Security profile: ${_policyModeLabel(policy.mode, isRu: false)}. '
+      'Per-transfer limit: \$${policy.sendLimitUsd.toStringAsFixed(0)}. '
+      'Per-swap limit: \$${policy.swapLimitUsd.toStringAsFixed(0)}. '
+      'Token approval limit: \$${policy.approveLimitUsd.toStringAsFixed(0)}. '
       'Daily trading limit: \$${s.dailyLimit.toStringAsFixed(0)}. '
+      'Minimum trading balance: \$${s.minTradeBalance.toStringAsFixed(0)}. '
+      'Maximum position size: \$${s.mandate.maxPositionUsd.toStringAsFixed(0)}. '
+      'Maximum network fee: \$${s.mandate.maxGasUsd.toStringAsFixed(0)}. '
+      'Maximum slippage: ${s.mandate.maxSlippageBps.toStringAsFixed(0)} basis points. '
+      'Maximum daily loss: \$${s.mandate.maxDailyLossUsd.toStringAsFixed(0)}. '
+      'Maximum daily drawdown: ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%. '
+      'Maximum open positions: ${s.mandate.maxOpenPositions}. '
+      'Stop after consecutive losses: ${s.mandate.stopAfterLosses}. '
       'Allowed actions: $actions. '
       'Allowed assets: $assets. '
       'Allowed networks: $networks. '
       'Allowed venues: $venues. '
-      'Max daily trading limit: \$${s.mandate.maxPositionUsd.toStringAsFixed(0)}. '
-      'Max daily drawdown: ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%.',
+      'Unknown contracts: ${policy.allowUnknownContracts ? 'allowed' : 'blocked'}.',
     );
+  }
+
+  String _allowedListLabel(
+    List<String> values, {
+    required bool isRu,
+    required String ruAll,
+    required String enAll,
+  }) {
+    if (values.isEmpty) return isRu ? ruAll : enAll;
+    return values.join(', ');
+  }
+
+  String _aiModeLabel(AiMode mode, {required bool isRu}) {
+    if (!isRu) {
+      return switch (mode) {
+        AiMode.manual => 'Manual',
+        AiMode.guarded => 'Guarded',
+        AiMode.fullAutonomy => 'Full Autonomy',
+      };
+    }
+    return switch (mode) {
+      AiMode.manual => 'ручной',
+      AiMode.guarded => 'с подтверждением',
+      AiMode.fullAutonomy => 'полная автономия',
+    };
+  }
+
+  String _policyModeLabel(PolicyMode mode, {required bool isRu}) {
+    if (!isRu) {
+      return switch (mode) {
+        PolicyMode.safe => 'Safe',
+        PolicyMode.defi => 'DeFi',
+        PolicyMode.advanced => 'Advanced',
+      };
+    }
+    return switch (mode) {
+      PolicyMode.safe => 'безопасный',
+      PolicyMode.defi => 'децентрализованные финансы',
+      PolicyMode.advanced => 'расширенный',
+    };
+  }
+
+  String _aiActionLabel(AiAction action, {required bool isRu}) {
+    if (!isRu) {
+      return switch (action) {
+        AiAction.revoke => 'revoke permissions',
+        AiAction.send => 'send transfers',
+        AiAction.swap => 'swap assets',
+        AiAction.approve => 'approve tokens',
+        AiAction.policyUpdate => 'update policy',
+        AiAction.contactPayments => 'pay contacts',
+        AiAction.scheduledActions => 'scheduled actions',
+        AiAction.openWindows => 'open screens and windows',
+        AiAction.closeWindows => 'close screens and windows',
+      };
+    }
+    return switch (action) {
+      AiAction.revoke => 'отзыв разрешений',
+      AiAction.send => 'переводы',
+      AiAction.swap => 'обмен активов',
+      AiAction.approve => 'разрешения токенов',
+      AiAction.policyUpdate => 'изменение политики',
+      AiAction.contactPayments => 'платежи контактам',
+      AiAction.scheduledActions => 'запланированные действия',
+      AiAction.openWindows => 'открытие экранов и окон',
+      AiAction.closeWindows => 'закрытие экранов и окон',
+    };
   }
 
   // Manual mode contract: verbal explanation only, zero UI navigation.

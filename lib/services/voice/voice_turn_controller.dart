@@ -351,7 +351,9 @@ class VoiceTurnController extends ChangeNotifier {
 
     final ttsStart = DateTime.now();
     try {
-      await _tts.speak(speechText).timeout(_ttsTimeout);
+      await _tts
+          .speak(speechText, languageCode: conversationLangCode)
+          .timeout(_ttsTimeout);
     } on TimeoutException {
       _log.w('TTS timeout after ${_ttsTimeout.inSeconds}s');
       await _tts.stop();

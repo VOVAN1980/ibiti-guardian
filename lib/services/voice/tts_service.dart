@@ -27,6 +27,7 @@ class TtsService {
   static const _log = GuardianLogger('TTS');
 
   static const _endpoint = 'https://api.openai.com/v1/audio/speech';
+  static const double speechRate = 0.98;
 
   String get _model {
     final useStable = SettingsService.instance.settings.useStableVoice;
@@ -83,23 +84,31 @@ class TtsService {
     // If using stable model (tts-1), map new-gen voices to their closest classic equivalents.
     final useStable = SettingsService.instance.settings.useStableVoice;
     if (useStable) {
-      if (voice == 'verse') voice = 'onyx';
-      else if (voice == 'cedar') voice = 'echo';
-      else if (voice == 'marin') voice = 'nova';
-      else if (voice == 'coral') voice = 'alloy';
-      else if (voice == 'sage') voice = 'alloy';
+      if (voice == 'verse') {
+        voice = 'onyx';
+      } else if (voice == 'cedar') {
+        voice = 'echo';
+      } else if (voice == 'marin') {
+        voice = 'nova';
+      } else if (voice == 'coral' || voice == 'sage') {
+        voice = 'alloy';
+      }
     }
 
-    _log.d('_resolveVoice: saved=$saved personality=${_activePersonality.name} model=$_model → using=$voice');
+    _log.d(
+        '_resolveVoice: saved=$saved personality=${_activePersonality.name} model=$_model → using=$voice');
     return voice;
   }
 
-  String _resolveInstructions() {
+  String _resolveInstructions({String? languageCode}) {
     final appLang =
-        SettingsService.instance.settings.languageCode.trim().toLowerCase();
+        (languageCode ?? SettingsService.instance.settings.languageCode)
+            .trim()
+            .toLowerCase();
     final personality = _activePersonality;
     final isRu = appLang.startsWith('ru');
-    final personalityDesc = isRu ? personality.descriptionRu() : personality.descriptionEn();
+    final personalityDesc =
+        isRu ? personality.descriptionRu() : personality.descriptionEn();
 
     if (isRu) {
       return 'Ты — голосовой ассистент IBITI Guardian. '
@@ -165,7 +174,10 @@ class TtsService {
   /// Play speech from a stream of text chunks.
   /// Each chunk fires a TTS request; audio plays as soon as ready.
   /// First chunk plays immediately; subsequent chunks queue behind.
-  Future<void> speakStream(Stream<String> chunks) async {
+  Future<void> speakStream(
+    Stream<String> chunks, {
+    String? languageCode,
+  }) async {
     final apiKey = await ApiKeyProvider.getOpenAiKey();
     if (apiKey == null) {
       _log.w('No API key — cannot speak');
@@ -184,10 +196,11 @@ class TtsService {
 
     // Fire TTS requests for each chunk, add results to queue.
     final voice = _resolveVoice();
-    final instructions = _resolveInstructions();
+    final instructions = _resolveInstructions(languageCode: languageCode);
     final model = _model;
     final personality = _activePersonality.name;
-    final language = SettingsService.instance.settings.languageCode;
+    final language =
+        languageCode ?? SettingsService.instance.settings.languageCode;
 
     _log.i('==== TTS STREAM REQUEST AUDIT ====');
     _log.i('Model: $model');
@@ -300,7 +313,7 @@ class TtsService {
         'input': truncated,
         'voice': voice,
         'response_format': 'mp3',
-        'speed': 1.0,
+        'speed': speechRate,
       };
       if (_model == 'gpt-4o-mini-tts') {
         bodyObj['instructions'] = instructions;
@@ -333,7 +346,7 @@ class TtsService {
 
   /// Speak [text]. Returns after playback completes.
   /// Truncates to 1000 chars to keep latency and cost bounded.
-  Future<void> speak(String text) async {
+  Future<void> speak(String text, {String? languageCode}) async {
     if (text.isEmpty) return;
     final apiKey = await ApiKeyProvider.getOpenAiKey();
     if (apiKey == null) {
@@ -346,10 +359,11 @@ class TtsService {
 
     final truncated = text.length > 1200 ? '${text.substring(0, 1200)}…' : text;
     final voice = _resolveVoice();
-    final instructions = _resolveInstructions();
+    final instructions = _resolveInstructions(languageCode: languageCode);
     final model = _model;
     final personality = _activePersonality.name;
-    final language = SettingsService.instance.settings.languageCode;
+    final language =
+        languageCode ?? SettingsService.instance.settings.languageCode;
 
     _log.i('==== TTS REQUEST AUDIT ====');
     _log.i('Model: $model');
@@ -373,7 +387,7 @@ class TtsService {
         'input': truncated,
         'voice': voice,
         'response_format': 'mp3',
-        'speed': 1.0,
+        'speed': speechRate,
       };
       if (_model == 'gpt-4o-mini-tts') {
         bodyObj['instructions'] = instructions;
