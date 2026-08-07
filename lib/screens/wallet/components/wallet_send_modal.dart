@@ -215,6 +215,53 @@ class _WalletSendModalState extends State<WalletSendModal>
     return PrivyChainRegistry.getChain(_activeChainKey).nativeSymbol ?? 'TOKEN';
   }
 
+  /// Max-amount text for the current asset: full token precision, always
+  /// rounded DOWN.
+  ///
+  /// The old code used `balance.toStringAsFixed(6)`, which both dropped
+  /// precision and rounded UP: a balance of 10.45401566 (8-decimal token)
+  /// became 10.454016 — 34 atomic units MORE than the wallet holds — and the
+  /// contract rejected it with "ERC20: transfer amount exceeds balance".
+  /// Printing one extra digit and cutting it truncates instead of rounding,
+  /// so the amount can never exceed the real balance. Applies to every token,
+  /// using its own `decimals`.
+  String _maxAmountText() {
+    final asset = _selectedAsset;
+    if (asset == null) return '';
+    final decimals = _tokenDecimals.clamp(0, 18);
+    if (decimals == 0) return asset.balance.floor().toString();
+
+    // Print one extra digit and drop it: truncation, never rounding up.
+    final withExtra = asset.balance.toStringAsFixed(decimals + 1);
+    var truncated = withExtra.substring(0, withExtra.length - 1);
+    if (truncated.endsWith('.')) {
+      truncated = truncated.substring(0, truncated.length - 1);
+    }
+    return _zeroBeyondDoublePrecision(truncated);
+  }
+
+  /// Zeroes out digits past what a double can actually represent.
+  ///
+  /// A double only carries ~15-17 significant digits, so an 18-decimal token
+  /// balance of 0.47590397 prints as 0.475903970000000009 — nine atomic units
+  /// MORE than the wallet holds, which the contract would reject. Anything
+  /// past the 15th significant digit is float noise, so it is replaced with
+  /// zeros, keeping the amount at or below the real balance.
+  static const _significantDigitLimit = 15;
+
+  String _zeroBeyondDoublePrecision(String amount) {
+    final digits = amount.split('');
+    var seen = 0;
+    for (var i = 0; i < digits.length; i++) {
+      final ch = digits[i];
+      if (ch == '.' || ch == '-') continue;
+      if (seen == 0 && ch == '0') continue; // skip leading zeros
+      seen++;
+      if (seen > _significantDigitLimit) digits[i] = '0';
+    }
+    return digits.join();
+  }
+
   int get _tokenDecimals {
     if (_selectedAsset != null) return _selectedAsset!.decimals;
     switch (_activeChainKey) {
@@ -1207,8 +1254,7 @@ class _WalletSendModalState extends State<WalletSendModal>
                                           ? TextButton(
                                               onPressed: () => setState(() =>
                                                   _amountController.text =
-                                                      _selectedAsset!.balance
-                                                          .toStringAsFixed(6)),
+                                                      _maxAmountText()),
                                               child: Text(
                                                   LocalizationService.instance
                                                       .t('btnMax'),
