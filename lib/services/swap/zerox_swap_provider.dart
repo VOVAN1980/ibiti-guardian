@@ -58,6 +58,29 @@ class ZeroXSwapProvider implements SwapProvider {
   static const String _baseUrl = 'https://api.0x.org';
   static const Duration _timeout = Duration(seconds: 12);
 
+  /// 0x sentinel for the chain's native coin (BNB, ETH, POL, AVAX).
+  static const String nativeTokenSentinel =
+      '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
+
+  static const _nativeAliases = {
+    '',
+    'native',
+    'bnb',
+    'eth',
+    'matic',
+    'pol',
+    'avax',
+  };
+
+  /// Normalize native token: 0x rejects '', 'native' or a symbol like 'BNB'
+  /// with INPUT_INVALID ("Invalid ethereum address") — it requires the sentinel.
+  static String normalizeToken(String address) {
+    final trimmed = address.trim();
+    return _nativeAliases.contains(trimmed.toLowerCase())
+        ? nativeTokenSentinel
+        : trimmed;
+  }
+
   @override
   Future<QuoteResponse> getQuote(QuoteRequest request) async {
     // ── 1. Chain validation ──────────────────────────────────────────────────
@@ -68,19 +91,20 @@ class ZeroXSwapProvider implements SwapProvider {
     // ── 2. Slippage cap enforcement (never trust caller) ─────────────────────
     final clampedSlippageBps =
         request.slippageBps.clamp(0, SwapSlippagePolicy.maxBps);
-    // Convert bps to 0x percentage string: 200 bps → "0.02"
-    final slippageStr = (clampedSlippageBps / 10000).toStringAsFixed(4);
+    // 0x v2 takes integer bps; the v1 `slippagePercentage` is silently
+    // ignored and falls back to the 100 bps default.
+    final slippageStr = clampedSlippageBps.toString();
 
     // ── 3. Build query parameters ─────────────────────────────────────────────
     final params = {
       'chainId': request.chainId.toString(),
-      'sellToken': request.sourceTokenAddress,
-      'buyToken': request.targetTokenAddress,
+      'sellToken': normalizeToken(request.sourceTokenAddress),
+      'buyToken': normalizeToken(request.targetTokenAddress),
       if (request.amountMode == AmountMode.exactIn)
         'sellAmount': request.amount.toString()
       else
         'buyAmount': request.amount.toString(),
-      'slippagePercentage': slippageStr,
+      'slippageBps': slippageStr,
       'taker': request.userAddress,
     };
 
@@ -94,7 +118,7 @@ class ZeroXSwapProvider implements SwapProvider {
     if (kDebugMode)
       print('[0x]   buyAmount    = ${params['buyAmount'] ?? 'N/A'}');
     if (kDebugMode)
-      print('[0x]   slippage     = $slippageStr ($clampedSlippageBps bps)');
+      print('[0x]   slippageBps  = $slippageStr');
     if (kDebugMode) print('[0x]   taker        = ${params['taker']}');
 
     // ── 4. Load API key & fire the request ────────────────────────────────────
@@ -275,7 +299,7 @@ class ZeroXSwapProvider implements SwapProvider {
     // Route summary
     final fills = (json['route']?['fills'] as List<dynamic>?) ?? [];
     final routeSummary = fills.isEmpty
-        ? '${request.sourceTokenAddress.substring(0, 6)}... → ${request.targetTokenAddress.substring(0, 6)}...'
+        ? '${normalizeToken(request.sourceTokenAddress).substring(0, 6)}... → ${normalizeToken(request.targetTokenAddress).substring(0, 6)}...'
         : fills
             .map((f) => (f as Map<String, dynamic>)['source']?.toString() ?? '')
             .where((s) => s.isNotEmpty)
