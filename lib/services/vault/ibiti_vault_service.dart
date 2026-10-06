@@ -109,6 +109,11 @@ class IBITIVaultService extends ChangeNotifier {
   Privy? _privy;
   bool _privyInitialized = false;
 
+  /// Local wallet exists but Privy definitively has no session (expired or
+  /// cleared). Signing is impossible until the user signs in again.
+  bool _privySessionExpired = false;
+  bool get privySessionExpired => _privySessionExpired;
+
   // ── State ───────────────────────────────────────────────────────────────────
   VaultState? _state;
   VaultState? get state => _state;
@@ -403,6 +408,11 @@ class IBITIVaultService extends ChangeNotifier {
     if (!_privyInitialized || _privy == null) return;
     try {
       final authState = await _privy!.getAuthState();
+      // Unverified (e.g. offline with stored tokens) is not treated as expired.
+      _privySessionExpired = authState is Unauthenticated && isVaultCreated;
+      if (_privySessionExpired) {
+        _log.w('Privy session expired — re-login required to sign');
+      }
       if (authState is Authenticated) {
         final user = await _privy!.getUser();
         if (user != null) {
@@ -517,6 +527,7 @@ class IBITIVaultService extends ChangeNotifier {
   Future<bool> loginWithEmailCode({
     required String email,
     required String code,
+    bool reauth = false,
   }) async {
     _initPrivy();
     try {
@@ -531,7 +542,8 @@ class IBITIVaultService extends ChangeNotifier {
       );
 
       if (!success) return false;
-      final ok = await ensureAllWallets();
+      final ok =
+          reauth ? await _confirmReauthWallet() : await ensureAllWallets();
       if (ok) unlock();
       return ok;
     } catch (e) {
@@ -540,7 +552,7 @@ class IBITIVaultService extends ChangeNotifier {
     }
   }
 
-  Future<bool> loginWithGoogle() async {
+  Future<bool> loginWithGoogle({bool reauth = false}) async {
     _initPrivy();
     try {
       if (_privy == null) return false;
@@ -557,7 +569,8 @@ class IBITIVaultService extends ChangeNotifier {
       );
 
       if (!success) return false;
-      final ok = await ensureAllWallets();
+      final ok =
+          reauth ? await _confirmReauthWallet() : await ensureAllWallets();
       if (ok) unlock();
       return ok;
     } catch (e) {
@@ -884,6 +897,48 @@ class IBITIVaultService extends ChangeNotifier {
     final whole = (atomic ~/ divisor).toDouble();
     final frac = (atomic % divisor).toDouble() / divisor.toDouble();
     return double.parse((whole + frac).toStringAsFixed(4));
+  }
+
+  /// True when Privy holds a live session — required for signing.
+  /// The stored address alone survives session expiry, so the UI can look
+  /// connected while signing is impossible.
+  Future<bool> hasPrivySession() async {
+    if (_privy == null) return false;
+    try {
+      final authState = await _privy!.getAuthState();
+      return authState is Authenticated ||
+          authState is AuthenticatedUnverified;
+    } catch (e) {
+      _log.e('hasPrivySession error', e);
+      return false;
+    }
+  }
+
+  /// Re-login on an existing wallet: accept only the Privy account that owns
+  /// the stored EVM address. Never creates or adopts another wallet — a
+  /// different account would otherwise silently replace the funded one.
+  Future<bool> _confirmReauthWallet() async {
+    final stored = _evmAddress?.toLowerCase();
+    final user = await getPrivyUser();
+    final ownsStored = stored != null &&
+        stored.isNotEmpty &&
+        user != null &&
+        user.embeddedEthereumWallets
+            .any((w) => w.address.toLowerCase() == stored);
+    if (!ownsStored) {
+      _log.e('Re-auth: Privy account does not own the stored wallet '
+          '${_mask(_evmAddress ?? '')} — signing out of it');
+      try {
+        await _privy?.logout();
+      } catch (e) {
+        _log.e('Re-auth logout error', e);
+      }
+      return false;
+    }
+    await _syncWithPrivySession();
+    _privySessionExpired = false;
+    _log.i('Re-auth: session restored for ${_mask(_evmAddress!)}');
+    return true;
   }
 
   Future<PrivyUser?> getPrivyUser() async {

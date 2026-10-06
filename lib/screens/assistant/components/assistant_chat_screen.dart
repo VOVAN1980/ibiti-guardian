@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:ibiti_guardian/screens/vault/components/privy_auth_modal.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 import 'package:ibiti_guardian/widgets/ai_core_widget.dart';
@@ -419,15 +420,20 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
     });
     _scrollToBottom();
 
-    final authorized =
-        autoApproved ? true : await VaultUnlockScreen.requireAuth(context, forceSetup: true);
+    final sessionOk = await ensurePrivySession(context);
+    if (!mounted) return false;
+    final authorized = sessionOk &&
+        (autoApproved ||
+            await VaultUnlockScreen.requireAuth(context, forceSetup: true));
     if (!authorized) {
       setState(() {
         _isThinking = false;
         _coreState = AICoreState.danger;
       });
       _addMessage(_ChatMessage(
-        text: 'Transaction cancelled: vault authentication failed.',
+        text: !sessionOk
+            ? 'Transaction cancelled: re-authorization required.'
+            : 'Transaction cancelled: vault authentication failed.',
         role: _MessageRole.assistant,
         responseType: ResponseType.error,
       ));
@@ -536,17 +542,22 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
     });
     _scrollToBottom();
 
-    final authorized =
-        autoApproved ? true : await VaultUnlockScreen.requireAuth(context, forceSetup: true);
+    final sessionOk = await ensurePrivySession(context);
+    if (!mounted) return false;
+    final authorized = sessionOk &&
+        (autoApproved ||
+            await VaultUnlockScreen.requireAuth(context, forceSetup: true));
     if (!authorized) {
       setState(() {
         _isThinking = false;
         _coreState = AICoreState.danger;
       });
       _addMessage(_ChatMessage(
-        text: isApprove
-            ? 'Approval cancelled: vault authentication failed.'
-            : 'Swap cancelled: vault authentication failed.',
+        text: !sessionOk
+            ? 'Cancelled: re-authorization required.'
+            : isApprove
+                ? 'Approval cancelled: vault authentication failed.'
+                : 'Swap cancelled: vault authentication failed.',
         role: _MessageRole.assistant,
         responseType: ResponseType.error,
       ));

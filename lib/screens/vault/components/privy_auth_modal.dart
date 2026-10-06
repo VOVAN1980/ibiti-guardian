@@ -15,8 +15,56 @@ Future<void> showPrivyLoginModal(BuildContext context) async {
   );
 }
 
+/// Ensures a live Privy session before signing. If it has expired, asks the
+/// user to sign in again with the account that owns the current wallet.
+/// Returns true when signing can proceed.
+Future<bool> ensurePrivySession(BuildContext context) async {
+  if (await IBITIVaultService.instance.hasPrivySession()) return true;
+  if (!context.mounted) return false;
+  final signIn = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      backgroundColor: GuardianColors.surface,
+      title: const Text('Нужна повторная авторизация',
+          style: TextStyle(color: Colors.white)),
+      content: const Text(
+        'Сессия входа истекла. Чтобы подписать транзакцию, войдите снова '
+        'тем же аккаунтом Google или email, через который создавали кошелёк.',
+        style: TextStyle(color: GuardianColors.textSecondary),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(false),
+          child: const Text('Назад'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(true),
+          child: const Text('Войти'),
+        ),
+      ],
+    ),
+  );
+  if (signIn != true || !context.mounted) return false;
+  return showPrivyReauthModal(context);
+}
+
+/// Sign-in for an existing wallet whose Privy session expired. Accepts only
+/// the account that owns the stored wallet. Returns true on success.
+Future<bool> showPrivyReauthModal(BuildContext context) async {
+  final restored = await showDialog<bool>(
+    context: context,
+    useSafeArea: true,
+    builder: (context) => const _PrivyAuthModal(reauth: true),
+  );
+  return restored == true;
+}
+
 class _PrivyAuthModal extends StatefulWidget {
-  const _PrivyAuthModal();
+  const _PrivyAuthModal({this.reauth = false});
+
+  /// Session expired on an existing wallet: close with `true` on success
+  /// instead of replacing the app shell.
+  final bool reauth;
 
   @override
   State<_PrivyAuthModal> createState() => _PrivyAuthModalState();
@@ -53,20 +101,28 @@ class _PrivyAuthModalState extends State<_PrivyAuthModal> {
 
     setState(() => _isLoading = true);
     final ok = await IBITIVaultService.instance
-        .loginWithEmailCode(email: email, code: code);
+        .loginWithEmailCode(email: email, code: code, reauth: widget.reauth);
     if (!mounted) return;
     setState(() => _isLoading = false);
 
-    if (ok) {
+    if (ok && widget.reauth) {
+      Navigator.of(context).pop(true);
+    } else if (ok) {
       final nav = Navigator.of(context, rootNavigator: true);
       Navigator.of(context).pop(); // Close modal
       nav.pushReplacement(
         MaterialPageRoute(builder: (_) => const GuardianAppShell()),
       );
     } else {
-      _showError('Недействительный код подтверждения.');
+      _showError(widget.reauth
+          ? _reauthFailedMessage
+          : 'Недействительный код подтверждения.');
     }
   }
+
+  static const _reauthFailedMessage =
+      'Не удалось войти. Используйте тот же аккаунт, через который '
+      'создавали этот кошелёк.';
 
   void _showError(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -114,6 +170,16 @@ class _PrivyAuthModalState extends State<_PrivyAuthModal> {
                         fontWeight: FontWeight.w700,
                       ),
                     ),
+                    if (widget.reauth) ...[
+                      const SizedBox(height: 12),
+                      const Text(
+                        'Сессия истекла. Войдите снова, чтобы подписать '
+                        'транзакцию.',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                            color: GuardianColors.textSecondary, fontSize: 14),
+                      ),
+                    ],
                     const SizedBox(height: 32),
                     if (_isLoading)
                       const SizedBox(
@@ -171,12 +237,16 @@ class _PrivyAuthModalState extends State<_PrivyAuthModal> {
               setState(() => _isLoading = true);
 
               // Вызов реального метода логина через SDK
-              final ok = await IBITIVaultService.instance.loginWithGoogle();
+              final ok = await IBITIVaultService.instance
+                  .loginWithGoogle(reauth: widget.reauth);
 
               if (!mounted) return;
               setState(() => _isLoading = false);
 
-              if (ok) {
+              if (ok && widget.reauth) {
+                log.d('Google re-auth success');
+                Navigator.of(context).pop(true);
+              } else if (ok) {
                 log.d('Google login success');
                 final nav = Navigator.of(context, rootNavigator: true);
                 Navigator.of(context).pop();
@@ -184,8 +254,9 @@ class _PrivyAuthModalState extends State<_PrivyAuthModal> {
                   MaterialPageRoute(builder: (_) => const GuardianAppShell()),
                 );
               } else {
-                _showError(
-                    'Не удалось войти через Google. Попробуйте еще раз.');
+                _showError(widget.reauth
+                    ? _reauthFailedMessage
+                    : 'Не удалось войти через Google. Попробуйте еще раз.');
               }
             } on PlatformException catch (e) {
               if (!mounted) return;

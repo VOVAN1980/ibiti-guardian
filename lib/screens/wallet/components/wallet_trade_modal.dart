@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:ibiti_guardian/screens/vault/components/privy_auth_modal.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/utils/token_symbol_normalizer.dart';
 
@@ -437,6 +438,11 @@ class _WalletTradeModalState extends State<WalletTradeModal> {
       print('[SwapModal] ❌ _confirmSwap called but _swapPlan is null');
       return;
     }
+
+    // Signing needs a live Privy session; it can expire while the wallet
+    // still looks connected. Cancelled re-login leaves the preview as is.
+    if (!await ensurePrivySession(context)) return;
+    if (!mounted) return;
 
     print('[SwapModal] _confirmSwap called, '
         'requiresApproval=${plan.requiresApproval}, '

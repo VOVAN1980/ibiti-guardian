@@ -23,6 +23,7 @@ import "package:ibiti_guardian/screens/vault/vault_onboarding_screen.dart";
 import "package:ibiti_guardian/widgets/energy_pulse_painter.dart";
 import "package:ibiti_guardian/theme/guardian_colors.dart";
 import "package:ibiti_guardian/screens/vault/vault_unlock_screen.dart";
+import "package:ibiti_guardian/screens/vault/privy_reauth_screen.dart";
 import "package:ibiti_guardian/screens/settings/language_selection_screen.dart";
 import "package:ibiti_guardian/services/execution/tx_status_poller.dart";
 
@@ -196,6 +197,9 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
       _destination = const LanguageSelectionScreen();
     } else if (!vault.isVaultCreated) {
       _destination = const VaultOnboardingPlaceholder();
+    } else if (vault.privySessionExpired) {
+      // PIN only unlocks the app; signing needs a live Privy session.
+      _destination = const PrivyReauthScreen();
     } else if (((vault.state?.biometricsEnabled ?? false) ||
             vault.pinEnabled) &&
         !vault.isUnlocked) {

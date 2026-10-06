@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:ibiti_guardian/screens/vault/components/privy_auth_modal.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/utils/token_symbol_normalizer.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -436,6 +437,8 @@ class _WalletSendModalState extends State<WalletSendModal>
     ExecutionPath path,
   ) async {
     final t = LocalizationProvider.of(context);
+    if (!await ensurePrivySession(context)) return;
+    if (!mounted) return;
     final authorized = await VaultUnlockScreen.requireAuth(context, forceSetup: true);
     if (!authorized) {
       return;
