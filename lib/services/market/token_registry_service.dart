@@ -275,6 +275,14 @@ class TokenRegistryService {
     return resolveOnActiveChain(symbol);
   }
 
+  /// Built-in registry only (no holdings lookup) — vetted mainnet address
+  /// and decimals for [symbol] on [chainKey], or null if not listed.
+  TokenResolution? resolveFromRegistry({
+    required String symbol,
+    required String chainKey,
+  }) =>
+      _resolveFromRegistry(symbol.toUpperCase(), chainKey.toLowerCase());
+
   /// Returns a list of all built-in symbols supported on the given chain.
   List<String> getSupportedSymbols(String chainKey) {
     final chain = chainKey.toLowerCase();

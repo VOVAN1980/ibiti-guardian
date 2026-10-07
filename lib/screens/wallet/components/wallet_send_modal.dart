@@ -22,6 +22,7 @@ import 'package:ibiti_guardian/services/execution/guardian_execution_controller.
 import 'package:ibiti_guardian/services/execution/tx_status_poller.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
+import 'package:ibiti_guardian/services/market/token_registry_service.dart';
 import 'package:ibiti_guardian/services/wallet/address_book_service.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/voice/tts_service.dart';
@@ -83,7 +84,10 @@ class _WalletSendModalState extends State<WalletSendModal>
   @override
   void initState() {
     super.initState();
-    _selectedAsset = widget.initialAsset;
+    final initialAsset = widget.initialAsset;
+    _selectedAsset = initialAsset != null && _isOnActiveChain(initialAsset)
+        ? initialAsset
+        : null;
     ScreenContextService.instance.setModal('wallet_send');
 
     final bus = UICommandBus.instance;
@@ -162,15 +166,61 @@ class _WalletSendModalState extends State<WalletSendModal>
     final rawSymbol = payload?['symbol']?.toString();
     if (rawSymbol == null || rawSymbol.isEmpty) return;
     final symbol = TokenSymbolNormalizer.normalize(rawSymbol);
-    final assets = VaultPortfolioListener.instance.summary?.allAssets ??
-        const <WalletAsset>[];
-    final match = assets.cast<WalletAsset?>().firstWhere(
-          (asset) => asset?.symbol.toUpperCase() == symbol,
-          orElse: () => null,
-        );
+    final match = _chainTokens()[symbol];
     if (match != null) {
       _selectedAsset = match;
     }
+  }
+
+  /// Stablecoins always offered on a network, even with zero balance.
+  static const _defaultChainTokens = ['USDT', 'USDC'];
+
+  bool _isOnActiveChain(WalletAsset asset) {
+    if (asset.chainKey.isNotEmpty) return asset.chainKey == _activeChainKey;
+    final evmChainId = PrivyChainRegistry.getChain(_activeChainKey).evmChainId;
+    return evmChainId != null && asset.chainId == evmChainId;
+  }
+
+  /// Sendable non-native tokens of the active network, keyed by symbol:
+  /// tokens held on this chain plus its main stablecoins from the registry.
+  /// Coins of other networks are never offered — they cannot be sent here.
+  Map<String, WalletAsset> _chainTokens() {
+    final chainKey = _activeChainKey;
+    final nativeSymbol =
+        (PrivyChainRegistry.getChain(chainKey).nativeSymbol ?? '').toUpperCase();
+    final assets = VaultPortfolioListener.instance.summary?.allAssets ??
+        const <WalletAsset>[];
+
+    final tokens = <String, WalletAsset>{};
+    for (final asset in assets) {
+      final symbol = asset.symbol.toUpperCase();
+      if (asset.isNative || symbol == nativeSymbol) continue;
+      if (!_isOnActiveChain(asset)) continue;
+      final existing = tokens[symbol];
+      if (existing == null || asset.valueUsd > existing.valueUsd) {
+        tokens[symbol] = asset;
+      }
+    }
+
+    for (final symbol in _defaultChainTokens) {
+      if (tokens.containsKey(symbol)) continue;
+      final entry = TokenRegistryService.instance
+          .resolveFromRegistry(symbol: symbol, chainKey: chainKey);
+      if (entry?.address == null) continue;
+      tokens[symbol] = WalletAsset(
+        name: symbol,
+        symbol: symbol,
+        address: entry!.address!,
+        balance: 0,
+        logoUrl: _tokenLogos[symbol],
+        priceUsd: 0,
+        valueUsd: 0,
+        decimals: entry.decimals,
+        chainId: PrivyChainRegistry.getChain(chainKey).evmChainId ?? 0,
+        chainKey: chainKey,
+      );
+    }
+    return tokens;
   }
 
   void _handleCommand(UICommand cmd) {
@@ -569,28 +619,12 @@ class _WalletSendModalState extends State<WalletSendModal>
       Offset.zero & overlayBox.size,
     );
 
-    final assets = VaultPortfolioListener.instance.summary?.allAssets ?? [];
     final currentNative =
         PrivyChainRegistry.getChain(chainKey).nativeSymbol ?? 'ETH';
 
-    // Collect all wallet asset symbols
-    final walletSymbols = <String>{};
-    for (final a in assets) {
-      walletSymbols.add(a.symbol.toUpperCase());
-    }
-
-    // Add native tokens from ALL supported chains
-    for (final chain in PrivyChainRegistry.supportedChains) {
-      if (chain.nativeSymbol != null) {
-        walletSymbols.add(chain.nativeSymbol!.toUpperCase());
-      }
-    }
-
-    // IBITI is added only if it's actually in wallet holdings
-
-    // Build menu items — current chain native first, then others sorted
-    final sorted = walletSymbols.toList()..remove(currentNative.toUpperCase());
-    sorted.sort();
+    // Only this network's coins: native first, then its tokens sorted.
+    final chainTokens = _chainTokens();
+    final sorted = chainTokens.keys.toList()..sort();
 
     final items = <PopupMenuEntry<String>>[
       PopupMenuItem(
@@ -602,7 +636,9 @@ class _WalletSendModalState extends State<WalletSendModal>
               style: GuardianTextStyles.bodyPrimary
                   .copyWith(fontWeight: FontWeight.w700)),
           const SizedBox(width: 6),
-          Text('(native)',
+          Text(
+              LocalizationService.instance
+                  .t('walletSendNativeTag', {'default': '(native)'}),
               style: GuardianTextStyles.caption
                   .copyWith(fontSize: 10, color: Colors.greenAccent)),
         ]),
@@ -636,26 +672,10 @@ class _WalletSendModalState extends State<WalletSendModal>
           _amountController.clear();
         });
       } else {
-        final match = assets.cast<WalletAsset?>().firstWhere(
-            (a) => a?.symbol.toUpperCase() == selected,
-            orElse: () => null);
+        final match = chainTokens[selected];
         if (match != null) {
           setState(() {
             _selectedAsset = match;
-            _amountController.clear();
-          });
-        } else {
-          setState(() {
-            _selectedAsset = WalletAsset(
-              name: selected,
-              symbol: selected,
-              address: 'registry',
-              balance: 0,
-              decimals: 18,
-              priceUsd: 0,
-              valueUsd: 0,
-              chainId: 0,
-            );
             _amountController.clear();
           });
         }
@@ -1228,7 +1248,12 @@ class _WalletSendModalState extends State<WalletSendModal>
                                   const Spacer(),
                                   if (_selectedAsset != null)
                                     Text(
-                                        'Balance: ${_selectedAsset!.balance.toStringAsFixed(4)} $_tokenSymbol',
+                                        t.t('walletSendBalance', {
+                                          'amount':
+                                              '${_selectedAsset!.balance.toStringAsFixed(4)} $_tokenSymbol',
+                                          'default':
+                                              'Balance: ${_selectedAsset!.balance.toStringAsFixed(4)} $_tokenSymbol',
+                                        }),
                                         style: GuardianTextStyles.caption
                                             .copyWith(fontSize: 11)),
                                 ]),
