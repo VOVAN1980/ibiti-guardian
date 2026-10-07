@@ -416,7 +416,7 @@
   "walletSendViaVault": "Kasadan Gizlice Gönder",
   "walletSendHelpText": "Sahip olduğunuz Yapay Zeka botu; tüm onayları inceleyen harika bir silecek robotu gibi görev yapar.",
   "walletSendRecipient": "Alacak Olan",
-  "walletSendAmount": "İletilecek Tutar",
+  "walletSendAmount": "Tutar",
   "walletSendExecuteTarget": "HAREKETE GEÇİR",
   "walletMoreAction": "Ekstralar",
   "walletMoreActions": "Diğer Faydalı İşlemler",

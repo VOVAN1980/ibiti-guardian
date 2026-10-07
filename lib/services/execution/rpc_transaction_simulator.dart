@@ -68,6 +68,13 @@ class RpcTransactionSimulator implements RpcSimulator {
       );
     }
 
+    // Gas price only feeds the fee display — never fails the simulation.
+    final gasPriceFuture = _postEvmRpc<String>(
+      rpcUrl: rpcUrl,
+      method: 'eth_gasPrice',
+      params: const [],
+    ).timeout(_rpcTimeout).then<String?>((v) => v).catchError((_) => null);
+
     final estimatedGasHex = await _postEvmRpc<String>(
       rpcUrl: rpcUrl,
       method: 'eth_estimateGas',
@@ -90,6 +97,7 @@ class RpcTransactionSimulator implements RpcSimulator {
 
     return RpcSimulationResult.ok(
       gas: estimatedGasHex,
+      gasPrice: await gasPriceFuture,
       warnings: warnings,
     );
   }

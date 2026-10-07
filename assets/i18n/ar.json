@@ -416,7 +416,7 @@
   "walletSendViaVault": "إرسال عبر Vault",
   "walletSendHelpText": "سيتم التحقق من هذه العملية بواسطة قواعد EPK الموجودة على السلسلة.",
   "walletSendRecipient": "عنوان المستلم",
-  "walletSendAmount": "المبلغ (الأصل الأساسي)",
+  "walletSendAmount": "المبلغ",
   "walletSendExecuteTarget": "تنفيذ المعاملة",
   "walletMoreAction": "المزيد",
   "walletMoreActions": "إجراءات إضافية",

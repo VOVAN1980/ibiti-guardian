@@ -416,7 +416,7 @@
   "walletSendViaVault": "Kirim lewat Vault",
   "walletSendHelpText": "Tindakan akan ditinjau oleh AI sebelum disahkan.",
   "walletSendRecipient": "Alamat Penerima",
-  "walletSendAmount": "Jumlah Saldo",
+  "walletSendAmount": "Jumlah",
   "walletSendExecuteTarget": "EKSEKUSI TX",
   "walletMoreAction": "Lainnya",
   "walletMoreActions": "Aksi Lainnya",

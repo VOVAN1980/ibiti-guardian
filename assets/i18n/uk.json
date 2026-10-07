@@ -416,7 +416,7 @@
   "walletSendViaVault": "Скидання у Захищене Відділення",
   "walletSendHelpText": "Цей ШІ бот, він відповідає в основному за аналітику ваших операцій з грошима і він вміє давати корисні зауваження для збереження.",
   "walletSendRecipient": "Скидання До Цільового Адресату",
-  "walletSendAmount": "Введена Сума Згори",
+  "walletSendAmount": "Сума",
   "walletSendExecuteTarget": "ЗАПУСКУ ОПЕРАЦІЙ",
   "walletMoreAction": "ДОДАТКИ",
   "walletMoreActions": "Додаткові дії",

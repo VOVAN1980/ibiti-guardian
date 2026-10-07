@@ -416,7 +416,7 @@
   "walletSendViaVault": "वॉल्ट द्वारा भेजें",
   "walletSendHelpText": "यह कार्रवाई आपके ऑन-चेन ईपीके नियमों द्वारा सत्यापित की जाएगी।",
   "walletSendRecipient": "प्राप्तकर्ता का पता",
-  "walletSendAmount": "राशि (मूल)",
+  "walletSendAmount": "राशि",
   "walletSendExecuteTarget": "लेनदेन चलाएं",
   "walletMoreAction": "अधिक",
   "walletMoreActions": "अन्य कार्रवाइयां",

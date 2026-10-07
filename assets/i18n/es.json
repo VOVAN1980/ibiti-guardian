@@ -416,7 +416,7 @@
   "walletSendViaVault": "Enviar mediante Vault",
   "walletSendHelpText": "Esta acción será verificada por tus reglas EPK on-chain.",
   "walletSendRecipient": "Dirección del destinatario",
-  "walletSendAmount": "Importe (nativo)",
+  "walletSendAmount": "Importe",
   "walletSendExecuteTarget": "EJECUTAR TX",
   "walletMoreAction": "Más",
   "walletMoreActions": "Más acciones",

@@ -9,6 +9,10 @@ class RpcSimulationResult {
   /// Estimated gas cost string in wei/hex, or null if it failed
   final String? estimatedGas;
 
+  /// Network gas price (wei, hex or decimal) at simulation time, if known.
+  /// With [estimatedGas] it gives the fee in the native coin.
+  final String? gasPrice;
+
   /// Any RPC-specific warnings (e.g. execution took too long, state mismatch)
   final List<String> warnings;
 
@@ -23,6 +27,7 @@ class RpcSimulationResult {
     required this.success,
     this.revertReason,
     this.estimatedGas,
+    this.gasPrice,
     this.warnings = const [],
     this.stateChangeDetected = true,
   });
@@ -36,10 +41,13 @@ class RpcSimulationResult {
 
   /// Factory for a successful simulation
   factory RpcSimulationResult.ok(
-          {String? gas, List<String> warnings = const []}) =>
+          {String? gas,
+          String? gasPrice,
+          List<String> warnings = const []}) =>
       RpcSimulationResult(
         success: true,
         estimatedGas: gas,
+        gasPrice: gasPrice,
         warnings: warnings,
         stateChangeDetected: true,
       );

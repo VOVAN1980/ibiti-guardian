@@ -1,4 +1,7 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:ibiti_guardian/config/privy_chain_registry.dart';
+import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 import 'package:ibiti_guardian/models/transaction_request.dart';
@@ -185,10 +188,10 @@ class _TransactionPreviewCardState extends State<TransactionPreviewCard>
   Widget _buildRequestRow() {
     final loc = LocalizationService.instance;
     final amountLabel = widget.transaction.amount == null
-        ? 'Unknown'
+        ? loc.t('txPreviewUnknownValue', {'default': 'Unknown'})
         : '${widget.transaction.amount} ${widget.transaction.tokenSymbol ?? ''}'
             .trim();
-    final feeLabel = _formatFee(widget.rpcResult.estimatedGas);
+    final feeLabel = _formatFee();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -236,7 +239,7 @@ class _TransactionPreviewCardState extends State<TransactionPreviewCard>
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SizedBox(
-            width: 58,
+            width: 92,
             child: Text(
               '$label:',
               style: GuardianTextStyles.caption.copyWith(
@@ -258,13 +261,54 @@ class _TransactionPreviewCardState extends State<TransactionPreviewCard>
     );
   }
 
-  String _formatFee(String? raw) {
-    if (raw == null || raw.isEmpty) return 'Unknown';
-    if (raw.startsWith('0x')) {
-      final parsed = int.tryParse(raw.substring(2), radix: 16);
-      if (parsed != null) return '$parsed gas';
+  /// Network fee in the native coin and USD (gas × gas price). Falls back
+  /// to raw gas units when the gas price is unavailable.
+  String _formatFee() {
+    final loc = LocalizationService.instance;
+    final gas = _parseWei(widget.rpcResult.estimatedGas);
+    if (gas == null) {
+      return loc.t('txPreviewUnknownValue', {'default': 'Unknown'});
     }
-    return raw;
+    final gasPrice = _parseWei(widget.rpcResult.gasPrice);
+    if (gasPrice == null) return '$gas gas';
+
+    final tx = widget.transaction;
+    final symbol = PrivyChainRegistry.getChain(tx.chainKey).nativeSymbol ?? '';
+    // EVM native coins (BNB, ETH, POL, AVAX) all use 18 decimals.
+    final fee = (gas * gasPrice) / BigInt.from(10).pow(18);
+    final feeText = '≈ ${_formatCoin(fee)} $symbol'.trim();
+
+    final price = _nativePriceUsd(tx.chainKey);
+    if (price == null) return feeText;
+    final usd = fee * price;
+    return usd < 0.01
+        ? '$feeText (< \$0.01)'
+        : '$feeText (≈ \$${usd.toStringAsFixed(2)})';
+  }
+
+  static BigInt? _parseWei(String? raw) {
+    if (raw == null || raw.isEmpty) return null;
+    return raw.startsWith('0x')
+        ? BigInt.tryParse(raw.substring(2), radix: 16)
+        : BigInt.tryParse(raw);
+  }
+
+  /// Two significant digits: 0.0000026, 0.00052, 0.013.
+  static String _formatCoin(double value) {
+    if (value <= 0) return '0';
+    final decimals =
+        (1 - (math.log(value) / math.ln10).floor()).clamp(2, 12).toInt();
+    return value.toStringAsFixed(decimals);
+  }
+
+  static double? _nativePriceUsd(String chainKey) {
+    final assets = VaultPortfolioListener.instance.summary?.allAssets ?? [];
+    for (final asset in assets) {
+      if (asset.isNative && asset.chainKey == chainKey && asset.priceUsd > 0) {
+        return asset.priceUsd;
+      }
+    }
+    return null;
   }
 
   Widget _buildRiskBadges() {

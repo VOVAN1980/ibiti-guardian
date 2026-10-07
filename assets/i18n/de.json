@@ -416,7 +416,7 @@
   "walletSendViaVault": "Über Vault senden",
   "walletSendHelpText": "Diese Aktion wird durch Ihre On-Chain-EPK-Regeln geprüft.",
   "walletSendRecipient": "Empfängeradresse",
-  "walletSendAmount": "Betrag (native)",
+  "walletSendAmount": "Betrag",
   "walletSendExecuteTarget": "TRANSAKTION AUSFÜHREN",
   "walletMoreAction": "Mehr",
   "walletMoreActions": "Weitere Aktionen",

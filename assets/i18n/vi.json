@@ -416,7 +416,7 @@
   "walletSendViaVault": "Gửi qua Vault",
   "walletSendHelpText": "Hành động này sẽ được xác minh bằng các quy tắc EPK on-chain của bạn.",
   "walletSendRecipient": "Địa chỉ người nhận",
-  "walletSendAmount": "Số lượng (Gốc)",
+  "walletSendAmount": "Số lượng",
   "walletSendExecuteTarget": "THỰC THI TX",
   "walletMoreAction": "Thêm",
   "walletMoreActions": "Hành động khác",

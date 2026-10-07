@@ -416,7 +416,7 @@
   "walletSendViaVault": "Invia con Il Caveau",
   "walletSendHelpText": "Passaggio intercettato dalle regole intelligenti di bordo EPK.",
   "walletSendRecipient": "Destinazione Trasferimento",
-  "walletSendAmount": "Volume Complessivo",
+  "walletSendAmount": "Importo",
   "walletSendExecuteTarget": "ESEGUI INVIO",
   "walletMoreAction": "Opzioni",
   "walletMoreActions": "Tutto quanto",
