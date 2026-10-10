@@ -15,6 +15,11 @@ class OnChainTx {
   final String chainKey;
   final String? summary;
 
+  /// Network fee paid by this wallet for the transaction, in the chain's
+  /// native coin (null when the wallet did not pay it or it is unknown).
+  final double? feeNative;
+  final String? feeSymbol;
+
   // ── Swap-specific fields ────────────────────────────────────────────────────
   /// Token the user sold (outgoing leg of a swap).
   final String? sellSymbol;
@@ -39,6 +44,8 @@ class OnChainTx {
     this.gasUsed,
     required this.chainKey,
     this.summary,
+    this.feeNative,
+    this.feeSymbol,
     this.sellSymbol,
     this.sellValue,
     this.buySymbol,

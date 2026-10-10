@@ -24,7 +24,7 @@ import 'package:ibiti_guardian/services/assistant/user_memory_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
 import 'package:ibiti_guardian/services/audit_log_service.dart';
 import 'package:ibiti_guardian/services/wallet/market_watchlist_service.dart';
-import 'package:ibiti_guardian/services/moralis/moralis_tx_history_service.dart';
+import 'package:ibiti_guardian/services/history/tx_history_service.dart';
 import 'package:ibiti_guardian/models/on_chain_tx.dart';
 
 /// Uses gpt-4o-mini to resolve user intent into structured JSON.
@@ -1086,7 +1086,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
           return '{"error": "Wallet disconnected"}';
         }
         try {
-          final page = await MoralisTxHistoryService.fetch(
+          final page = await TxHistoryService.fetch(
             address: wallet.address,
             chainKey: wallet.chainKey,
           );

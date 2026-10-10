@@ -118,6 +118,20 @@ class TokenRegistryService {
 
   static const _log = GuardianLogger('TokenRegistry');
 
+  /// Reverse lookup restricted to vetted built-ins; does not initialize holdings.
+  /// Untrusted dApps must not establish a token's identity via its symbol().
+  TokenResolution resolveBuiltInAddress(String address, String chainKey) {
+    for (final entry in _registry.entries) {
+      final parts = entry.key.split(':');
+      if (parts[1] == chainKey &&
+          entry.value.address.toLowerCase() == address.toLowerCase()) {
+        return TokenResolution.fromRegistry(symbol: parts[0], chainKey: chainKey,
+            address: entry.value.address, decimals: entry.value.decimals);
+      }
+    }
+    return TokenResolution.notFound(symbol: '', chainKey: chainKey);
+  }
+
   // ── Built-in well-known tokens ─────────────────────────────────────────────
   // Key: 'SYMBOL:chainKey' → token contract address
   // Sources: Uniswap token list, 0x documentation, official token sites.

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:ibiti_guardian/services/dapp/dapp_verified_receive.dart';
 
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 import 'package:flutter/services.dart';
@@ -24,7 +25,7 @@ class IBITIVaultSigner {
 
   static const Duration _epkDeadlineWindow = Duration(minutes: 10);
 
-  Future<String?> signTypedData(Map<String, dynamic> typedData) async {
+  Future<String?> signTypedData(Map<String, dynamic> typedData, {String? expectedAddress, bool Function()? canProceed}) async {
     final user = await IBITIVaultService.instance.getPrivyUser();
     if (user == null || user.embeddedEthereumWallets.isEmpty) {
       _log.w('No embedded ethereum wallet available');
@@ -34,8 +35,12 @@ class IBITIVaultSigner {
     final wallet =
         IBITIVaultService.instance.resolveEmbeddedEthereumWallet(user);
     if (wallet == null) return null;
+    if (expectedAddress != null && wallet.address.toLowerCase() != expectedAddress.toLowerCase()) {
+      return null;
+    }
 
     try {
+      if (canProceed != null && !canProceed()) return null;
       final request = EthereumRpcRequest(
         method: 'eth_signTypedData_v4',
         params: [wallet.address, jsonEncode(typedData)],
@@ -50,13 +55,13 @@ class IBITIVaultSigner {
           _log.d('TypedData signed');
         },
         onFailure: (error) {
-          _log.e('signTypedData failed', error.message);
+          if (canProceed == null) _log.e('signTypedData failed', error.message);
         },
       );
 
       return signature;
     } catch (e) {
-      _log.e('Error signing typed data', e);
+      if (canProceed == null) _log.e('Error signing typed data', e);
       return null;
     }
   }
@@ -100,14 +105,40 @@ class IBITIVaultSigner {
     }
   }
 
+  /// Browser personal_sign preserves the original UTF-8 bytes verbatim.
+  /// The dApp session performs consent and authentication before calling this.
+  Future<String?> signDappMessageHex(String hexMessage, {required String expectedAddress, required bool Function() canProceed}) async {
+    final user = await IBITIVaultService.instance.getPrivyUser();
+    if (user == null || !RegExp(r'^0x(?:[0-9a-fA-F]{2})+$').hasMatch(hexMessage)) return null;
+    final wallet = IBITIVaultService.instance.resolveEmbeddedEthereumWallet(user);
+    if (wallet == null || wallet.address.toLowerCase() != expectedAddress.toLowerCase()) return null;
+    try {
+      if (!canProceed()) return null;
+      final result = await wallet.provider.request(EthereumRpcRequest(
+          method: 'personal_sign', params: [hexMessage, wallet.address]));
+      String? signature;
+      result.fold(onSuccess: (response) { signature = response.data; },
+          onFailure: (_) {});
+      return signature;
+    } catch (_) { return null; }
+  }
+
   Future<String?> sendTransaction({
     required Map<String, dynamic> txParams,
     TransactionRequest? txContext,
+    bool Function()? canProceed,
+    DappReceiveEvidence? verifiedReceive,
   }) async {
+    if (verifiedReceive != null && (txContext == null || canProceed == null ||
+        !verifiedReceive.matchesContext(txContext) ||
+        !verifiedReceive.matchesPayload(txParams) ||
+        !EPKPolicyManager.instance.state.isActive)) {
+      throw const EPKValidationException('Verified receive authorization expired or changed.');
+    }
     if (txContext != null) {
       final state = EPKPolicyManager.instance.state;
       if (state.isActive) {
-        final composite = CompositeValidator();
+        final composite = CompositeValidator(verifiedReceive: verifiedReceive);
         final epkResult = await composite.validate(txContext, state);
         if (!epkResult.isValid) {
           final reason = epkResult.userMessage ??
@@ -119,7 +150,11 @@ class IBITIVaultSigner {
       }
     }
 
-    final hash = await _sendRawTransaction(txParams, txContext: txContext);
+    final hash = await _sendRawTransaction(txParams, txContext: txContext,
+        canProceed: verifiedReceive == null ? canProceed : () =>
+          verifiedReceive.matchesPayload(txParams) &&
+          verifiedReceive.matchesContext(txContext!) &&
+          EPKPolicyManager.instance.state.isActive && canProceed!());
 
     if (hash != null && txContext != null) {
       await EPKPolicyManager.instance.recordSuccessfulExecution(
@@ -241,6 +276,7 @@ class IBITIVaultSigner {
   Future<String?> _sendRawTransaction(
     Map<String, dynamic> txParams, {
     TransactionRequest? txContext,
+    bool Function()? canProceed,
   }) async {
     final user = await IBITIVaultService.instance.getPrivyUser();
     if (user == null) {
@@ -257,6 +293,11 @@ class IBITIVaultSigner {
     if (wallet == null) {
       _log.e('sendRawTransaction aborted: resolveEmbeddedEthereumWallet returned null.');
       return null;
+    }
+    if (canProceed != null && txContext != null &&
+        (wallet.address.toLowerCase() != txContext.fromAddress.toLowerCase() ||
+         txParams['from']?.toString().toLowerCase() != wallet.address.toLowerCase())) {
+      throw const EPKValidationException('Wallet account changed after transaction preview.');
     }
 
     try {
@@ -292,6 +333,7 @@ class IBITIVaultSigner {
           'dataLen=${(txParams['data']?.toString() ?? '').length}');
       final request = EthereumRpcRequest.ethSendTransaction(txJson);
 
+      if (canProceed != null && !canProceed()) return null;
       final result = await wallet.provider.request(request);
 
       String? hash;
@@ -301,13 +343,13 @@ class IBITIVaultSigner {
           _log.d('eth_sendTransaction success');
         },
         onFailure: (error) {
-          _log.e('sendTransaction failed', error.message);
+          if (canProceed == null) _log.e('sendTransaction failed', error.message);
         },
       );
 
       return hash;
     } catch (e) {
-      _log.e('Error sending tx', e);
+      if (canProceed == null) _log.e('Error sending tx', e);
       return null;
     }
   }

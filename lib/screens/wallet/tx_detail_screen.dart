@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:ibiti_guardian/config/chains.dart';
 import 'package:ibiti_guardian/models/on_chain_tx.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -17,6 +18,18 @@ class TxDetailScreen extends StatelessWidget {
     required this.walletAddress,
   });
 
+  static String _t(String key, [Map<String, dynamic>? args]) =>
+      LocalizationService.instance.t(key, args);
+
+  /// "0.00012300" -> "0.000123"
+  static String _trim(String s) {
+    if (!s.contains('.')) return s;
+    final trimmed = s.replaceFirst(RegExp(r'0+$'), '');
+    return trimmed.endsWith('.')
+        ? trimmed.substring(0, trimmed.length - 1)
+        : trimmed;
+  }
+
   @override
   Widget build(BuildContext context) {
     final (color, icon) = _typeStyle();
@@ -28,7 +41,7 @@ class TxDetailScreen extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: GuardianColors.background,
         elevation: 0,
-        title: Text('Детали транзакции', style: GuardianTextStyles.headline),
+        title: Text(_t('txDetailTitle'), style: GuardianTextStyles.headline),
         leading: IconButton(
           icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white),
           onPressed: () => Navigator.pop(context),
@@ -81,14 +94,17 @@ class TxDetailScreen extends StatelessWidget {
                     Text(
                       _amountText(),
                       style: GuardianTextStyles.titleLarge.copyWith(
-                        color: tx.isIncoming ? GuardianColors.success : Colors.white,
+                        color: tx.isIncoming
+                            ? GuardianColors.success
+                            : Colors.white,
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                   const SizedBox(height: 10),
                   // Status badge
                   Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                     decoration: BoxDecoration(
                       color: tx.isSuccess
                           ? GuardianColors.success.withOpacity(0.12)
@@ -109,7 +125,9 @@ class TxDetailScreen extends StatelessWidget {
                         ),
                         const SizedBox(width: 6),
                         Text(
-                          tx.isSuccess ? 'Подтверждено' : 'Ошибка',
+                          tx.isSuccess
+                              ? _t('txDetailConfirmed')
+                              : _t('txDetailFailed'),
                           style: GuardianTextStyles.caption.copyWith(
                             color: tx.isSuccess
                                 ? GuardianColors.success
@@ -131,13 +149,15 @@ class TxDetailScreen extends StatelessWidget {
               _DetailCard(
                 children: [
                   _DetailRow(
-                    label: 'Продано',
-                    value: '${tx.sellValue?.toStringAsFixed(4) ?? '?'} ${tx.sellSymbol}',
+                    label: _t('txDetailSold'),
+                    value:
+                        '${tx.sellValue?.toStringAsFixed(4) ?? '?'} ${tx.sellSymbol}',
                     valueColor: GuardianColors.danger,
                   ),
                   _DetailRow(
-                    label: 'Получено',
-                    value: '${tx.buyValue?.toStringAsFixed(4) ?? '?'} ${tx.buySymbol}',
+                    label: _t('txDetailBought'),
+                    value:
+                        '${tx.buyValue?.toStringAsFixed(4) ?? '?'} ${tx.buySymbol}',
                     valueColor: GuardianColors.success,
                   ),
                 ],
@@ -149,36 +169,43 @@ class TxDetailScreen extends StatelessWidget {
             _DetailCard(
               children: [
                 _CopyableRow(
-                  label: 'От',
+                  label: _t('txDetailFrom'),
                   value: tx.from,
                   context: context,
                 ),
                 _CopyableRow(
-                  label: 'Кому',
+                  label: _t('txDetailTo'),
                   value: tx.to,
                   context: context,
                 ),
                 _DetailRow(
-                  label: 'Сеть',
+                  label: _t('txDetailNetwork'),
                   value: chainName,
                 ),
                 _DetailRow(
-                  label: 'Время',
+                  label: _t('txDetailTime'),
                   value: _formatDateTime(tx.blockTimestamp),
                 ),
-                if (tx.gasUsed != null)
+                if (tx.feeNative != null)
+                  _DetailRow(
+                    label: _t('txDetailFee'),
+                    value:
+                        '${_trim(tx.feeNative!.toStringAsFixed(8))} ${tx.feeSymbol ?? ''}'
+                            .trim(),
+                  )
+                else if (tx.gasUsed != null)
                   _DetailRow(
                     label: 'Gas',
                     value: tx.gasUsed!,
                   ),
                 if (tx.tokenName != null)
                   _DetailRow(
-                    label: 'Токен',
+                    label: _t('txDetailToken'),
                     value: tx.tokenName!,
                   ),
                 if (tx.contractAddress != null)
                   _CopyableRow(
-                    label: 'Контракт',
+                    label: _t('txDetailContract'),
                     value: tx.contractAddress!,
                     context: context,
                   ),
@@ -191,7 +218,7 @@ class TxDetailScreen extends StatelessWidget {
             _DetailCard(
               children: [
                 _CopyableRow(
-                  label: 'Хеш',
+                  label: _t('txDetailHash'),
                   value: tx.hash,
                   context: context,
                 ),
@@ -208,7 +235,7 @@ class TxDetailScreen extends StatelessWidget {
                 child: ElevatedButton.icon(
                   onPressed: () => _openExplorer(explorerUrl),
                   icon: const Icon(Icons.open_in_new_rounded, size: 18),
-                  label: const Text('Открыть в Explorer'),
+                  label: Text(_t('txDetailOpenExplorer')),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: GuardianColors.accent,
                     foregroundColor: Colors.white,
@@ -237,9 +264,11 @@ class TxDetailScreen extends StatelessWidget {
       return 'Swap ${tx.sellSymbol ?? '?'} → ${tx.buySymbol ?? '?'}';
     }
     return switch (tx.type) {
-      OnChainTxType.send => 'Отправлено ${tx.tokenSymbol ?? ''}',
-      OnChainTxType.receive => 'Получено ${tx.tokenSymbol ?? ''}',
-      OnChainTxType.approval => 'Token Approval',
+      OnChainTxType.send =>
+        _t('txRowSent', {'token': tx.tokenSymbol ?? _t('txRowFunds')}),
+      OnChainTxType.receive =>
+        _t('txRowReceived', {'token': tx.tokenSymbol ?? _t('txRowFunds')}),
+      OnChainTxType.approval => _t('txRowApproval'),
       OnChainTxType.swap => 'Swap',
       OnChainTxType.other => 'Транзакция',
     };
@@ -262,23 +291,30 @@ class TxDetailScreen extends StatelessWidget {
     if (!tx.isSuccess) return (GuardianColors.danger, Icons.cancel_rounded);
     return switch (tx.type) {
       OnChainTxType.send => (GuardianColors.accent, Icons.arrow_upward_rounded),
-      OnChainTxType.receive => (GuardianColors.success, Icons.arrow_downward_rounded),
-      OnChainTxType.approval => (GuardianColors.warning, Icons.lock_open_rounded),
+      OnChainTxType.receive => (
+          GuardianColors.success,
+          Icons.arrow_downward_rounded
+        ),
+      OnChainTxType.approval => (
+          GuardianColors.warning,
+          Icons.lock_open_rounded
+        ),
       OnChainTxType.swap => (const Color(0xFF9B59B6), Icons.swap_horiz_rounded),
-      OnChainTxType.other => (GuardianColors.textSecondary, Icons.receipt_long_rounded),
+      OnChainTxType.other => (
+          GuardianColors.textSecondary,
+          Icons.receipt_long_rounded
+        ),
     };
   }
 
   String _formatDateTime(DateTime t) {
     final d = t.toLocal();
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-    ];
     final h = d.hour.toString().padLeft(2, '0');
     final m = d.minute.toString().padLeft(2, '0');
     final s = d.second.toString().padLeft(2, '0');
-    return '${d.day} ${months[d.month - 1]} ${d.year}, $h:$m:$s';
+    final day = d.day.toString().padLeft(2, '0');
+    final month = d.month.toString().padLeft(2, '0');
+    return '$day.$month.${d.year}, $h:$m:$s';
   }
 }
 
@@ -397,7 +433,8 @@ class _CopyableRow extends StatelessWidget {
               await Clipboard.setData(ClipboardData(text: value));
               if (!context.mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                content: Text('$label скопировано'),
+                content: Text(LocalizationService.instance
+                    .t('txDetailCopied', {'label': label})),
                 behavior: SnackBarBehavior.floating,
                 duration: const Duration(seconds: 1),
               ));

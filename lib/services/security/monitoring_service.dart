@@ -65,10 +65,8 @@ class MonitoringService {
     );
 
     // Update next scan time (rough estimate based on now + interval)
-    await MonitoringStateService.instance.updateScanTimestamps(
-      MonitoringStateService.instance.lastScanTime ?? DateTime.now(),
-      DateTime.now().add(interval),
-    );
+    await MonitoringStateService.instance
+        .updateNextScanTime(DateTime.now().add(interval));
 
     _log.d('Background tasks scheduled every ${interval.inMinutes} mins');
   }
@@ -97,22 +95,34 @@ class MonitoringService {
 
       _log.d('Starting check');
 
-      await _runWalletCheck(vaultAddress);
+      final complete = await _runWalletCheck(vaultAddress);
 
       // Update last scan time after successful run
       final nextScan = DateTime.now().add(Duration(
           minutes: SettingsService.instance.settings.monitoringIntervalMinutes
               .clamp(15, 1440)));
-      await MonitoringStateService.instance
-          .updateScanTimestamps(DateTime.now(), nextScan);
+      if (complete) {
+        await MonitoringStateService.instance
+            .updateScanTimestamps(DateTime.now(), nextScan);
+      } else {
+        await MonitoringStateService.instance.updateNextScanTime(nextScan);
+      }
     } finally {
       _isChecking = false;
     }
   }
 
-  Future<void> _runWalletCheck(String address) async {
-    final allRiskyKeys = <String>{};
-    final supportedChains = [1, 56, 137, 42161, 10, 8453];
+  @visibleForTesting
+  Future<bool> checkWalletForTest(String address, List<int> chains) =>
+      _runWalletCheck(address, chains: chains, emitEvents: false);
+
+  Future<bool> _runWalletCheck(
+    String address, {
+    List<int> chains = const [1, 56, 137, 42161, 10, 8453],
+    bool emitEvents = true,
+  }) async {
+    final successfulChains = <int, Set<String>>{};
+    final supportedChains = chains;
     final t = LocalizationService.instance;
 
     final List<Future<void>> scans = [];
@@ -120,18 +130,17 @@ class MonitoringService {
       scans.add(() async {
         try {
           final chainName = ChainConfig.getChainName(chainId);
-          final approvals =
-              await ApprovalScanService.scan(address, chainId: chainId);
+          final approvals = await ApprovalScanService.scan(address,
+              chainId: chainId, publishResult: false);
 
           // Filter risky ones
           final riskyApprovals =
               approvals.where((a) => a.assessment.shouldRevoke).toList();
 
-          synchronized(allRiskyKeys, () {
-            for (final a in riskyApprovals) {
-              allRiskyKeys.add("${chainId}_${a.spenderAddress}_${a.token}");
-            }
-          });
+          successfulChains[chainId] = {
+            for (final a in riskyApprovals)
+              '${chainId}_${a.spenderAddress.toLowerCase()}_${a.token.toLowerCase()}',
+          };
 
           // Detect NEW risks using persisted state
           final newRisks = riskyApprovals.where((a) {
@@ -143,7 +152,7 @@ class MonitoringService {
             );
           }).toList();
 
-          if (newRisks.isNotEmpty) {
+          if (emitEvents && newRisks.isNotEmpty) {
             for (final risk in newRisks) {
               final title = t.t('notifyTitleRisk', {'chainName': chainName});
               final message = t.t('notifyMsgRisk', {
@@ -183,7 +192,9 @@ class MonitoringService {
     await Future.wait(scans);
 
     // Update state with CURRENT keys to detect NEW ones in next run
-    await MonitoringStateService.instance.updateRisks(address, allRiskyKeys);
+    await MonitoringStateService.instance
+        .updateSuccessfulChainRisks(address, successfulChains);
+    return successfulChains.length == supportedChains.length;
   }
 
   // Simple thread-safe-ish helper for the parallel set update

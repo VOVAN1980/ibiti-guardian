@@ -250,6 +250,11 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
   }
 
   void _updateVisualStep() {
+    // Failure is authoritative; never animate it through successful phases.
+    if (_controller.model.state == GuardianFlowState.failed) {
+      if (mounted) setState(() => _visualStep = 2);
+      return;
+    }
     final target = _currentStepIndex;
     if (target > _visualStep) {
       _catchUpVisualStep();
@@ -264,7 +269,10 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
     while (_visualStep < _currentStepIndex && mounted) {
       await Future.delayed(const Duration(milliseconds: 800));
       if (!mounted) break;
-      setState(() => _visualStep++);
+      if (_controller.model.state == GuardianFlowState.failed) break;
+      if (_visualStep < _currentStepIndex) {
+        setState(() => _visualStep++);
+      }
     }
     _isCatchingUp = false;
   }
@@ -312,6 +320,13 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
 
   List<String> _stepLabels(BuildContext context) {
     final t = LocalizationProvider.of(context);
+    if (_controller.model.state == GuardianFlowState.failed) {
+      return [
+        t.t('guardianStepScan'),
+        t.t('guardianStepAnalyze'),
+        t.t('guardianErrFailedTitle'),
+      ];
+    }
     final s = _controller.model.scenario;
     if (widget.mode == GuardianMode.safe) {
       if (s == GuardianScenario.safeNoRisk) {
@@ -370,8 +385,9 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
         case GuardianFlowState.executing:
           return 3;
         case GuardianFlowState.completed:
-        case GuardianFlowState.failed:
           return 4;
+        case GuardianFlowState.failed:
+          return 2;
       }
     } else {
       switch (state) {
@@ -390,8 +406,9 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
         case GuardianFlowState.waitingWallet:
           return 3;
         case GuardianFlowState.completed:
-        case GuardianFlowState.failed:
           return 4;
+        case GuardianFlowState.failed:
+          return 2;
       }
     }
   }
@@ -508,13 +525,15 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
   Widget _buildPhaseBar() {
     final phases = _stepLabels(context);
     final idx = _visualStep;
+    final failed = _controller.model.state == GuardianFlowState.failed;
+    final phaseColor = failed ? GuardianColors.danger : _modeColor;
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
       child: Row(
         children: List.generate(phases.length, (i) {
-          final isDone = i <= idx;
-          final isActive = i == idx;
+          final isDone = !failed && i <= idx;
+          final isActive = failed ? i == phases.length - 1 : i == idx;
           return Expanded(
             child: Row(
               children: [
@@ -529,7 +548,9 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
                           color: GuardianColors.glassBorder,
                         ),
                         child: TweenAnimationBuilder<double>(
-                          tween: Tween(begin: 0.0, end: isDone ? 1.0 : 0.0),
+                          tween: Tween(
+                              begin: 0.0,
+                              end: isDone || (failed && isActive) ? 1.0 : 0.0),
                           duration: const Duration(milliseconds: 800),
                           curve: Curves.easeOutQuad,
                           builder: (_, value, __) => FractionallySizedBox(
@@ -538,7 +559,7 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
                             child: Container(
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(4),
-                                color: _modeColor,
+                                color: phaseColor,
                               ),
                             ),
                           ),
@@ -550,8 +571,8 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                         style: GuardianTextStyles.caption.copyWith(
-                          color: isDone
-                              ? _modeColor
+                          color: isDone || (failed && isActive)
+                              ? phaseColor
                               : GuardianColors.textSecondary,
                           fontWeight:
                               isActive ? FontWeight.bold : FontWeight.w500,
@@ -574,6 +595,7 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
   Widget _buildBody() {
     final state = _controller.model.state;
     final vIdx = _visualStep;
+    if (state == GuardianFlowState.failed) return _buildError();
 
     // UI matches the VISUAL progress, not the underlying true state.
     if (state == GuardianFlowState.readyNoAction && vIdx < 4) {
@@ -622,7 +644,7 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
     if (state == GuardianFlowState.readyNoAction ||
         state == GuardianFlowState.completed) {
       final btnText = widget.mode == GuardianMode.safe
-          ? t.t('guardianSafeBtnOk', {'default': "Great, I'm Safe"})
+          ? t.t('guardianSafeBtnOk', {'default': 'Got it'})
           : t.t('guardianPanicBtnOk', {'default': "OK, No Threats"});
       return SafeArea(
         child: Padding(
@@ -882,12 +904,10 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
 
     final description = isSafeMode
         ? t.t('guardianResCheckSafe', {
-            'default':
-                'We checked all smart contracts that can access your funds.'
+            'default': 'Token approvals were checked on the selected network.'
           })
         : t.t('guardianResCheckPanic', {
-            'default':
-                'We checked for contracts that can drain your wallet instantly.'
+            'default': 'Token approvals were checked for risky access to funds.'
           });
 
     String chainName;

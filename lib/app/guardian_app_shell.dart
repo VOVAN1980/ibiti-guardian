@@ -30,6 +30,8 @@ import 'package:ibiti_guardian/widgets/floating_mic_bubble.dart';
 import 'package:ibiti_guardian/screens/market_command/widgets/cex_spot_trade_modal.dart';
 import 'package:ibiti_guardian/services/wallet/wallet_topup_detector.dart';
 import 'package:ibiti_guardian/services/market/market_data_service.dart';
+import 'package:ibiti_guardian/services/dapp/dapp_link_service.dart';
+import 'package:ibiti_guardian/screens/dapp/dapp_browser_screen.dart';
 
 class GuardianAppShell extends StatefulWidget {
   final int initialIndex;
@@ -86,6 +88,15 @@ class _GuardianAppShellState extends State<GuardianAppShell>
     AutomationEngine.instance.start();
     AutomationDispatchService.instance.start();
     WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      DappLinkService.instance.attach((url) {
+        if (!mounted) return;
+        Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => DappBrowserScreen(initialUrl: url),
+        ));
+      });
+    });
 
     // ── UICommandBus consumer ─────────────────────────────────────────────────
     // This is the ONLY place that converts voice/chat UICommands into actual
@@ -122,6 +133,7 @@ class _GuardianAppShellState extends State<GuardianAppShell>
 
   @override
   void dispose() {
+    DappLinkService.instance.detach();
     _cmdSub?.cancel();
     _bubbleOverlay?.remove();
     _bubbleVisible.dispose();

@@ -1,4 +1,5 @@
 import 'package:ibiti_guardian/models/transaction_request.dart';
+import 'package:ibiti_guardian/services/dapp/dapp_verified_receive.dart';
 import 'package:ibiti_guardian/services/policy/validators/epk_validator.dart';
 import 'package:ibiti_guardian/services/policy/validators/epk_validator_result.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
@@ -6,7 +7,8 @@ import 'package:ibiti_guardian/services/policy/policy_profile_store.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
 
 class TargetSelectorGuard extends EPKValidator {
-  const TargetSelectorGuard() : super('TargetSelectorGuard');
+  final DappReceiveEvidence? verifiedReceive;
+  const TargetSelectorGuard({this.verifiedReceive}) : super('TargetSelectorGuard');
 
   @override
   Future<EpkValidatorResult> validate(
@@ -15,6 +17,11 @@ class TargetSelectorGuard extends EPKValidator {
       return EpkValidatorResult.pass();
     }
 
+    // Only host-produced, fresh exact-receive evidence can qualify. Ordinary
+    // sends, approvals and other targets still use the user's existing rules.
+    if (verifiedReceive?.matchesContext(tx) ?? false) {
+      return EpkValidatorResult.pass();
+    }
     final toAddress = tx.toAddress.toLowerCase();
 
     // Self transfers are always allowed

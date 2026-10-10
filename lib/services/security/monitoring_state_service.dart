@@ -79,6 +79,31 @@ class MonitoringStateService extends ChangeNotifier {
     return !previousRisks.contains(key);
   }
 
+  /// Scheduling a job (or retry) is not evidence of a successful scan.
+  Future<void> updateNextScanTime(DateTime next) async {
+    _nextScanTime = next;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_nextScanTimeKey, next.toIso8601String());
+    notifyListeners();
+  }
+
+  /// Replace only chains proven to have completed. Failed/unavailable chains
+  /// retain their previous risks; a total failure makes no risk-state change.
+  Future<void> updateSuccessfulChainRisks(
+      String walletAddress, Map<int, Set<String>> successfulChains) async {
+    if (successfulChains.isEmpty) return;
+    final key = walletAddress.toLowerCase();
+    final merged = <String>{
+      for (final previous in _lastRisks[key] ?? <String>{})
+        if (!successfulChains
+            .containsKey(int.tryParse(previous.split('_').first)))
+          previous.toLowerCase(),
+      for (final risks in successfulChains.values)
+        for (final risk in risks) risk.toLowerCase(),
+    };
+    await updateRisks(walletAddress, merged);
+  }
+
   /// Checks if a spender address is already flagged in ANY OTHER wallet.
   bool isSpenderRepeatedInOtherWallets(String spenderAddress,
       [String? currentWalletAddress]) {

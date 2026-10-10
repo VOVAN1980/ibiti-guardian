@@ -6,7 +6,7 @@ import 'package:ibiti_guardian/models/wallet_asset.dart';
 import 'package:ibiti_guardian/models/on_chain_tx.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
-import 'package:ibiti_guardian/services/moralis/moralis_tx_history_service.dart';
+import 'package:ibiti_guardian/services/history/tx_history_service.dart';
 import 'package:ibiti_guardian/config/privy_chain_registry.dart';
 import 'package:ibiti_guardian/screens/wallet/components/wallet_send_modal.dart';
 import 'package:ibiti_guardian/screens/wallet/components/wallet_receive_modal.dart';
@@ -77,7 +77,7 @@ class _TokenDetailScreenState extends State<TokenDetailScreen> {
     try {
       final addr = IBITIVaultService.instance.activeAddress;
       final chainKey = IBITIVaultService.instance.chainKey;
-      final page = await MoralisTxHistoryService.fetch(
+      final page = await TxHistoryService.fetch(
         address: addr,
         chainKey: chainKey,
       );

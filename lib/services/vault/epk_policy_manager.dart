@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 import 'package:ibiti_guardian/config/privy_chain_registry.dart';
 import 'package:ibiti_guardian/services/policy/epk_capability_resolver.dart';
@@ -112,18 +113,54 @@ class EpkState {
 
 class EPKPolicyManager extends ChangeNotifier {
   static final EPKPolicyManager instance = EPKPolicyManager._internal();
-  EPKPolicyManager._internal() {
+  EPKPolicyManager._internal()
+      : _vaultCreatedOverride = null,
+        _pauseStorage = const FlutterSecureStorage(
+            aOptions: AndroidOptions(encryptedSharedPreferences: true)) {
     IBITIVaultService.instance.addListener(_handleVaultChanged);
   }
 
+  @visibleForTesting
+  EPKPolicyManager.forTesting(
+      {required bool Function() vaultCreated,
+      FlutterSecureStorage pauseStorage = const FlutterSecureStorage(
+          aOptions: AndroidOptions(encryptedSharedPreferences: true))})
+      : _vaultCreatedOverride = vaultCreated,
+        _pauseStorage = pauseStorage;
+
+  final bool Function()? _vaultCreatedOverride;
+  static const _pauseKey = 'guardian_epk_manual_pause_v1';
+  final FlutterSecureStorage _pauseStorage;
+  Future<void> _pauseWrites = Future<void>.value();
+  bool _pauseLoaded = false;
+  bool _protectionPaused = true;
+  int _pauseRevision = 0;
+  bool get _vaultCreated =>
+      _vaultCreatedOverride?.call() ??
+      IBITIVaultService.instance.isVaultCreated;
+
   static const _log = GuardianLogger('EPKPolicy');
 
-  EpkState _state = const EpkState();
+  EpkState _state = const EpkState(isActive: false);
   EpkState get state => _state;
   String _lastVaultFingerprint = '';
 
   Future<void> init() async {
     _lastVaultFingerprint = _vaultFingerprint();
+    try {
+      final saved = await _pauseStorage.read(key: _pauseKey);
+      if (saved != null && saved != 'true' && saved != 'false') {
+        throw StateError('Invalid saved protection pause');
+      }
+      _protectionPaused = saved == 'true';
+      _pauseLoaded = true;
+    } catch (_) {
+      // Unreadable protection intent must never reactivate signing.
+      _protectionPaused = true;
+      _pauseLoaded = false;
+      _log.w(
+          'Protection pause could not be restored; signing remains blocked.');
+    }
     await refreshPolicy();
   }
 
@@ -188,7 +225,9 @@ class EPKPolicyManager extends ChangeNotifier {
 
     _state = _state.copyWith(
       policyId: policyId,
-      isActive: vault.isVaultCreated && _state.isActive,
+      // Loading the vault is not a user-requested emergency pause. Keep the
+      // pause intent separately so startup can recover without undoing Panic.
+      isActive: _pauseLoaded && _vaultCreated && !_protectionPaused,
       isDeployed: isReady,
       executionMode:
           isReady ? EPKExecutionMode.onChainEpk : EPKExecutionMode.local,
@@ -201,15 +240,42 @@ class EPKPolicyManager extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> _savePause(bool paused) {
+    final value = paused.toString();
+    final write = _pauseWrites.catchError((_) {}).then((_) async {
+      await _pauseStorage.write(key: _pauseKey, value: value);
+      if (await _pauseStorage.read(key: _pauseKey) != value) {
+        throw StateError('Protection pause could not be saved');
+      }
+    });
+    _pauseWrites = write;
+    return write;
+  }
+
   Future<void> emergencyPause() async {
-    // Send tx to pause EPK
+    final revision = ++_pauseRevision;
+    _protectionPaused = true;
+    _pauseLoaded = false;
+    // Local gate; no on-chain pause transaction is submitted here.
     _state = _state.copyWith(isActive: false, lastAction: 'EMERGENCY_PAUSE');
     notifyListeners();
+    await _savePause(true);
+    if (revision == _pauseRevision) _pauseLoaded = true;
   }
 
   Future<void> resumeProtection() async {
+    final revision = ++_pauseRevision;
+    _protectionPaused = true;
+    _pauseLoaded = false;
+    _state = _state.copyWith(isActive: false);
+    notifyListeners();
+    // Persist the explicit resume before allowing any new signature.
+    await _savePause(false);
+    if (revision != _pauseRevision) return;
+    _protectionPaused = false;
+    _pauseLoaded = true;
     _state = _state.copyWith(
-      isActive: true,
+      isActive: _vaultCreated,
       lastAction: 'EPK_RESUMED',
       executionMode: _state.isDeployed
           ? EPKExecutionMode.onChainEpk

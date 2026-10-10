@@ -1,4 +1,5 @@
 import 'dart:io' show Platform;
+import 'dart:async';
 import "package:flutter/material.dart";
 import "package:flutter/foundation.dart";
 import "package:ibiti_guardian/utils/guardian_logger.dart";
@@ -19,6 +20,7 @@ import "package:ibiti_guardian/services/voice/voice_turn_controller.dart";
 import "package:ibiti_guardian/services/assistant/screen_context_service.dart";
 import "package:ibiti_guardian/theme/guardian_theme.dart";
 import "package:ibiti_guardian/screens/boot_screen.dart";
+import 'package:ibiti_guardian/services/dapp/dapp_link_service.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 @pragma('vm:entry-point')
@@ -96,6 +98,7 @@ void main() async {
   ExecutionRouter.instance.init();
 
   runApp(const GuardianApp());
+  if (!isDesktop) unawaited(DappLinkService.instance.start());
 }
 
 class GuardianApp extends StatefulWidget {

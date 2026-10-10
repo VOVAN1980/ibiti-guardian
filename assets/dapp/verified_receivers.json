@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "reviewedEntryPoint": "withdraw(address,address,uint256,bytes32,uint256,bytes,bytes32[])",
+  "compiler": "0.8.30+commit.73712a01",
+  "optimizerRuns": 200,
+  "sourceHashes": {
+    "src/LvsVaultProxy.sol": "0xdbf189b09290e56e24158ec7493481e3a2ec71ef0bc7800822678f3f16a0f07d",
+    "src/LvsAuthorizedVaultV4.sol": "0xc62ad37667efacf1a9dc7b36b2b3b090d24787a5c2ffb84138114424727ca1e2",
+    "src/LvsExactTokenTransfer.sol": "0x84ac14f8325d0815188023e31328f8215a73ee96a72f23063ebf315e7c79a8df",
+    "src/LvsDepositAddressBook.sol": "0x743664e781eedfdc7656a42851720732f5f14d77f2cba97703299f584dcaf8ab",
+    "src/LvsBookForwarder.sol": "0xd51e421148d43ca266568aa877179aac2e32a5c05c471c7545586dff999560c7"
+  },
+  "code": {
+    "proxy": {"bytes": 1002, "hash": "0xfe527bbf82d7e8e14c35add020f83eeb01bac485521b181d5e643ac48172522a", "immutableOffsets": []},
+    "receiver": {"bytes": 8728, "hash": "0x9015fc6e6f655473f0992e3f5939f6e2fbafcde24dbf75bb90a77f5330b4a47a", "immutableOffsets": []},
+    "book": {"bytes": 1708, "hash": "0xfc9d02dc49a43e32d4522ed52424e452f2cb0fbe690a5751aebed4ce3d09005f", "immutableOffsets": [304, 1283]},
+    "forwarder": {"bytes": 1832, "hash": "0x67b0b806d49c22c3aff7ffb6f906c38e56fb6ad4d0d8bd597e3bc74d936e89da", "immutableOffsets": [61, 161]}
+  }
+}

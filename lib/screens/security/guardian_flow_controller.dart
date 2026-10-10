@@ -34,6 +34,8 @@ class GuardianFlowModel {
   final GuardianMode mode;
   final GuardianFlowState state;
 
+  // Number of active token/spender approvals returned by the completed scan,
+  // not a unique contract count or a count of RPC requests.
   final int scannedCount;
   final int criticalCount;
   final int warningCount;
@@ -67,7 +69,11 @@ class GuardianFlowModel {
   });
 
   GuardianScenario? get scenario {
-    if (state.index < GuardianFlowState.readyNoAction.index) return null;
+    // A failed read has no risk assessment, even if all counts default to zero.
+    if (state == GuardianFlowState.failed ||
+        state.index < GuardianFlowState.readyNoAction.index) {
+      return null;
+    }
 
     if (mode == GuardianMode.safe) {
       return (criticalCount + warningCount) == 0
@@ -135,6 +141,8 @@ class GuardianFlowController extends ChangeNotifier {
   );
 
   StreamSubscription<RevokeProgress>? _progressSub;
+  int _scanGeneration = 0;
+  bool _disposed = false;
 
   bool isCritical(ApprovalData a) {
     final isUnlimited = a.allowance > BigInt.from(1000000000);
@@ -158,11 +166,20 @@ class GuardianFlowController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
+    _scanGeneration++;
     _progressSub?.cancel();
     super.dispose();
   }
 
   Future<void> open(GuardianMode mode) async {
+    if (_disposed ||
+        model.state == GuardianFlowState.scanning ||
+        model.state == GuardianFlowState.analyzing) {
+      return;
+    }
+    final generation = ++_scanGeneration;
+    bool isCurrentScan() => !_disposed && generation == _scanGeneration;
     final wallet = WalletAdapter.instance;
     if (!wallet.isConnected) {
       model = GuardianFlowModel(
@@ -180,9 +197,11 @@ class GuardianFlowController extends ChangeNotifier {
       // Simulate real-world scanning progression if desired, or just scan
       final approvals = await ApprovalScanService.scan(wallet.address,
           chainId: wallet.chainId);
+      if (!isCurrentScan()) return;
 
       // Delay for UX to show the "Scanning" screen (matches UI 800ms step)
       await Future.delayed(const Duration(milliseconds: 800));
+      if (!isCurrentScan()) return;
 
       model = model.copyWith(
         state: GuardianFlowState.analyzing,
@@ -193,6 +212,7 @@ class GuardianFlowController extends ChangeNotifier {
 
       // Delay for analysis UX (matches UI 800ms step)
       await Future.delayed(const Duration(milliseconds: 800));
+      if (!isCurrentScan()) return;
 
       final critical = approvals.where(isCritical).toList();
       final warnings = approvals.where(isWarning).toList();
@@ -229,6 +249,7 @@ class GuardianFlowController extends ChangeNotifier {
       }
       notifyListeners();
     } catch (e) {
+      if (!isCurrentScan()) return;
       model =
           model.copyWith(state: GuardianFlowState.failed, error: e.toString());
       notifyListeners();

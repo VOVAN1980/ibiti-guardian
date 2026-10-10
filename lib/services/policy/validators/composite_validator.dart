@@ -1,4 +1,5 @@
 import 'package:ibiti_guardian/models/transaction_request.dart';
+import 'package:ibiti_guardian/services/dapp/dapp_verified_receive.dart';
 import 'package:ibiti_guardian/services/policy/validators/epk_validator.dart';
 import 'package:ibiti_guardian/services/policy/validators/epk_validator_result.dart';
 import 'package:ibiti_guardian/services/policy/validators/spend_limit_validator.dart';
@@ -9,10 +10,10 @@ import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 class CompositeValidator extends EPKValidator {
   final List<EPKValidator> _validators;
 
-  CompositeValidator()
+  CompositeValidator({DappReceiveEvidence? verifiedReceive})
       : _validators = [
           const ThreatFeedBlocklistValidator(), // Highest priority check first
-          const TargetSelectorGuard(),
+          TargetSelectorGuard(verifiedReceive: verifiedReceive),
           const SpendLimitValidator(),
         ],
         super('CompositeValidator');

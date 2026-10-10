@@ -18,6 +18,7 @@ import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/screens/settings/pin_setup_screen.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:ibiti_guardian/models/jarvis_personality.dart';
+import 'package:ibiti_guardian/screens/dapp/dapp_browser_screen.dart';
 
 class _Lang {
   final String code;
@@ -115,6 +116,12 @@ class _SettingsBody extends StatelessWidget {
 
         // App section
         _SectionHeader(label: t.t('settingsSectionApp')),
+        _NavTile(
+          icon: Icons.language,
+          title: Localizations.localeOf(context).languageCode == 'ru' ? 'Браузер dApp' : 'dApp Browser',
+          subtitle: Localizations.localeOf(context).languageCode == 'ru' ? 'Сайты Web3 и подключения кошелька' : 'Web3 websites and wallet connections',
+          destination: const DappBrowserScreen(),
+        ),
         _NavTile(
           icon: Icons.lock_outline,
           title: t.t('settingsSecurity'),

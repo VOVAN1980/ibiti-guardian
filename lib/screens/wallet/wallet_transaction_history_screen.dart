@@ -5,7 +5,8 @@ import 'package:ibiti_guardian/models/tx_status.dart';
 import 'package:ibiti_guardian/screens/wallet/tx_detail_screen.dart';
 import 'package:ibiti_guardian/services/execution/tx_registry.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
-import 'package:ibiti_guardian/services/moralis/moralis_tx_history_service.dart';
+import 'package:ibiti_guardian/services/history/tx_history_service.dart';
+import 'package:ibiti_guardian/services/history/tx_history_merge.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
@@ -58,13 +59,13 @@ class _WalletTransactionHistoryScreenState
     }
 
     try {
-      final page = await MoralisTxHistoryService.fetch(
+      final page = await TxHistoryService.fetch(
         address: _address,
         chainKey: _chainKey,
       );
       if (mounted) {
         setState(() {
-          _txns = page.transactions;
+          _txns = mergeHistoryPages(const [], page.transactions);
           _nextCursor = page.nextCursor;
           _isLoading = false;
         });
@@ -83,14 +84,14 @@ class _WalletTransactionHistoryScreenState
     if (_nextCursor == null || _isLoadingMore) return;
     setState(() => _isLoadingMore = true);
     try {
-      final page = await MoralisTxHistoryService.fetch(
+      final page = await TxHistoryService.fetch(
         address: _address,
         chainKey: _chainKey,
         cursor: _nextCursor,
       );
       if (mounted) {
         setState(() {
-          _txns.addAll(page.transactions);
+          _txns = mergeHistoryPages(_txns, page.transactions);
           _nextCursor = page.nextCursor;
           _isLoadingMore = false;
         });
@@ -179,7 +180,7 @@ class _WalletTransactionHistoryScreenState
                     ? _ErrorState(
                         error: _error!,
                         onRetry: () => _loadHistory(reset: true))
-                    : _filtered.isEmpty
+                    : _filtered.isEmpty && _nextCursor == null
                         ? _EmptyState(filter: _filter)
                         : ListView.builder(
                             padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
@@ -245,12 +246,13 @@ class _FilterRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final t = LocalizationService.instance;
     final filters = [
-      (_TxFilter.all, 'All'),
-      (_TxFilter.sent, 'Sent'),
-      (_TxFilter.received, 'Received'),
-      (_TxFilter.approvals, 'Approvals'),
-      (_TxFilter.swaps, 'Swaps'),
+      (_TxFilter.all, t.t('txFilterAll')),
+      (_TxFilter.sent, t.t('txFilterSent')),
+      (_TxFilter.received, t.t('txFilterReceived')),
+      (_TxFilter.approvals, t.t('txFilterApprovals')),
+      (_TxFilter.swaps, t.t('txFilterSwaps')),
     ];
 
     return SizedBox(
@@ -347,7 +349,7 @@ class _OnChainTile extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      tx.summary ?? _subtitleText(),
+                      _subtitleText(),
                       style: GuardianTextStyles.caption,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
@@ -452,17 +454,20 @@ class _OnChainTile extends StatelessWidget {
   }
 
   String _titleText() {
+    final t = LocalizationService.instance;
+    final token = tx.tokenSymbol ?? t.t('txRowFunds');
     if (tx.type == OnChainTxType.swap) {
-      final sell = tx.sellSymbol ?? '?';
-      final buy = tx.buySymbol ?? '?';
-      return 'Swapped $sell → $buy';
+      return t.t('txRowSwapped', {
+        'sell': tx.sellSymbol ?? '?',
+        'buy': tx.buySymbol ?? '?',
+      });
     }
     return switch (tx.type) {
-      OnChainTxType.send => 'Sent ${tx.tokenSymbol ?? 'funds'}',
-      OnChainTxType.receive => 'Received ${tx.tokenSymbol ?? 'funds'}',
-      OnChainTxType.approval => 'Token approval',
-      OnChainTxType.swap => 'Swap', // unreachable
-      OnChainTxType.other => 'Transaction',
+      OnChainTxType.send => t.t('txRowSent', {'token': token}),
+      OnChainTxType.receive => t.t('txRowReceived', {'token': token}),
+      OnChainTxType.approval => t.t('txRowApproval'),
+      OnChainTxType.swap => t.t('txRowSwap'), // unreachable
+      OnChainTxType.other => t.t('txRowTransaction'),
     };
   }
 
@@ -470,15 +475,16 @@ class _OnChainTile extends StatelessWidget {
     if (tx.type == OnChainTxType.swap) {
       return '${tx.sellSymbol ?? '?'} → ${tx.buySymbol ?? '?'}';
     }
+    final t = LocalizationService.instance;
     final addr = tx.type == OnChainTxType.receive ? tx.from : tx.to;
     final short = addr.length > 12
         ? '${addr.substring(0, 6)}...${addr.substring(addr.length - 4)}'
         : addr;
     return switch (tx.type) {
-      OnChainTxType.send => 'To $short',
-      OnChainTxType.receive => 'From $short',
-      OnChainTxType.approval => 'Spender: $short',
-      OnChainTxType.swap => 'Via smart contract', // unreachable
+      OnChainTxType.send => t.t('txSubTo', {'address': short}),
+      OnChainTxType.receive => t.t('txSubFrom', {'address': short}),
+      OnChainTxType.approval => t.t('txSubSpender', {'address': short}),
+      OnChainTxType.swap => t.t('txSubViaContract'), // unreachable
       OnChainTxType.other => short,
     };
   }
@@ -498,12 +504,13 @@ class _OnChainTile extends StatelessWidget {
   }
 
   String _timeAgo(DateTime t) {
+    final l = LocalizationService.instance;
     final diff = DateTime.now().difference(t);
-    if (diff.inSeconds < 60) return 'just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 30) return '${diff.inDays}d ago';
-    return '${t.day}/${t.month}/${t.year}';
+    if (diff.inSeconds < 60) return l.t('txAgoNow');
+    if (diff.inMinutes < 60) return l.t('txAgoMinutes', {'n': diff.inMinutes});
+    if (diff.inHours < 24) return l.t('txAgoHours', {'n': diff.inHours});
+    if (diff.inDays < 30) return l.t('txAgoDays', {'n': diff.inDays});
+    return '${t.day}.${t.month.toString().padLeft(2, '0')}.${t.year}';
   }
 }
 
@@ -566,15 +573,15 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: 16),
             Text(
               filter == _TxFilter.all
-                  ? 'No transactions yet'
-                  : 'No ${filter.name} transactions found',
+                  ? LocalizationService.instance.t('txEmptyTitle')
+                  : LocalizationService.instance.t('txEmptyFilteredTitle'),
               style: GuardianTextStyles.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
               filter == _TxFilter.all
-                  ? 'Your on-chain activity will appear here.'
-                  : 'Try selecting a different filter.',
+                  ? LocalizationService.instance.t('txEmptyBody')
+                  : LocalizationService.instance.t('txEmptyFilteredBody'),
               textAlign: TextAlign.center,
               style: GuardianTextStyles.bodySecondary,
             ),
