@@ -64,7 +64,7 @@ Sensitive data never leaves your device unencrypted:
 ### 6. Multi-Chain Web3 & Centralized Exchange (CEX) Hub
 Unified management across DeFi and CeFi:
 - **Supported CEXs**: Direct, encrypted API integration for spot trading on **MEXC**, **OKX**, **Gate.io**, and **Binance**.
-- **Supported Web3 Networks**: Multi-chain support for **BSC, Ethereum, Polygon, Arbitrum, Optimism, Base, Solana, and Tron**.
+- **Supported Web3 Networks**: Multi-chain support for **BSC, Ethereum, Polygon, Arbitrum, Base, Solana, and Tron**.
 - **Embedded Web3 Wallets**: Seamless social login (Google/Apple) and embedded non-custodial wallet creation powered by Privy.
 
 ### 7. dApp Browser, History & Safe Scan *(October 2026)*
