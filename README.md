@@ -67,6 +67,13 @@ Unified management across DeFi and CeFi:
 - **Supported Web3 Networks**: Multi-chain support for **BSC, Ethereum, Polygon, Arbitrum, Optimism, Base, Solana, and Tron**.
 - **Embedded Web3 Wallets**: Seamless social login (Google/Apple) and embedded non-custodial wallet creation powered by Privy.
 
+### 7. dApp Browser, History & Safe Scan *(October 2026)*
+- **Built-in dApp browser** for EVM sites: HTTPS only, the real domain is always shown outside the page, and every site needs a separate per-origin consent. Each request goes through the same Policy/EPK checks, gas and execution checks and a native transaction preview before you confirm.
+- **Readable transaction preview**: localized text, network fee shown in the coin and in USD.
+- **Transaction history**: native transfers and token transfers with full details (sender, recipient, amount, status, time, hash, fee).
+- **Safe Scan & Panic**: finds every active ERC-20 approval of your wallet and lets you revoke risky ones; if the scan fails, it says so and offers a retry instead of showing "no risks".
+- **The AI cannot change your security policy**: limits and rules are edited only by you, never by the assistant.
+
 ### 🚧 Coming Soon
 The following features are architecturally designed and partially implemented, but not yet available in the current release:
 - **Autonomous Trading Bot**: The policy engine, market limits, and execution pipeline are built to support fully autonomous AI-driven trading. The bot will operate within strict user-defined budgets, per-transaction caps, and risk thresholds. *(Phase 2)*

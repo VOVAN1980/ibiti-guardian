@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 ---
 
+## [Unreleased] - 2026-10
+
+### Added
+- **dApp browser** for EVM sites with per-origin consent, Policy/EPK checks and native transaction preview.
+- **Transaction history** with details for native and token transfers.
+- **Safe Scan & Panic**: scan of active ERC-20 approvals with revoke and an honest error/retry state.
+- Localized transaction preview with the network fee in the coin and in USD.
+- Re-login prompt when the Privy session has expired.
+
+### Changed
+- Conversational voice routing and more Guardian assistant tools; more natural speech.
+
+### Fixed
+- Security: the AI assistant can no longer change security policy.
+- Exact maximum transfer amounts; send modal offers only the active network's coins.
+- Swaps: native-token sentinel and `slippageBps` for 0x v2.
+- Android release build restored after the Privy upgrade.
+
+---
+
 ## [1.0.0-hackathon] - 2026-06-17
 
 ### Added
