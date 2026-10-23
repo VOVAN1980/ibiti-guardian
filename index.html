@@ -1,0 +1,410 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IBITI Guardian — safety-first AI wallet agent</title>
+<meta name="description" content="A voice AI agent for crypto wallets and exchanges that cannot act outside your rules: policy engine, sandbox simulation and your confirmation for every action.">
+<meta property="og:title" content="IBITI Guardian">
+<meta property="og:description" content="Safety-first AI wallet agent by IBITI Labs.">
+<meta property="og:image" content="img/security.webp">
+<meta name="theme-color" content="#03060a">
+<link rel="icon" href="img/logo.webp">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;700&display=swap&subset=cyrillic" rel="stylesheet">
+<style>
+:root{--bg:#03060a;--bg2:#08101a;--line:rgba(255,255,255,.08);--line2:rgba(255,255,255,.16);--tx:#fff;--tx2:rgba(255,255,255,.76);--tx3:rgba(255,255,255,.52);
+--green:#34E89E;--cyan:#22D3EE;--violet:#7C5CFF;--amber:#F5B544;--red:#FF5D73;--r:22px}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth;scroll-padding-top:84px}
+body{background:var(--bg);color:var(--tx);font-family:Inter,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+a{color:inherit;text-decoration:none}
+img{display:block;max-width:100%}
+.wrap{width:min(1240px,100% - 48px);margin-inline:auto}
+main{overflow-x:clip}
+.mono{font-family:"JetBrains Mono",ui-monospace,monospace}
+
+.sky{position:fixed;inset:0;z-index:-2;overflow:hidden;background:
+ radial-gradient(900px 600px at 80% -5%,rgba(124,92,255,.22),transparent 60%),
+ radial-gradient(800px 600px at 5% 25%,rgba(34,211,238,.12),transparent 60%),
+ radial-gradient(900px 600px at 50% 110%,rgba(52,232,158,.12),transparent 60%),var(--bg)}
+.sky::after{content:"";position:absolute;inset:0;background-image:radial-gradient(rgba(255,255,255,.07) 1px,transparent 1px);background-size:26px 26px;mask-image:radial-gradient(ellipse at 50% 0%,#000,transparent 72%);-webkit-mask-image:radial-gradient(ellipse at 50% 0%,#000,transparent 72%)}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+header{position:sticky;top:0;z-index:20;backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);background:rgba(3,6,10,.6);border-bottom:1px solid var(--line)}
+.nav{display:flex;align-items:center;gap:24px;height:72px}
+.brand{display:flex;align-items:center;gap:12px;font-weight:900;font-size:20px;letter-spacing:-.02em;white-space:nowrap}
+.brand img{width:38px;height:38px;border-radius:10px}
+.by{display:flex;align-items:center;gap:7px;padding-left:14px;border-left:1px solid var(--line2);color:var(--tx3);font-size:13px;font-weight:700}
+.by:hover{color:#fff}.by img{width:20px;height:20px}
+.menu{display:flex;gap:24px;margin-left:auto;font-size:15px;font-weight:600;color:var(--tx2)}
+.menu a:hover{color:#fff}
+.lang{display:flex;border:1px solid var(--line2);border-radius:999px;overflow:hidden;font-size:13px;font-weight:700}
+.lang button{all:unset;padding:7px 12px;color:var(--tx3);cursor:pointer}.lang button.on{background:rgba(255,255,255,.12);color:#fff}
+.burger{all:unset;display:none;cursor:pointer;width:40px;height:40px;border-radius:12px;border:1px solid var(--line2);place-items:center}
+.burger svg{width:20px;height:20px}
+.mob{display:none;flex-direction:column;padding:8px 24px 18px;border-top:1px solid var(--line)}
+.mob a{padding:12px 0;font-weight:700;color:var(--tx2);border-bottom:1px solid var(--line)}
+header.open .mob{display:flex}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;height:52px;padding:0 24px;border-radius:16px;font-weight:800;font-size:16px;white-space:nowrap;transition:transform .2s,box-shadow .2s,background .2s}
+.btn svg{width:20px;height:20px;flex:none}
+.btn.pri{color:#04140d;background:linear-gradient(135deg,#34E89E,#22D3EE);box-shadow:0 12px 40px -10px rgba(52,232,158,.7)}
+.btn.pri:hover{transform:translateY(-2px);box-shadow:0 18px 50px -12px rgba(52,232,158,.9)}
+.btn.sec{background:rgba(255,255,255,.07);border:1px solid var(--line2)}
+.btn.sec:hover{background:rgba(255,255,255,.12)}
+.btn.sm{height:42px;padding:0 18px;border-radius:12px;font-size:14px}
+
+.hero{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;align-items:center;padding:76px 0 90px;min-height:calc(100vh - 72px)}
+.kicker{display:inline-flex;align-items:center;gap:10px;padding:8px 14px;border:1px solid rgba(52,232,158,.35);border-radius:999px;background:rgba(52,232,158,.06);font-size:13px;font-weight:800;color:var(--green);letter-spacing:.04em}
+.kicker svg{width:16px;height:16px}
+h1{font-size:clamp(40px,4.6vw,66px);line-height:1.04;letter-spacing:-.045em;font-weight:900;margin:22px 0}
+.g{background:linear-gradient(100deg,#fff 0%,#B9FFE0 35%,var(--green) 60%,var(--cyan) 100%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{font-size:20px;line-height:1.55;color:var(--tx2);max-width:610px}
+.cta{display:flex;flex-wrap:wrap;gap:14px;margin:36px 0 30px}
+.trust{display:flex;flex-wrap:wrap;gap:10px 22px;color:var(--tx3);font-size:14px;font-weight:600}
+.trust span{display:flex;align-items:center;gap:8px}
+.chk{width:16px;height:16px;color:var(--green);flex:none}
+
+.stage{position:relative;height:640px}
+.halo{position:absolute;left:50%;top:50%;width:520px;height:520px;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(circle,rgba(124,92,255,.35),rgba(34,211,238,.12) 45%,transparent 70%);filter:blur(10px);animation:breathe 6s ease-in-out infinite}
+@keyframes breathe{50%{transform:translate(-50%,-50%) scale(1.08);opacity:.8}}
+.orbit{position:absolute;left:50%;top:50%;width:560px;height:560px;margin:-280px 0 0 -280px;border-radius:50%;border:1px dashed rgba(52,232,158,.25);animation:spin 50s linear infinite}
+.orbit::before{content:"";position:absolute;top:-5px;left:50%;width:10px;height:10px;border-radius:50%;background:var(--green);box-shadow:0 0 18px var(--green)}
+.phone{position:absolute;left:50%;top:50%;width:290px;height:600px;transform:translate(-50%,-50%);border-radius:44px;padding:11px;background:linear-gradient(160deg,#2b3340,#0b0f16 45%,#1c2430);box-shadow:0 60px 120px -30px rgba(0,0,0,.95),0 0 0 1px rgba(255,255,255,.08);animation:float 7s ease-in-out infinite}
+@keyframes float{50%{transform:translate(-50%,-52%)}}
+.phone img{width:100%;height:100%;object-fit:cover;object-position:top;border-radius:34px}
+.float{position:absolute;padding:13px 15px;border-radius:16px;background:rgba(8,14,22,.82);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border:1px solid var(--line2);box-shadow:0 24px 60px -20px rgba(0,0,0,.85);font-size:13px;font-weight:700;display:flex;align-items:center;gap:10px;animation:float2 8s ease-in-out infinite}
+.float i{width:30px;height:30px;border-radius:10px;display:grid;place-items:center;flex:none}
+.float i svg{width:16px;height:16px}
+.float small{display:block;color:var(--tx3);font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;margin-bottom:2px}
+.fa{left:-12%;top:16%}.fb{right:-10%;top:40%;animation-delay:-3s}.fc{left:-6%;bottom:14%;animation-delay:-5s}
+@keyframes float2{50%{transform:translateY(-12px)}}
+.ig{background:rgba(52,232,158,.15);color:var(--green)}.ic2{background:rgba(34,211,238,.15);color:var(--cyan)}.iv{background:rgba(124,92,255,.18);color:#B4A4FF}.ia{background:rgba(245,181,68,.15);color:var(--amber)}.ir{background:rgba(255,93,115,.15);color:var(--red)}
+
+section{padding:110px 0}
+.sec-h{max-width:760px;margin-bottom:56px}
+.sec-h.c{margin-inline:auto;text-align:center}
+.eyebrow{font-size:13px;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:var(--green)}
+h2{font-size:clamp(32px,4vw,52px);line-height:1.08;letter-spacing:-.035em;font-weight:900;margin:14px 0 16px}
+.sec-h p{font-size:19px;line-height:1.6;color:var(--tx2)}
+.panel{border-radius:var(--r);background:linear-gradient(180deg,rgba(255,255,255,.065),rgba(255,255,255,.025));border:1px solid var(--line)}
+
+/* конвейер */
+.pipe{display:grid;grid-template-columns:repeat(5,1fr);gap:14px;position:relative}
+.pipe::before{content:"";position:absolute;top:44px;left:6%;right:6%;height:2px;background:linear-gradient(90deg,var(--violet),var(--cyan),var(--green),var(--amber),var(--green));opacity:.6}
+.pipe::after{content:"";position:absolute;top:40px;left:6%;width:10px;height:10px;border-radius:50%;background:#fff;box-shadow:0 0 16px #fff,0 0 30px var(--green);animation:run 5s linear infinite}
+@keyframes run{to{left:94%}}
+.node{position:relative;z-index:1;padding:22px 18px;text-align:center}
+.node .ico{width:56px;height:56px;margin:0 auto 16px;border-radius:18px;display:grid;place-items:center;background:var(--bg2);border:1px solid var(--line2)}
+.node .ico svg{width:26px;height:26px}
+.node h3{font-size:17px;margin-bottom:8px;letter-spacing:-.01em}
+.node p{font-size:14px;line-height:1.5;color:var(--tx2)}
+.block{margin-top:22px;padding:18px 22px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:15px;color:var(--tx2)}
+.block b{color:var(--red)}
+.code{font-size:13px;padding:6px 10px;border-radius:9px;background:rgba(255,93,115,.1);border:1px solid rgba(255,93,115,.3);color:#FFC2CB}
+
+/* экраны */
+.shots{display:grid;grid-template-columns:repeat(5,1fr);gap:18px}
+.shot{text-align:center}
+.shot .fr{border-radius:28px;padding:7px;background:linear-gradient(160deg,#2b3340,#0b0f16 45%,#1c2430);box-shadow:0 30px 60px -25px rgba(0,0,0,.9);transition:transform .35s}
+.shot:hover .fr{transform:translateY(-8px)}
+.shot img{border-radius:22px;aspect-ratio:1/2;object-fit:cover;object-position:top;width:100%}
+.shot b{display:block;margin-top:14px;font-size:15px}
+.shot span{display:block;color:var(--tx3);font-size:13px;margin-top:4px}
+
+.feat{display:grid;grid-template-columns:repeat(4,1fr);gap:18px}
+.f{padding:26px;transition:transform .3s,border-color .3s}
+.f:hover{transform:translateY(-4px);border-color:var(--line2)}
+.f .ico{width:50px;height:50px;border-radius:15px;display:grid;place-items:center;margin-bottom:18px}
+.f .ico svg{width:24px;height:24px}
+.f h3{font-size:18.5px;letter-spacing:-.02em;margin-bottom:8px}
+.f p{color:var(--tx2);line-height:1.58;font-size:15px}
+
+.modes{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:22px}
+.mode{padding:24px}
+.mode .lbl{display:inline-flex;gap:8px;align-items:center;font-size:12px;font-weight:800;letter-spacing:.08em;padding:6px 10px;border-radius:999px;margin-bottom:14px}
+.mode h3{font-size:20px;margin-bottom:8px}.mode p{color:var(--tx2);line-height:1.55;font-size:15px}
+
+.epk{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:center}
+.mandate{padding:34px;font-size:14px;line-height:1.9;background:radial-gradient(600px 300px at 0% 0%,rgba(124,92,255,.2),transparent 60%),linear-gradient(180deg,rgba(255,255,255,.065),rgba(255,255,255,.025))}
+.mandate .k{color:#B4A4FF}.mandate .v{color:var(--green)}.mandate .c{color:var(--tx3)}
+.list{list-style:none;display:flex;flex-direction:column;gap:14px}
+.list li{display:flex;gap:12px;color:var(--tx2);line-height:1.55;font-size:16.5px}
+.list li svg{margin-top:4px}
+.tagl{display:inline-flex;align-items:center;gap:8px;margin-top:22px;padding:8px 12px;border-radius:12px;border:1px solid rgba(245,181,68,.35);background:rgba(245,181,68,.08);color:var(--amber);font-weight:700;font-size:14px}
+
+.chips{display:flex;flex-wrap:wrap;gap:10px;justify-content:center}
+.chip{padding:10px 16px;border-radius:999px;border:1px solid var(--line2);background:rgba(255,255,255,.05);font-weight:700;font-size:14.5px}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+.box{padding:34px}
+.box h3{font-size:24px;letter-spacing:-.02em;margin-bottom:18px}
+
+.road{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+.rm{padding:26px}.rm .when{font-size:12px;font-weight:800;letter-spacing:.1em;text-transform:uppercase;color:var(--amber);margin-bottom:10px}
+.rm h3{font-size:19px;margin-bottom:8px}.rm p{color:var(--tx2);line-height:1.55;font-size:15px}
+
+.final{padding:64px;text-align:center;background:radial-gradient(600px 300px at 50% 0%,rgba(52,232,158,.22),transparent 70%),linear-gradient(180deg,rgba(255,255,255,.08),rgba(255,255,255,.03))}
+.final h2{margin-top:0}.final .cta{justify-content:center;margin-bottom:0}
+.final p{color:var(--tx2);font-size:18px;line-height:1.6;max-width:640px;margin:0 auto}
+
+footer{border-top:1px solid var(--line);padding:56px 0 40px;margin-top:40px}
+.foot{display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:32px}
+.foot h4{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--tx3);margin-bottom:16px}
+.foot a{display:block;color:var(--tx2);padding:5px 0;font-size:15px}.foot a:hover{color:#fff}
+.about{color:var(--tx3);line-height:1.6;font-size:14.5px;margin-top:14px;max-width:360px}
+.copy{margin-top:40px;color:var(--tx3);font-size:13px;display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
+
+.reveal{opacity:0;transform:translateY(28px);transition:opacity .9s cubic-bezier(.2,.7,.2,1),transform .9s cubic-bezier(.2,.7,.2,1)}
+.reveal.in{opacity:1;transform:none}
+
+@media(max-width:1100px){
+ .menu{display:none}.burger{display:grid}
+ .hero{grid-template-columns:1fr;gap:16px;padding:48px 0 64px;min-height:0}
+ .fa{left:0}.fb{right:0}.fc{left:0}
+ .pipe{grid-template-columns:1fr 1fr}.pipe::before,.pipe::after{display:none}
+ .shots{grid-template-columns:repeat(3,1fr)}
+ .feat{grid-template-columns:1fr 1fr}.modes,.road{grid-template-columns:1fr}
+ .epk,.row2{grid-template-columns:1fr}
+ .foot{grid-template-columns:1fr 1fr}
+}
+@media(max-width:640px){
+ .wrap{width:calc(100% - 32px)}
+ .by span{display:none}.nav{gap:14px}.nav .btn{display:none}
+ .brand{font-size:17px;gap:9px}.brand img{width:32px;height:32px}
+ .lead{font-size:18px}
+ .stage{height:580px;transform:scale(.9);margin:-20px 0}
+ .pipe,.feat{grid-template-columns:1fr}
+ .shots{grid-template-columns:1fr 1fr}
+ section{padding:72px 0}
+ .box,.mandate{padding:24px}.final{padding:40px 22px}
+ .cta .btn{flex:1 1 100%}
+ .foot{grid-template-columns:1fr}
+}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.reveal{opacity:1;transform:none}}
+</style>
+</head>
+<body>
+<div class="sky"></div>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+ <symbol id="chk" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+ <symbol id="shield" viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.4 8.5-8 9-4.6-.5-8-4-8-9V7l8-4z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></symbol>
+ <symbol id="mic" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0014 0M12 18v3"/></g></symbol>
+ <symbol id="brain" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4a3 3 0 00-3 3 3 3 0 00-2 5 3 3 0 002 5 3 3 0 003 3h1V4H9zM15 4a3 3 0 013 3 3 3 0 012 5 3 3 0 01-2 5 3 3 0 01-3 3h-1V4h1z"/></g></symbol>
+ <symbol id="rules" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h10M4 12h16M4 18h7"/><circle cx="17" cy="6" r="2"/><circle cx="14" cy="18" r="2"/></g></symbol>
+ <symbol id="box" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12l8-4.5M12 12v9M12 12L4 7.5"/></g></symbol>
+ <symbol id="finger" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6.5 8.5a6 6 0 0111 3.5v2M8 20c1-2 1.5-4.5 1.5-8a2.5 2.5 0 015 0c0 1.2-.1 2.4-.3 3.5M12 12v1c0 3-.6 5.6-2 8M17 17.5c-.3 1.2-.7 2.3-1.3 3.4M4.5 12a7.5 7.5 0 01.5-2.5"/></g></symbol>
+ <symbol id="gh" viewBox="0 0 24 24"><path fill="currentColor" d="M12 2a10 10 0 00-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.4-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.4 1.1 2.9.8.1-.6.4-1.1.7-1.3-2.2-.3-4.6-1.1-4.6-5a3.9 3.9 0 011-2.7 3.6 3.6 0 01.1-2.7s.8-.3 2.8 1a9.6 9.6 0 015 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7a3.9 3.9 0 011 2.7c0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.8v2.7c0 .3.2.6.7.5A10 10 0 0012 2z"/></symbol>
+ <symbol id="tg" viewBox="0 0 24 24"><path fill="currentColor" d="M21.9 4.4l-3.3 15.5c-.2 1.1-.9 1.4-1.8.9l-5-3.7-2.4 2.3c-.3.3-.5.5-1 .5l.4-5.1 9.2-8.3c.4-.4-.1-.6-.6-.2L6 13.4 1.1 11.9c-1.1-.3-1.1-1.1.2-1.6l19.1-7.4c.9-.3 1.7.2 1.5 1.5z"/></symbol>
+</svg>
+
+<header id="top">
+ <div class="wrap nav">
+  <a class="brand" href="#top"><img src="img/logo.webp" alt="">IBITI Guardian</a>
+  <a class="by" href="https://vovan1980.github.io/IBITILabs/" target="_blank" rel="noopener"><img src="img/ibiti.webp" alt=""><span>IBITI Labs</span></a>
+  <nav class="menu"><a href="#how" data-i="m1">How it works</a><a href="#screens" data-i="m2">Screens</a><a href="#features" data-i="m3">Features</a><a href="#epk">EPK</a><a href="#roadmap" data-i="m5">Roadmap</a></nav>
+  <div class="lang"><button data-lang="ru">RU</button><button data-lang="en">EN</button></div>
+  <a class="btn pri sm" href="#get" data-i="get">Get Guardian</a>
+  <button class="burger" aria-label="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
+ </div>
+ <nav class="mob"><a href="#how" data-i="m1">How it works</a><a href="#screens" data-i="m2">Screens</a><a href="#features" data-i="m3">Features</a><a href="#epk">EPK</a><a href="#roadmap" data-i="m5">Roadmap</a><a href="#get" data-i="get">Get Guardian</a></nav>
+</header>
+
+<main>
+ <div class="wrap hero">
+  <div>
+   <span class="kicker"><svg><use href="#shield"/></svg><span data-i="kick">SAFETY-FIRST AI WALLET AGENT</span></span>
+   <h1 data-i="h1">Your crypto AI —<br><span class="g">with rules it cannot break.</span></h1>
+   <p class="lead" data-i="lead">Talk to your wallet and your exchanges. Guardian checks every action against your policy, simulates it in a sandbox and waits for your confirmation — the AI can propose, but never overrule you.</p>
+   <div class="cta">
+    <a class="btn pri" href="#get"><svg><use href="#shield"/></svg><span data-i="get">Get Guardian</span></a>
+    <a class="btn sec" href="https://github.com/VOVAN1980/ibiti-guardian" target="_blank" rel="noopener"><svg><use href="#gh"/></svg>GitHub</a>
+    <a class="btn sec" href="https://t.me/IBITILabs_official" target="_blank" rel="noopener"><svg><use href="#tg"/></svg>Telegram</a>
+   </div>
+   <div class="trust">
+    <span><svg class="chk"><use href="#chk"/></svg><span data-i="t1">Non-custodial</span></span>
+    <span><svg class="chk"><use href="#chk"/></svg><span data-i="t2">Voice AI</span></span>
+    <span><svg class="chk"><use href="#chk"/></svg><span data-i="t3">8 networks · 4 exchanges</span></span>
+    <span><svg class="chk"><use href="#chk"/></svg><span data-i="t4">542 automated tests</span></span>
+   </div>
+  </div>
+  <div class="stage" aria-hidden="true">
+   <div class="halo"></div><div class="orbit"></div>
+   <div class="phone"><img src="img/ai.webp" alt=""></div>
+   <div class="float fa"><i class="iv"><svg><use href="#rules"/></svg></i><div><small data-i="fa1">Policy</small><span data-i="fa2">Daily limit $50 · OK</span></div></div>
+   <div class="float fb"><i class="ic2"><svg><use href="#box"/></svg></i><div><small>SandboxGuard</small><span data-i="fb2">Simulated · no surprises</span></div></div>
+   <div class="float fc"><i class="ig"><svg><use href="#finger"/></svg></i><div><small data-i="fc1">Your approval</small><span data-i="fc2">Fingerprint required</span></div></div>
+  </div>
+ </div>
+
+ <section id="how">
+  <div class="wrap">
+   <div class="sec-h reveal"><div class="eyebrow" data-i="m1">How it works</div>
+    <h2 data-i="howT">Every command passes five checkpoints</h2>
+    <p data-i="howP">Nothing leaves your device until the action is understood, allowed, simulated and confirmed.</p></div>
+   <div class="pipe">
+    <div class="node panel reveal"><div class="ico" style="color:#B4A4FF"><svg><use href="#mic"/></svg></div><h3 data-i="n1t">You speak</h3><p data-i="n1p">"Swap 50 USDT to BNB" — by voice or text.</p></div>
+    <div class="node panel reveal" style="transition-delay:.08s"><div class="ico" style="color:var(--cyan)"><svg><use href="#brain"/></svg></div><h3 data-i="n2t">AI understands</h3><p data-i="n2p">Turns it into a structured action. It cannot change your rules.</p></div>
+    <div class="node panel reveal" style="transition-delay:.16s"><div class="ico" style="color:var(--green)"><svg><use href="#rules"/></svg></div><h3 data-i="n3t">Policy checks</h3><p data-i="n3p">Per-trade and daily limits, price impact, contract reputation.</p></div>
+    <div class="node panel reveal" style="transition-delay:.24s"><div class="ico" style="color:var(--amber)"><svg><use href="#box"/></svg></div><h3 data-i="n4t">Sandbox simulates</h3><p data-i="n4p">SandboxGuard runs the transaction before anything is signed.</p></div>
+    <div class="node panel reveal" style="transition-delay:.32s"><div class="ico" style="color:var(--green)"><svg><use href="#finger"/></svg></div><h3 data-i="n5t">You confirm</h3><p data-i="n5p">Fingerprint or PIN in Guarded mode — or nothing happens.</p></div>
+   </div>
+   <div class="block panel reveal"><b data-i="blk1">Blocked automatically:</b><span class="code mono" data-i="blk2">price impact &gt; 5%</span><span class="code mono" data-i="blk3">unknown contract</span><span class="code mono" data-i="blk4">over daily limit</span><span class="code mono" data-i="blk5">API key with withdraw permission</span></div>
+  </div>
+ </section>
+
+ <section id="screens">
+  <div class="wrap">
+   <div class="sec-h c reveal"><div class="eyebrow" data-i="m2">Screens</div><h2 data-i="scT">A wallet that talks back — and guards you</h2></div>
+   <div class="shots">
+    <div class="shot reveal"><div class="fr"><img src="img/ai.webp" alt="Guardian AI" loading="lazy"></div><b>Guardian AI</b><span data-i="sc1">Hold to speak</span></div>
+    <div class="shot reveal" style="transition-delay:.06s"><div class="fr"><img src="img/chat.webp" alt="Chat" loading="lazy"></div><b data-i="sc2t">Chat</b><span data-i="sc2">Ask, scan, check risks</span></div>
+    <div class="shot reveal" style="transition-delay:.12s"><div class="fr"><img src="img/security.webp" alt="Command Center" loading="lazy"></div><b>Command Center</b><span data-i="sc3">Safe/Panic, AI Center, Policy, EPK</span></div>
+    <div class="shot reveal" style="transition-delay:.18s"><div class="fr"><img src="img/wallet.webp" alt="Wallet" loading="lazy"></div><b data-i="sc4t">Wallet</b><span data-i="sc4">Send, receive, swap, scan</span></div>
+    <div class="shot reveal" style="transition-delay:.24s"><div class="fr"><img src="img/market.webp" alt="Market" loading="lazy"></div><b data-i="sc5t">Market</b><span data-i="sc5">Trade plans await your approval</span></div>
+   </div>
+  </div>
+ </section>
+
+ <section id="features">
+  <div class="wrap">
+   <div class="sec-h reveal"><div class="eyebrow" data-i="m3">Features</div><h2 data-i="ftT">Power of an AI agent, discipline of a vault</h2></div>
+   <div class="feat">
+    <div class="f panel reveal"><div class="ico iv"><svg><use href="#mic"/></svg></div><h3 data-i="f1t">Voice assistant</h3><p data-i="f1p">Speech-to-text and natural voice replies. Short, clear confirmations instead of raw hashes.</p></div>
+    <div class="f panel reveal" style="transition-delay:.06s"><div class="ico ig"><svg><use href="#rules"/></svg></div><h3 data-i="f2t">Policy Engine</h3><p data-i="f2p">Daily and per-trade limits, slippage caps, price-impact guard and trusted-contract reputation.</p></div>
+    <div class="f panel reveal" style="transition-delay:.12s"><div class="ico ic2"><svg><use href="#box"/></svg></div><h3>SandboxGuard</h3><p data-i="f3p">Local pre-flight simulation of every Web3 transaction before you sign.</p></div>
+    <div class="f panel reveal" style="transition-delay:.18s"><div class="ico ir"><svg><use href="#shield"/></svg></div><h3>Safe Scan &amp; Panic</h3><p data-i="f4p">Finds every active token approval and lets you revoke risky ones in one place.</p></div>
+    <div class="f panel reveal"><div class="ico ic2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/></svg></div><h3 data-i="f5t">dApp browser</h3><p data-i="f5p">HTTPS only, the real domain always visible, separate consent for each site, readable previews with fees in coin and USD.</p></div>
+    <div class="f panel reveal" style="transition-delay:.06s"><div class="ico ia"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 19V5M4 19h16M8 15l3-4 3 2 5-6"/></svg></div><h3 data-i="f6t">Exchanges</h3><p data-i="f6p">Spot trading on MEXC, OKX, Gate.io and Binance through encrypted API keys. Keys with withdrawal permission are rejected.</p></div>
+    <div class="f panel reveal" style="transition-delay:.12s"><div class="ico ig"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M16 12.5h2M3 10h18"/></svg></div><h3 data-i="f7t">Non-custodial wallet</h3><p data-i="f7p">Embedded wallet by Privy with social login. Your keys, your device — encrypted and biometric-protected.</p></div>
+    <div class="f panel reveal" style="transition-delay:.18s"><div class="ico iv"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h10M4 17h13"/></svg></div><h3 data-i="f8t">History you can read</h3><p data-i="f8p">Native and token transfers with sender, recipient, amount, status, time, hash and fee.</p></div>
+   </div>
+   <div class="modes">
+    <div class="mode panel reveal"><span class="lbl" style="background:rgba(255,255,255,.08)">MANUAL</span><h3 data-i="mo1t">You do everything</h3><p data-i="mo1p">The AI is fully blocked from executing anything.</p></div>
+    <div class="mode panel reveal" style="transition-delay:.08s"><span class="lbl" style="background:rgba(52,232,158,.12);color:var(--green)">GUARDED</span><h3 data-i="mo2t">AI proposes, you approve</h3><p data-i="mo2p">The default: every AI-prepared action waits for your fingerprint or PIN.</p></div>
+    <div class="mode panel reveal" style="transition-delay:.16s"><span class="lbl" style="background:rgba(245,181,68,.12);color:var(--amber)">FULL AUTONOMY · SOON</span><h3 data-i="mo3t">Inside a strict budget</h3><p data-i="mo3p">Automated actions only within user-defined and on-chain limits. In development.</p></div>
+   </div>
+  </div>
+ </section>
+
+ <section id="epk">
+  <div class="wrap epk">
+   <div class="reveal">
+    <div class="eyebrow">Eternal Permission Kernel</div>
+    <h2 data-i="epT">A power of attorney your AI cannot exceed</h2>
+    <p style="font-size:19px;line-height:1.6;color:var(--tx2);margin-bottom:24px" data-i="epP">An AI that acts for you needs a mandate: what it may do, how much, where and until when. EPK writes that mandate as on-chain rules for your smart account — verifiable by anyone, enforced every time.</p>
+    <ul class="list">
+     <li><svg class="chk"><use href="#chk"/></svg><span data-i="e1">Per-transaction and daily spend limits</span></li>
+     <li><svg class="chk"><use href="#chk"/></svg><span data-i="e2">Allowed targets and functions only</span></li>
+     <li><svg class="chk"><use href="#chk"/></svg><span data-i="e3">Threat-feed blocklists</span></li>
+     <li><svg class="chk"><use href="#chk"/></svg><span data-i="e4">Instant revoke with one panic switch</span></li>
+    </ul>
+    <span class="tagl"><span data-i="eNote">Live on BSC Testnet · mainnet after audit</span></span>
+   </div>
+   <div class="mandate panel mono reveal" style="transition-delay:.12s">
+    <div class="c">// example mandate for Guardian AI</div>
+    <div><span class="k">agent</span>: <span class="v">"guardian-ai"</span></div>
+    <div><span class="k">daily_limit</span>: <span class="v">50 USDT</span></div>
+    <div><span class="k">per_tx_limit</span>: <span class="v">20 USDT</span></div>
+    <div><span class="k">allowed</span>: [<span class="v">swap</span>, <span class="v">transfer→trusted</span>]</div>
+    <div><span class="k">max_price_impact</span>: <span class="v">5%</span></div>
+    <div><span class="k">blocklist</span>: <span class="v">threat-feed</span></div>
+    <div><span class="k">expires</span>: <span class="v">30 days</span></div>
+    <div><span class="k">revoke</span>: <span class="v">instant</span> <span class="c">// panic switch</span></div>
+    <div style="margin-top:14px"><a class="btn sec sm" href="https://github.com/VOVAN1980/ibiti-epk-core" target="_blank" rel="noopener"><svg><use href="#gh"/></svg>ibiti-epk-core</a></div>
+   </div>
+  </div>
+ </section>
+
+ <section>
+  <div class="wrap">
+   <div class="sec-h c reveal"><div class="eyebrow" data-i="cvE">Coverage</div><h2 data-i="cvT">Web3 and exchanges in one place</h2></div>
+   <div class="chips reveal"><span class="chip">BSC</span><span class="chip">Ethereum</span><span class="chip">Polygon</span><span class="chip">Arbitrum</span><span class="chip">Optimism</span><span class="chip">Base</span><span class="chip">Solana</span><span class="chip">Tron</span></div>
+   <div class="chips reveal" style="margin-top:14px"><span class="chip" style="border-color:rgba(245,181,68,.4)">MEXC</span><span class="chip" style="border-color:rgba(245,181,68,.4)">OKX</span><span class="chip" style="border-color:rgba(245,181,68,.4)">Gate.io</span><span class="chip" style="border-color:rgba(245,181,68,.4)">Binance</span></div>
+  </div>
+ </section>
+
+ <section id="roadmap" style="padding-top:40px">
+  <div class="wrap">
+   <div class="sec-h reveal"><div class="eyebrow" data-i="m5">Roadmap</div><h2 data-i="rmT">What comes next</h2></div>
+   <div class="road">
+    <div class="rm panel reveal"><div class="when" data-i="rm1w">After audit</div><h3 data-i="rm1t">EPK on mainnet</h3><p data-i="rm1p">The permission kernel moves from BSC Testnet to mainnet once the security audit is complete.</p></div>
+    <div class="rm panel reveal" style="transition-delay:.08s"><div class="when" data-i="rm2w">Phase 2</div><h3 data-i="rm2t">Full Autonomy</h3><p data-i="rm2p">Automated trading only inside your budgets, caps and risk thresholds.</p></div>
+    <div class="rm panel reveal" style="transition-delay:.16s"><div class="when" data-i="rm2w">Phase 2</div><h3 data-i="rm3t">Passkey login</h3><p data-i="rm3p">Passwordless, phishing-resistant sign-in with WebAuthn / FIDO2.</p></div>
+   </div>
+  </div>
+ </section>
+
+ <section id="get" style="padding-top:20px">
+  <div class="wrap">
+   <div class="final panel reveal">
+    <h2 data-i="gT">Get IBITI Guardian</h2>
+    <p data-i="gP">A public Android build is coming soon. Follow the IBITI Labs channel to get it first, or explore the code on GitHub.</p>
+    <div class="cta">
+     <a class="btn pri" href="https://t.me/IBITILabs_official" target="_blank" rel="noopener"><svg><use href="#tg"/></svg><span data-i="gB1">Follow on Telegram</span></a>
+     <a class="btn sec" href="https://github.com/VOVAN1980/ibiti-guardian" target="_blank" rel="noopener"><svg><use href="#gh"/></svg>GitHub</a>
+    </div>
+   </div>
+  </div>
+ </section>
+</main>
+
+<footer>
+ <div class="wrap">
+  <div class="foot">
+   <div><a class="brand" href="#top"><img src="img/logo.webp" alt="">IBITI Guardian</a>
+    <p class="about" data-i="ab">Safety-first AI wallet agent. A product of IBITI Labs.</p></div>
+   <div><h4 data-i="h4a">Product</h4><a href="#how" data-i="m1">How it works</a><a href="#features" data-i="m3">Features</a><a href="#epk">EPK</a><a href="#roadmap" data-i="m5">Roadmap</a></div>
+   <div><h4>IBITI Labs</h4><a href="https://vovan1980.github.io/IBITILabs/" target="_blank" rel="noopener" data-i="lab">All projects</a><a href="https://t.me/IBITILabs_official" target="_blank" rel="noopener" data-i="ch">Telegram channel</a><a href="https://github.com/VOVAN1980/ibiti-guardian" target="_blank" rel="noopener">GitHub</a><a href="https://lvs.network" target="_blank" rel="noopener">LVS</a></div>
+  </div>
+  <div class="copy"><span>© 2026 IBITI Labs</span><span data-i="adm">We never message you first and never ask for keys or seed phrases.</span></div>
+ </div>
+</footer>
+
+<script>
+const RU={m1:'Как это работает',m2:'Экраны',m3:'Возможности',m5:'Планы',get:'Получить Guardian',
+kick:'ИИ-КОШЕЛЁК С ПРИОРИТЕТОМ БЕЗОПАСНОСТИ',
+h1:'Ваш крипто-ИИ —<br><span class="g">с правилами, которые он не нарушит.</span>',
+lead:'Говорите с кошельком и биржами. Guardian проверяет каждое действие по вашим правилам, прогоняет его в песочнице и ждёт вашего подтверждения — ИИ может предложить, но не решает за вас.',
+t1:'Ключи у вас',t2:'Голосовой ИИ',t3:'8 сетей · 4 биржи',t4:'542 автотеста',
+fa1:'Правила',fa2:'Дневной лимит $50 · OK',fb2:'Проверено в песочнице',fc1:'Ваше подтверждение',fc2:'Нужен отпечаток пальца',
+howT:'Каждая команда проходит пять проверок',howP:'Ничего не уходит с устройства, пока действие не понято, не разрешено, не проверено и не подтверждено.',
+n1t:'Вы говорите',n1p:'«Обменяй 50 USDT на BNB» — голосом или текстом.',n2t:'ИИ понимает',n2p:'Превращает в понятное действие. Менять ваши правила он не может.',
+n3t:'Проверка правил',n3p:'Лимиты на сделку и на день, влияние на цену, репутация контракта.',n4t:'Песочница',n4p:'SandboxGuard прогоняет транзакцию до подписи.',
+n5t:'Вы подтверждаете',n5p:'Отпечаток или PIN в режиме Guarded — иначе ничего не произойдёт.',
+blk1:'Блокируется сразу:',blk2:'влияние на цену > 5%',blk3:'неизвестный контракт',blk4:'сверх дневного лимита',blk5:'API-ключ с правом вывода',
+scT:'Кошелёк, который отвечает голосом — и охраняет вас',sc1:'Удерживайте и говорите',sc2t:'Чат',sc2:'Спросить, проверить, найти риски',sc3:'Safe/Panic, AI Center, Policy, EPK',sc4t:'Кошелёк',sc4:'Отправить, получить, обменять, проверить',sc5t:'Рынок',sc5:'План сделки ждёт вашего одобрения',
+ftT:'Сила ИИ-агента и дисциплина сейфа',
+f1t:'Голосовой ассистент',f1p:'Распознавание речи и естественные ответы голосом. Короткие понятные подтверждения вместо хешей.',
+f2t:'Движок правил',f2p:'Дневные лимиты и лимиты на сделку, предел проскальзывания, защита от влияния на цену, репутация контрактов.',
+f3p:'Локальная проверка каждой Web3-транзакции перед подписью.',f4p:'Находит все активные разрешения на токены и позволяет отозвать опасные в одном месте.',
+f5t:'Браузер dApp',f5p:'Только HTTPS, настоящий домен всегда виден, отдельное согласие для каждого сайта, понятный предпросмотр с комиссией в монете и в долларах.',
+f6t:'Биржи',f6p:'Спотовая торговля на MEXC, OKX, Gate.io и Binance через зашифрованные API-ключи. Ключи с правом вывода отклоняются.',
+f7t:'Кошелёк без посредников',f7p:'Встроенный кошелёк Privy со входом через соцсети. Ваши ключи на вашем устройстве — зашифрованы и защищены биометрией.',
+f8t:'Понятная история',f8p:'Переводы монет и токенов: отправитель, получатель, сумма, статус, время, hash и комиссия.',
+mo1t:'Всё делаете вы',mo1p:'ИИ полностью заблокирован от выполнения действий.',mo2t:'ИИ предлагает — вы одобряете',mo2p:'Основной режим: каждое подготовленное ИИ действие ждёт вашего отпечатка или PIN.',
+mo3t:'Строго в рамках бюджета',mo3p:'Автоматические действия только в пределах ваших и ончейн-лимитов. В разработке.',
+epT:'Доверенность, которую ИИ не может превысить',epP:'ИИ, который действует за вас, нуждается в мандате: что можно, сколько, где и до какого срока. EPK записывает этот мандат как правила в блокчейне для вашего смарт-аккаунта — их может проверить кто угодно, и они действуют каждый раз.',
+e1:'Лимиты трат на транзакцию и на день',e2:'Только разрешённые адреса и функции',e3:'Чёрные списки угроз',e4:'Мгновенный отзыв одной кнопкой',eNote:'Работает в тестовой сети BSC · основная сеть после аудита',
+cvE:'Охват',cvT:'Web3 и биржи в одном месте',
+rmT:'Что дальше',rm1w:'После аудита',rm1t:'EPK в основной сети',rm1p:'Ядро разрешений переходит из тестовой сети BSC в основную после завершения аудита безопасности.',
+rm2w:'Этап 2',rm2t:'Полная автономия',rm2p:'Автоматическая торговля только в пределах ваших бюджетов, лимитов и порогов риска.',rm3t:'Вход по passkey',rm3p:'Вход без пароля, защищённый от фишинга, — WebAuthn / FIDO2.',
+gT:'Получить IBITI Guardian',gP:'Публичная сборка для Android скоро. Подпишитесь на канал IBITI Labs, чтобы получить её первыми, или посмотрите код на GitHub.',gB1:'Канал в Telegram',
+ab:'ИИ-кошелёк с приоритетом безопасности. Продукт IBITI Labs.',h4a:'Продукт',lab:'Все проекты',ch:'Канал в Telegram',adm:'Мы никогда не пишем первыми и не просим ключи или seed-фразы.'};
+const EN={};document.querySelectorAll('[data-i]').forEach(e=>{if(!(e.dataset.i in EN))EN[e.dataset.i]=e.innerHTML});
+const store={get(k){try{return localStorage.getItem(k)}catch(e){return null}},set(k,v){try{localStorage.setItem(k,v)}catch(e){}}};
+const q=(location.search.match(/[?&]lang=(ru|en)/)||[])[1];
+let lang=q||store.get('guardian_lang')||(/^(ru|uk|be|kk)/i.test(navigator.language||'')?'ru':'en');
+function apply(){const d=lang==='ru'?RU:EN;document.querySelectorAll('[data-i]').forEach(e=>{const v=d[e.dataset.i];if(v!==undefined)e.innerHTML=v});
+ document.querySelectorAll('[data-lang]').forEach(b=>b.classList.toggle('on',b.dataset.lang===lang));document.documentElement.lang=lang;
+ document.title=lang==='ru'?'IBITI Guardian — ИИ-кошелёк с приоритетом безопасности':'IBITI Guardian — safety-first AI wallet agent'}
+document.querySelectorAll('[data-lang]').forEach(b=>b.onclick=()=>{lang=b.dataset.lang;store.set('guardian_lang',lang);apply()});
+const hdr=document.querySelector('header');document.querySelector('.burger').onclick=()=>hdr.classList.toggle('open');
+document.querySelectorAll('.mob a').forEach(a=>a.onclick=()=>hdr.classList.remove('open'));
+apply();
+const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target)}}),{threshold:.12});
+document.querySelectorAll('.reveal').forEach(el=>io.observe(el));
+</script>
+</body>
+</html>
