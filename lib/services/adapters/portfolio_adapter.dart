@@ -12,7 +12,7 @@ import 'package:ibiti_guardian/services/execution/clients/solana_rpc_client.dart
 import 'package:ibiti_guardian/services/execution/clients/tron_rpc_client.dart';
 
 /// IBITI token contract on BNB Smart Chain (BEP-20).
-const String _ibitiContract = '0x47F2FFCb164b2EeCCfb7eC436Dfb3637a457B9bb';
+const String _ibitiContract = '0x71b552D3503fe20610aaA470A96E1838fae8381A';
 const int _ibitiDecimals = 8;
 
 // ── Multi-chain known token contracts ────────────────────────────────────────
@@ -39,7 +39,7 @@ const _usdcLogo =
 
 const Map<String, List<_KnownToken>> _knownTokens = {
   'bsc': [
-    _KnownToken('0x47F2FFCb164b2EeCCfb7eC436Dfb3637a457B9bb', 'IBITI',
+    _KnownToken('0x71b552D3503fe20610aaA470A96E1838fae8381A', 'IBITI',
         'IBITIcoin', 8, 0,
         logoUrl: _ibitiLogo),
     _KnownToken('0x55d398326f99059fF775485246999027B3197955', 'USDT',
