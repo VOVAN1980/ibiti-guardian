@@ -146,6 +146,7 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
             network: portfolio.chainKey,
             label: portfolio.networkName,
             usdtBalance: usdBalance,
+            totalUsd: portfolio.totalBalanceUsd,
             isWallet: true,
             isConnected: true,
           ));
@@ -194,6 +195,7 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
             hasError: hasError,
             keyRejected:
                 ExchangeAccountStore.instance.keyRejectionFor(id) != null,
+            totalUsd: ExchangeAccountStore.instance.getCachedTotalUsd(id),
           ));
         }
 
@@ -394,16 +396,27 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
                           ),
                         ),
                       )
-                    else if (insufficientBalance)
+                    else if (!isLoading) ...[
+                      // The amount on the right is what can buy right now;
+                      // the exchange's own "balance" counts every coin.
                       Text(
-                        isRu
-                            ? 'Buy недоступен / Низкий баланс'
-                            : 'Buy unavailable / Low quote balance',
+                        _amountCaption(src, isRu),
                         style: const TextStyle(
                           fontSize: 10,
-                          color: Colors.orangeAccent,
+                          color: GuardianColors.textSecondary,
                         ),
                       ),
+                      if (insufficientBalance)
+                        Text(
+                          isRu
+                              ? 'Мало для покупки (мин. \$${minTradeBal.toStringAsFixed(0)})'
+                              : 'Too little to buy (min \$${minTradeBal.toStringAsFixed(0)})',
+                          style: const TextStyle(
+                            fontSize: 10,
+                            color: Colors.orangeAccent,
+                          ),
+                        ),
+                    ],
                   ],
                 ),
               ),
@@ -454,6 +467,18 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
   }
 }
 
+String _amountCaption(_FundingOption src, bool isRu) {
+  final what = src.isWallet
+      ? (isRu ? 'Стейблкоины' : 'Stablecoins')
+      : (isRu ? 'Свободно USDT' : 'Free USDT');
+  final total = src.totalUsd;
+  if (total == null) return what;
+  final amount = '\$${total.toStringAsFixed(2)}';
+  return isRu
+      ? '$what · всего на счёте ≈ $amount'
+      : '$what · account total ≈ $amount';
+}
+
 class _FundingOption {
   final String network;
   final String label;
@@ -463,6 +488,7 @@ class _FundingOption {
   final bool isLoading;
   final bool hasError;
   final bool keyRejected;
+  final double? totalUsd;
 
   const _FundingOption({
     required this.network,
@@ -473,5 +499,6 @@ class _FundingOption {
     this.isLoading = false,
     this.hasError = false,
     this.keyRejected = false,
+    this.totalUsd,
   });
 }

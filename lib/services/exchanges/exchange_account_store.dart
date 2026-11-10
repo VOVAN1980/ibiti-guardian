@@ -26,6 +26,10 @@ class ExchangeValidationResult {
   /// check done after a successful call).
   final int? httpStatus;
 
+  /// Whole account in USD (every asset, free and locked), when the
+  /// exchange's prices could be fetched. [usdtBalance] is free USDT only.
+  final double? totalUsd;
+
   ExchangeValidationResult({
     required this.isValid,
     this.errorMessage,
@@ -33,6 +37,7 @@ class ExchangeValidationResult {
     this.usdtBalance = 0.0,
     this.detectedRegion,
     this.httpStatus,
+    this.totalUsd,
   });
 
   /// The exchange refused the key itself (unknown, expired, deleted or
@@ -75,6 +80,13 @@ class ExchangeAccountStore {
   double? getCachedUsdtBalance(String exchangeId) {
     return _cachedUsdtBalances[_canonicalId(exchangeId)];
   }
+
+  final Map<String, double> _cachedTotalUsd = {};
+
+  /// Whole-account value from the last successful balance check, if the
+  /// exchange supports it (MEXC, Binance).
+  double? getCachedTotalUsd(String exchangeId) =>
+      _cachedTotalUsd[_canonicalId(exchangeId)];
 
   /// Normalize and canonicalize exchange IDs before all storage operations:
   /// mexc -> mexc, binance -> binance, gate.io/gateio -> gateio, bybit -> bybit
@@ -270,6 +282,8 @@ class ExchangeAccountStore {
       }
       _keyRejections.remove(canonical);
       _cachedUsdtBalances[canonical] = result.usdtBalance;
+      final total = result.totalUsd;
+      if (total != null) _cachedTotalUsd[canonical] = total;
       return result.usdtBalance;
     } catch (e) {
       _log.e('[CEX_STORE] fetchUsdtBalance exception for $canonical: $e');
@@ -353,6 +367,10 @@ class ExchangeAccountStore {
     return ExchangeValidationResult(
       isValid: true,
       usdtBalance: usdtBalance,
+      totalUsd: balances == null
+          ? null
+          : await _estimateTotalUsd(
+              balances, 'https://api.mexc.com/api/v3/ticker/price'),
       warningMessage: 'Withdraw must be disabled in MEXC API settings.',
     );
   }
@@ -404,8 +422,55 @@ class ExchangeAccountStore {
     return ExchangeValidationResult(
       isValid: true,
       usdtBalance: usdtBalance,
+      totalUsd: balances == null
+          ? null
+          : await _estimateTotalUsd(
+              balances, 'https://api.binance.com/api/v3/ticker/price'),
       warningMessage: 'Withdraw must be disabled in Binance API settings.',
     );
+  }
+
+  static const _usdStables = {'USDT', 'USDC', 'FDUSD', 'DAI', 'BUSD', 'TUSD'};
+
+  /// Rough account value in USD for MEXC/Binance-style balances
+  /// ({asset, free, locked}): stablecoins at 1, everything else at its USDT
+  /// pair price on the same exchange (one public request for all prices).
+  /// Assets without a USDT pair are left out. Null if prices are unavailable.
+  Future<double?> _estimateTotalUsd(List balances, String tickerUrl) async {
+    try {
+      var total = 0.0;
+      final others = <String, double>{};
+      for (final b in balances) {
+        final asset = b['asset']?.toString().toUpperCase() ?? '';
+        final amount = (double.tryParse('${b['free']}') ?? 0) +
+            (double.tryParse('${b['locked']}') ?? 0);
+        if (asset.isEmpty || amount <= 0) continue;
+        if (_usdStables.contains(asset)) {
+          total += amount;
+        } else {
+          others[asset] = (others[asset] ?? 0) + amount;
+        }
+      }
+      if (others.isEmpty) return total;
+
+      final response = await http
+          .get(Uri.parse(tickerUrl))
+          .timeout(const Duration(seconds: 8));
+      if (response.statusCode != 200) return null;
+      final prices = <String, double>{};
+      for (final t in jsonDecode(response.body) as List) {
+        final price = double.tryParse('${t['price']}');
+        if (price != null) prices['${t['symbol']}'] = price;
+      }
+      others.forEach((asset, amount) {
+        final price = prices['${asset}USDT'];
+        if (price != null) total += amount * price;
+      });
+      return total;
+    } catch (e) {
+      _log.w('[CEX_STORE] account total unavailable', e);
+      return null;
+    }
   }
 
   // ── OKX Validation ─────────────────────────────────────────────────────────
