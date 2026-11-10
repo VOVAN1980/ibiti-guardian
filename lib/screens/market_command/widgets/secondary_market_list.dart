@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_order_service.dart';
-import 'package:ibiti_guardian/screens/market_command/widgets/connect_exchange_modal.dart';
+import 'package:ibiti_guardian/screens/market_command/widgets/exchange_source_gate.dart';
 import 'package:ibiti_guardian/screens/market_command/widgets/cex_spot_trade_modal.dart';
 import 'package:ibiti_guardian/screens/market_command/market_token_detail_screen.dart';
 import 'package:ibiti_guardian/screens/wallet/components/wallet_trade_modal.dart';
@@ -413,29 +413,11 @@ class _MarketRow extends StatelessWidget {
     var src = asset.sourceId.toLowerCase();
     if (src == 'gate.io') src = 'gateio';
     if (['mexc', 'binance', 'gateio', 'okx'].contains(src)) {
-      final isConnected = await ExchangeAccountStore.instance.isConnected(src);
-
-      if (!isConnected) {
-        if (context.mounted) {
-          ConnectExchangeModal.show(
-            context,
-            exchangeId: src,
-            onConnected: () => _openTrade(context, isBuy: isBuy),
-          );
-        }
-      } else {
-        final settings = AiControlService.instance.settings;
-        final displayName = src == 'gateio' ? 'Gate.io' : (src == 'mexc' ? 'MEXC' : (src == 'binance' ? 'Binance' : 'OKX'));
-        
-        if (!settings.activeSources.contains(src)) {
-          if (context.mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('$displayName Spot выключен в Policy. Включите $displayName Spot как источник торговли.'),
-              backgroundColor: Colors.redAccent,
-            ));
-          }
-          return;
-        }
+      // No API key, or the exchange is off as a funding source: Policy
+      // opens at Funding sources (connecting there also switches it on), and
+      // coming back with both in place continues to the trade. It used to
+      // be a key dialog here, then "switched off in Policy", then back here.
+      if (await ensureExchangeReady(context, src) && context.mounted) {
 
         String quoteAsset = 'USDT';
         if (src == 'okx') {

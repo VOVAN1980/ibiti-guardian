@@ -24,7 +24,11 @@ import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 // ─────────────────────────────────────────────────────────────────────────────
 
 class PolicyLimitsScreen extends StatefulWidget {
-  const PolicyLimitsScreen({super.key});
+  /// When set (opened from a market trade), the screen scrolls to Funding
+  /// sources and shows this hint.
+  final String? focusHint;
+
+  const PolicyLimitsScreen({super.key, this.focusHint});
 
   @override
   State<PolicyLimitsScreen> createState() => _PolicyLimitsScreenState();
@@ -36,6 +40,24 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
   final _epk = EPKPolicyManager.instance;
 
   PolicyProfile? _profile;
+  final _fundingKey = GlobalKey();
+  bool _focusDone = false;
+
+  void _focusFundingSources() {
+    final hint = widget.focusHint;
+    if (hint == null || _focusDone) return;
+    _focusDone = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _fundingKey.currentContext;
+      if (ctx == null || !mounted) return;
+      Scrollable.ensureVisible(ctx,
+          duration: const Duration(milliseconds: 400), alignment: 0.05);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(hint),
+        duration: const Duration(seconds: 6),
+      ));
+    });
+  }
 
   @override
   void initState() {
@@ -231,6 +253,7 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
     }
 
     final p = _profile!;
+    _focusFundingSources();
     final ai = _ai.settings;
     final mandate = ai.mandate;
     final epk = _epk.state;
@@ -330,7 +353,10 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
             const SizedBox(height: 20),
 
             // ── BLOCK 2B: Funding Source ─────────────────────────────────────
-            _sectionHeader('Источник средств'),
+            KeyedSubtree(
+              key: _fundingKey,
+              child: _sectionHeader('Источник средств'),
+            ),
             const FundingSourceSelector(),
             const SizedBox(height: 20),
 
