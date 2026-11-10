@@ -399,12 +399,23 @@ class _CexSpotTradeModalState extends State<CexSpotTradeModal> {
                           color: Colors.white30,
                         ),
                       )
-                    : Text(
-                        isRu
-                            ? 'Доступно: ${_usdtBalance.toStringAsFixed(2)} $_quoteAsset'
-                            : 'Available: ${_usdtBalance.toStringAsFixed(2)} $_quoteAsset',
-                        style: GuardianTextStyles.caption.copyWith(color: Colors.white70),
-                      ),
+                    : ExchangeAccountStore.instance
+                                .keyRejectionFor(_exchangeId) !=
+                            null
+                        ? Text(
+                            isRu
+                                ? 'Биржа отклонила API-ключ'
+                                : 'API key rejected by the exchange',
+                            style: GuardianTextStyles.caption
+                                .copyWith(color: Colors.orangeAccent),
+                          )
+                        : Text(
+                            isRu
+                                ? 'Доступно: ${_usdtBalance.toStringAsFixed(2)} $_quoteAsset'
+                                : 'Available: ${_usdtBalance.toStringAsFixed(2)} $_quoteAsset',
+                            style: GuardianTextStyles.caption
+                                .copyWith(color: Colors.white70),
+                          ),
               ],
             ),
             const SizedBox(height: 16),

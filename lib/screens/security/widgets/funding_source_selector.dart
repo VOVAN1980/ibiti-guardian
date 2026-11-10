@@ -3,8 +3,8 @@ import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_order_service.dart';
+import 'package:ibiti_guardian/screens/market_command/widgets/connect_exchange_modal.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
-import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 
 // ─── Funding Source Selector ─────────────────────────────────────────────────
 //
@@ -192,6 +192,8 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
             isConnected: connected,
             isLoading: loading,
             hasError: hasError,
+            keyRejected:
+                ExchangeAccountStore.instance.keyRejectionFor(id) != null,
           ));
         }
 
@@ -206,14 +208,6 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'ИСТОЧНИК СРЕДСТВ',
-                style: GuardianTextStyles.caption.copyWith(
-                  letterSpacing: 1,
-                  color: GuardianColors.textSecondary,
-                ),
-              ),
-              const SizedBox(height: 8),
               ...sources.map((src) => _buildSourceTile(
                     context, src, activeSources)),
             ],
@@ -229,6 +223,7 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
     final isConnected = src.isConnected;
     final isLoading = src.isLoading;
     final hasError = src.hasError;
+    final keyRejected = src.keyRejected;
     final balance = src.usdtBalance;
 
     final settings = AiControlService.instance.settings;
@@ -349,7 +344,7 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
                             color: GuardianColors.textPrimary,
                           ),
                         ),
-                        if (isConnected && hasError) ...[
+                        if (isConnected && hasError && !keyRejected) ...[
                           const SizedBox(width: 6),
                           GestureDetector(
                             onTap: _loadExchangeData,
@@ -363,11 +358,29 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
                       ],
                     ),
                     if (!isConnected)
-                      const Text(
-                        'Connect required',
-                        style: TextStyle(
+                      Text(
+                        isRu ? 'Нужно подключить' : 'Connect required',
+                        style: const TextStyle(
                           fontSize: 10,
                           color: Colors.white38,
+                        ),
+                      )
+                    else if (hasError && keyRejected)
+                      // Refreshing can't fix this; a new key is needed.
+                      GestureDetector(
+                        onTap: () => ConnectExchangeModal.show(
+                          context,
+                          exchangeId: src.network,
+                          onConnected: _loadExchangeData,
+                        ),
+                        child: Text(
+                          isRu
+                              ? 'Биржа отклонила API-ключ. Нажмите, чтобы подключить новый'
+                              : 'The exchange rejected the API key. Tap to connect a new one',
+                          style: TextStyle(
+                            fontSize: 10,
+                            color: Colors.orangeAccent.withOpacity(0.9),
+                          ),
                         ),
                       )
                     else if (hasError)
@@ -449,6 +462,7 @@ class _FundingOption {
   final bool isConnected;
   final bool isLoading;
   final bool hasError;
+  final bool keyRejected;
 
   const _FundingOption({
     required this.network,
@@ -458,5 +472,6 @@ class _FundingOption {
     required this.isConnected,
     this.isLoading = false,
     this.hasError = false,
+    this.keyRejected = false,
   });
 }

@@ -22,13 +22,23 @@ class ExchangeValidationResult {
   final double usdtBalance;
   final String? detectedRegion;
 
+  /// HTTP status of a failed exchange call (null: network error or a
+  /// check done after a successful call).
+  final int? httpStatus;
+
   ExchangeValidationResult({
     required this.isValid,
     this.errorMessage,
     this.warningMessage,
     this.usdtBalance = 0.0,
     this.detectedRegion,
+    this.httpStatus,
   });
+
+  /// The exchange refused the key itself (unknown, expired, deleted or
+  /// wrong secret), as opposed to a network or server hiccup.
+  bool get keyRejected =>
+      !isValid && (httpStatus == 400 || httpStatus == 401 || httpStatus == 403);
 }
 
 class ExchangeAccountStore {
@@ -44,6 +54,14 @@ class ExchangeAccountStore {
   );
 
   final Map<String, double> _cachedUsdtBalances = {};
+
+  /// Exchanges whose stored key the exchange itself rejected on the last
+  /// balance check, with its message. Refreshing won't help: the user has
+  /// to connect a new key.
+  final Map<String, String> _keyRejections = {};
+
+  String? keyRejectionFor(String exchangeId) =>
+      _keyRejections[_canonicalId(exchangeId)];
   final Map<String, String> _testOverrides = {};
 
   void setTestOverride(String key, String value) {
@@ -245,8 +263,12 @@ class ExchangeAccountStore {
       );
       if (!result.isValid) {
         _log.e('[CEX_STORE] verifyAndConnect failed for $canonical: ${result.errorMessage}');
+        if (result.keyRejected) {
+          _keyRejections[canonical] = result.errorMessage ?? '';
+        }
         return null;
       }
+      _keyRejections.remove(canonical);
       _cachedUsdtBalances[canonical] = result.usdtBalance;
       return result.usdtBalance;
     } catch (e) {
@@ -302,7 +324,8 @@ class ExchangeAccountStore {
 
     if (response.statusCode != 200) {
       final msg = _parseErrorMsg(response.body, 'Invalid API Key or Secret');
-      return ExchangeValidationResult(isValid: false, errorMessage: msg);
+      return ExchangeValidationResult(
+          isValid: false, errorMessage: msg, httpStatus: response.statusCode);
     }
 
     final data = jsonDecode(response.body);
@@ -351,7 +374,8 @@ class ExchangeAccountStore {
     if (response.statusCode != 200) {
       final msg = _parseErrorMsg(response.body, 'Invalid API Key or Secret');
       _log.e('[verifyBinance] FAILED: $msg');
-      return ExchangeValidationResult(isValid: false, errorMessage: msg);
+      return ExchangeValidationResult(
+          isValid: false, errorMessage: msg, httpStatus: response.statusCode);
     }
 
     final data = jsonDecode(response.body);
@@ -428,6 +452,7 @@ class ExchangeAccountStore {
         return ExchangeValidationResult(
           isValid: false,
           errorMessage: 'HTTP status ${response.statusCode}: $err',
+          httpStatus: response.statusCode,
         );
       }
 
@@ -656,6 +681,7 @@ class ExchangeAccountStore {
         return ExchangeValidationResult(
           isValid: false,
           errorMessage: 'Invalid Gate.io API Key or Secret (Spot Accounts: $err)',
+          httpStatus: spotResponse.statusCode,
         );
       }
 
