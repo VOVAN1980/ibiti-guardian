@@ -5,7 +5,6 @@ import "package:flutter/foundation.dart";
 import "package:ibiti_guardian/utils/guardian_logger.dart";
 import "package:sqflite_common_ffi/sqflite_ffi.dart";
 import "package:flutter_localizations/flutter_localizations.dart";
-import "package:workmanager/workmanager.dart";
 import "package:ibiti_guardian/services/localization_service.dart";
 import "package:ibiti_guardian/services/spender_intelligence_service.dart";
 import "package:ibiti_guardian/services/update_service.dart";
@@ -20,31 +19,19 @@ import "package:ibiti_guardian/services/voice/voice_turn_controller.dart";
 import "package:ibiti_guardian/services/assistant/screen_context_service.dart";
 import "package:ibiti_guardian/theme/guardian_theme.dart";
 import "package:ibiti_guardian/screens/boot_screen.dart";
+import "package:ibiti_guardian/app/startup_services.dart";
 import 'package:ibiti_guardian/services/dapp/dapp_link_service.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
-@pragma('vm:entry-point')
-void callbackDispatcher() {
-  Workmanager().executeTask((task, inputData) async {
-    try {
-      await UpdateService.instance.initBackground();
-      return Future.value(true);
-    } catch (e) {
-      const log = GuardianLogger('Workmanager');
-      log.e('Task failed', e);
-      return Future.value(false);
-    }
-  });
-}
-
 /// Whether we're running on a desktop OS (Windows/macOS/Linux).
 bool get isDesktop =>
     Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
 void main() {
-  // Release/profile builds: print()/debugPrint output went to the system log
-  // and carried wallet addresses and amounts. Debug builds keep it.
-  if (kDebugMode) {
+  // Release builds: print()/debugPrint output went to the system log and
+  // carried wallet addresses and amounts. Debug and profile (internal
+  // test builds) keep it.
+  if (!kReleaseMode) {
     _main();
     return;
   }
@@ -65,29 +52,8 @@ Future<void> _main() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
-  // Workmanager is only supported on Android/iOS.
-  // Background update-check registration doesn't need to delay the first
-  // frame (the native splash stays up until runApp).
-  if (defaultTargetPlatform == TargetPlatform.android ||
-      defaultTargetPlatform == TargetPlatform.iOS) {
-    Future(() async {
-      await Workmanager().initialize(
-        callbackDispatcher,
-        isInDebugMode: kDebugMode,
-      );
-      await Workmanager().registerPeriodicTask(
-        "1",
-        "app_update_check",
-        frequency: const Duration(hours: 24),
-        initialDelay: const Duration(minutes: 5),
-        constraints: Constraints(
-          networkType: NetworkType.connected,
-        ),
-      );
-    }).catchError((Object e) {
-      const GuardianLogger('Guardian').e('Workmanager setup failed: $e');
-    });
-  }
+  // Workmanager (background update check) is set up by BootScreen after
+  // the intro; see setupBackgroundTasks().
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
     const log = GuardianLogger('Guardian');
@@ -101,6 +67,14 @@ Future<void> _main() async {
   // ── Phase 1: SettingsService must be first (others read settings at runtime)
   await SettingsService.instance.init();
 
+  // Phases 2-3 run while the boot animation plays (they used to delay the
+  // first frame); BootScreen waits for them before Privy/Vault.
+  StartupServices.begin(_initCoreServices());
+
+  runApp(const GuardianApp());
+}
+
+Future<void> _initCoreServices() async {
   // ── Phase 2: Independent services in parallel
   // AiControlService, EPKPolicyManager, SpenderIntelligence, UserMemory,
   // WalletSendModal — verified: no cross-dependencies between them.
@@ -119,7 +93,6 @@ Future<void> _main() async {
   // ExecutionRouter.init() is synchronous
   ExecutionRouter.instance.init();
 
-  runApp(const GuardianApp());
   if (!isDesktop) unawaited(DappLinkService.instance.start());
 }
 
@@ -325,6 +298,8 @@ class _GuardianAppState extends State<GuardianApp> {
           return GestureDetector(
             behavior: HitTestBehavior.translucent,
             onLongPressStart: (details) {
+              // Services are still starting under the boot animation.
+              if (!StartupServices.isDone) return;
               final voice = VoiceTurnController.instance;
               // Don't summon if already in a voice session.
               if (voice.isSessionActive) return;

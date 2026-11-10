@@ -241,17 +241,33 @@ class IBITIVaultService extends ChangeNotifier {
   }
 
   Future<void> _loadFromStorage() async {
-    final walletId = await _storage.read(key: _kWalletId);
-    final policyId = await _storage.read(key: _kPolicyId);
-    final biometricsStr = await _storage.read(key: _kBiometrics);
-    final pinStr = await _storage.read(key: _kPinEnabled);
-    final passkeyStr = await _storage.read(key: _kPasskeyEnabled);
-    final primaryUnlockMethod = await _storage.read(key: _kPrimaryUnlockMethod);
+    const keys = [
+      _kWalletId,
+      _kPolicyId,
+      _kBiometrics,
+      _kPinEnabled,
+      _kPasskeyEnabled,
+      _kPrimaryUnlockMethod,
+      _kEvmAddress,
+      _kEvmCardAddresses,
+      _kSolanaAddress,
+      _kTronAddress,
+      _kChainId,
+      _kChainKey,
+    ];
+    final stored = await _readStored(keys);
 
-    _evmAddress = await _storage.read(key: _kEvmAddress);
-    final evmCardAddressesRaw = await _storage.read(key: _kEvmCardAddresses);
-    _solanaAddress = await _storage.read(key: _kSolanaAddress);
-    _tronAddress = await _storage.read(key: _kTronAddress);
+    final walletId = stored[_kWalletId];
+    final policyId = stored[_kPolicyId];
+    final biometricsStr = stored[_kBiometrics];
+    final pinStr = stored[_kPinEnabled];
+    final passkeyStr = stored[_kPasskeyEnabled];
+    final primaryUnlockMethod = stored[_kPrimaryUnlockMethod];
+
+    _evmAddress = stored[_kEvmAddress];
+    final evmCardAddressesRaw = stored[_kEvmCardAddresses];
+    _solanaAddress = stored[_kSolanaAddress];
+    _tronAddress = stored[_kTronAddress];
     _evmCardAddresses = _decodeStoredAddressList(evmCardAddressesRaw);
     if (_evmAddress != null &&
         _evmAddress!.isNotEmpty &&
@@ -271,7 +287,7 @@ class IBITIVaultService extends ChangeNotifier {
 
     // Migrate from old chains
     String cacheChainKey = 'bsc';
-    final oldChainIdStr = await _storage.read(key: _kChainId);
+    final oldChainIdStr = stored[_kChainId];
     if (oldChainIdStr != null) {
       final id = int.tryParse(oldChainIdStr);
       if (id != null) {
@@ -281,7 +297,7 @@ class IBITIVaultService extends ChangeNotifier {
       await _storage.delete(key: _kChainId);
       await _storage.write(key: _kChainKey, value: cacheChainKey);
     } else {
-      cacheChainKey = await _storage.read(key: _kChainKey) ?? 'bsc';
+      cacheChainKey = stored[_kChainKey] ?? 'bsc';
     }
 
     if (walletId != null) {
@@ -300,6 +316,24 @@ class IBITIVaultService extends ChangeNotifier {
 
       _walletsBootstrapped = false;
       notifyListeners();
+    }
+  }
+
+  /// One readAll instead of a read per key: flutter_secure_storage 9.x
+  /// rebuilds its Keystore-backed EncryptedSharedPreferences on every call
+  /// (~0.2 s each on a phone), so a dozen reads took ~2.5 s at launch.
+  /// Falls back to per-key reads if readAll fails on some unrelated entry.
+  Future<Map<String, String?>> _readStored(List<String> keys) async {
+    try {
+      final all = await _storage.readAll();
+      return {for (final k in keys) k: all[k]};
+    } catch (e) {
+      _log.w('readAll failed, reading keys one by one', e);
+      final stored = <String, String?>{};
+      for (final k in keys) {
+        stored[k] = await _storage.read(key: k);
+      }
+      return stored;
     }
   }
 

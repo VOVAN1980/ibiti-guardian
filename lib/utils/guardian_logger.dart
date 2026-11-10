@@ -2,8 +2,8 @@ import 'package:flutter/foundation.dart';
 
 /// Structured logger for Guardian.
 ///
-/// In debug mode: prints all levels with component prefix.
-/// In release mode: prints only warning and error.
+/// In debug and profile (internal test) builds: prints all levels with
+/// component prefix. In release builds main() drops all output.
 ///
 /// Usage:
 ///   final _log = GuardianLogger('VaultSigner');
@@ -18,14 +18,14 @@ class GuardianLogger {
 
   /// Debug level — development only, never in release builds.
   void d(String message) {
-    if (kDebugMode) {
+    if (!kReleaseMode) {
       debugPrint('[$component] $message');
     }
   }
 
   /// Info level — development only.
   void i(String message) {
-    if (kDebugMode) {
+    if (!kReleaseMode) {
       debugPrint('[$component] ℹ $message');
     }
   }

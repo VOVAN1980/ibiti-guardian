@@ -1,5 +1,9 @@
+import 'dart:async';
 import 'dart:io' show Platform;
 import "package:flutter/material.dart";
+import "package:flutter/scheduler.dart";
+import "package:ibiti_guardian/app/background_tasks.dart";
+import "package:ibiti_guardian/app/startup_services.dart";
 import "package:ibiti_guardian/utils/guardian_logger.dart";
 import "package:ibiti_guardian/app/guardian_app_shell.dart";
 import "package:ibiti_guardian/services/pro/pro_service.dart";
@@ -49,28 +53,29 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
 
     // Fast but cinematic durations
     _singularityController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 650));
+        vsync: this, duration: const Duration(milliseconds: 1200));
 
     _vibrationController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 60))
       ..repeat(reverse: true);
 
     _expansionController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 300));
+        vsync: this, duration: const Duration(milliseconds: 500));
 
     _revealController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 450));
+        vsync: this, duration: const Duration(milliseconds: 1000));
 
     _startInitialization();
   }
 
   Future<void> _startInitialization() async {
-    // The intro plays while Privy/Vault initialize (it used to start only
-    // after them); the curtains open once both are done.
-    await Future.wait([
-      _runCriticalInitialization(),
-      _runIntro(),
-    ]);
+    // Loading runs under the intro (it used to run first, on a black
+    // screen); the curtains open once both are done.
+    final charged = Completer<void>();
+    final ready = _runCriticalInitialization(charged.future);
+    await _waitForSteadyFrames();
+    await _runIntro(ready, charged);
+    await ready;
 
     if (!mounted) return;
 
@@ -99,10 +104,21 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
 
   bool _criticalInitFailed = false;
 
-  Future<void> _runCriticalInitialization() async {
+  /// [privyGate]: Privy's SDK init keeps the Android main thread (and the
+  /// CPU) busy for ~1.5 s, which froze the intro mid-growth. It starts once
+  /// the singularity is fully charged, where a pause doesn't show.
+  Future<void> _runCriticalInitialization(Future<void> privyGate) async {
     const log = GuardianLogger('Boot');
     final isDesktop =
         Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+
+    // Services main() started without waiting (see StartupServices) must be
+    // up before anything below, as when main() awaited them.
+    try {
+      await StartupServices.ready.timeout(const Duration(seconds: 15));
+    } catch (e) {
+      log.e('Core services still starting', e);
+    }
 
     // Phase A: Independent services in parallel
     // ProService + SoundService have no cross-deps.
@@ -115,6 +131,8 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
     } catch (e) {
       log.e('Parallel critical init failed', e);
     }
+
+    await privyGate;
 
     // Phase B: Privy → Vault (strict order, Vault depends on Privy config)
     final privySteps = <String, Future<void> Function()>{
@@ -151,6 +169,8 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
           Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
       final deferredSteps = <String, Future<void> Function()>{
+        // First: MonitoringService registers a Workmanager task.
+        'BackgroundTasks': setupBackgroundTasks,
         'ThreatIntelligence': () => ThreatIntelligenceService.instance.init(),
         if (!isDesktop) 'Billing': () => BillingService.instance.init(),
         if (!isDesktop)
@@ -217,22 +237,44 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
     }
   }
 
-  /// Singularity and horizontal rift.
-  Future<void> _runIntro() async {
-    if (!mounted) return;
+  /// The first frames after launch come in bursts while the engine and
+  /// surface settle; an animation started then plays mostly unseen.
+  /// Waits until frames flow (or 1.5 s at most).
+  Future<void> _waitForSteadyFrames() async {
+    final clock = Stopwatch()..start();
+    var last = 0;
+    var steady = 0;
+    while (mounted && steady < 3 && clock.elapsedMilliseconds < 1500) {
+      await SchedulerBinding.instance.endOfFrame;
+      final now = clock.elapsedMilliseconds;
+      steady = now - last < 50 ? steady + 1 : 0;
+      last = now;
+    }
+  }
+
+  /// Singularity, then the horizontal rift once [ready] completes.
+  Future<void> _runIntro(Future<void> ready, Completer<void> charged) async {
+    if (!mounted) {
+      if (!charged.isCompleted) charged.complete();
+      return;
+    }
     setState(() => _startCinematic = true);
 
     // 1. Singularity
     AudioManager.instance.playSound("opening_crackle.wav");
     await _singularityController.forward();
-    if (!mounted) return;
-    // The jitter is invisible once the rift starts; stop repainting it.
-    _vibrationController.stop();
-    await Future.delayed(const Duration(milliseconds: 80));
+    if (!charged.isCompleted) charged.complete();
+    // Still loading: the charged singularity keeps trembling until done.
+    await ready;
+    if (!mounted || _criticalInitFailed) return;
+    await Future.delayed(const Duration(milliseconds: 200));
 
     // 2. Horizontal Expansion
     if (!mounted) return;
+    // The jitter is invisible once the rift starts; stop repainting it.
+    _vibrationController.stop();
     await _expansionController.forward();
+    await Future.delayed(const Duration(milliseconds: 200));
   }
 
   /// Vertical reveal, then navigate.
