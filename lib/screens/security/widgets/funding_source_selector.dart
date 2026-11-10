@@ -281,19 +281,21 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
     }
 
     return GestureDetector(
+      // Not connected: open the API key dialog right here (it used to only
+      // say "connect it in the API keys module"). They tapped to turn the
+      // source on, so it is switched on once the key is accepted.
       onTap: isGrayedOut
-          ? () {
-              if (!isConnected) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(
-                    isRu
-                        ? 'Подключите ${src.label} в модуле API ключей.'
-                        : 'Connect ${src.label} first in API credentials settings.',
-                  ),
-                  backgroundColor: Colors.orangeAccent,
-                ));
-              }
-            }
+          ? () => ConnectExchangeModal.show(
+                context,
+                exchangeId: src.network,
+                onConnected: () {
+                  final next = List<String>.from(
+                      AiControlService.instance.settings.activeSources);
+                  if (!next.contains(src.network)) next.add(src.network);
+                  AiControlService.instance.updateActiveSources(next);
+                  _loadExchangeData();
+                },
+              )
           : () {
               final nextSources = List<String>.from(activeSources);
               if (isSelected) {
@@ -361,7 +363,9 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
                     ),
                     if (!isConnected)
                       Text(
-                        isRu ? 'Нужно подключить' : 'Connect required',
+                        isRu
+                            ? 'Нажмите, чтобы подключить API'
+                            : 'Tap to connect the API',
                         style: const TextStyle(
                           fontSize: 10,
                           color: Colors.white38,
