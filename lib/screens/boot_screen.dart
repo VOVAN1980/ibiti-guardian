@@ -49,23 +49,28 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
 
     // Fast but cinematic durations
     _singularityController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 1200));
+        vsync: this, duration: const Duration(milliseconds: 650));
 
     _vibrationController = AnimationController(
         vsync: this, duration: const Duration(milliseconds: 60))
       ..repeat(reverse: true);
 
     _expansionController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 500));
+        vsync: this, duration: const Duration(milliseconds: 300));
 
     _revealController = AnimationController(
-        vsync: this, duration: const Duration(milliseconds: 1000));
+        vsync: this, duration: const Duration(milliseconds: 450));
 
     _startInitialization();
   }
 
   Future<void> _startInitialization() async {
-    await _runCriticalInitialization();
+    // The intro plays while Privy/Vault initialize (it used to start only
+    // after them); the curtains open once both are done.
+    await Future.wait([
+      _runCriticalInitialization(),
+      _runIntro(),
+    ]);
 
     if (!mounted) return;
 
@@ -76,9 +81,12 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
     }
 
     _determineDestination();
-    _runDeferredInitialization();
+    await _runReveal();
 
-    await _runCinematicSequence();
+    // Deferred services start after the next screen is up, so they don't
+    // steal frames from the animation (that was the stutter).
+    Future.delayed(
+        const Duration(milliseconds: 400), _runDeferredInitialization);
   }
 
   void _retryInitialization() {
@@ -209,19 +217,27 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
     }
   }
 
-  Future<void> _runCinematicSequence() async {
+  /// Singularity and horizontal rift.
+  Future<void> _runIntro() async {
+    if (!mounted) return;
     setState(() => _startCinematic = true);
 
     // 1. Singularity
     AudioManager.instance.playSound("opening_crackle.wav");
     await _singularityController.forward();
-    await Future.delayed(const Duration(milliseconds: 200));
+    if (!mounted) return;
+    // The jitter is invisible once the rift starts; stop repainting it.
+    _vibrationController.stop();
+    await Future.delayed(const Duration(milliseconds: 80));
 
     // 2. Horizontal Expansion
+    if (!mounted) return;
     await _expansionController.forward();
-    await Future.delayed(const Duration(milliseconds: 200));
+  }
 
-    // 3. Vertical Reveal
+  /// Vertical reveal, then navigate.
+  Future<void> _runReveal() async {
+    if (!mounted) return;
     AudioManager.instance.playSound("opening_whoosh.wav");
     await _revealController.forward();
 

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
+import 'package:ibiti_guardian/utils/secure_screen.dart';
 
 class PinSetupScreen extends StatefulWidget {
   const PinSetupScreen({super.key});
@@ -15,6 +16,18 @@ class _PinSetupScreenState extends State<PinSetupScreen> {
   String _currentPin = '';
   bool _isConfirming = false;
   bool _isError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    SecureScreen.enable();
+  }
+
+  @override
+  void dispose() {
+    SecureScreen.disable();
+    super.dispose();
+  }
 
   void _onDigit(String digit) {
     if (_currentPin.length < 6) {

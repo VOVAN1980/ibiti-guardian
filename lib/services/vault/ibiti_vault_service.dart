@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
+import 'package:ibiti_guardian/utils/pin_hasher.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:privy_flutter/privy_flutter.dart';
@@ -14,7 +15,6 @@ import 'package:web3dart/web3dart.dart';
 import 'package:wallet/wallet.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:crypto/crypto.dart';
 import 'dart:math';
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1146,15 +1146,9 @@ class IBITIVaultService extends ChangeNotifier {
     return base64UrlEncode(values);
   }
 
-  String _hashPin(String pin, String salt) {
-    final bytes = utf8.encode(pin + salt);
-    final digest = sha256.convert(bytes);
-    return digest.toString();
-  }
-
   Future<void> savePin(String pin, {bool makePrimary = false}) async {
     final salt = _generateSalt();
-    final hash = _hashPin(pin, salt);
+    final hash = await PinHasher.hash(pin, salt);
 
     await _storage.write(key: _kPinSalt, value: salt);
     await _storage.write(key: _kPinHash, value: hash);
@@ -1172,8 +1166,12 @@ class IBITIVaultService extends ChangeNotifier {
     final storedSalt = await _storage.read(key: _kPinSalt);
     if (storedHash == null || storedSalt == null) return false;
 
-    final computedHash = _hashPin(pin, storedSalt);
-    if (computedHash == storedHash) {
+    if (await PinHasher.verify(pin, storedSalt, storedHash)) {
+      // Upgrade a legacy single-SHA-256 hash now that we know the PIN.
+      if (PinHasher.isLegacy(storedHash)) {
+        await _storage.write(
+            key: _kPinHash, value: await PinHasher.hash(pin, storedSalt));
+      }
       await _storage.delete(key: _kPinAttempts);
       await _storage.delete(key: _kPinLockedUntil);
       _pinLockedUntilCache = null;

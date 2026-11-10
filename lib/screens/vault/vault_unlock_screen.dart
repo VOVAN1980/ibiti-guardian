@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
+import 'package:ibiti_guardian/utils/secure_screen.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:ibiti_guardian/app/guardian_app_shell.dart';
@@ -111,6 +112,7 @@ class _VaultUnlockScreenState extends State<VaultUnlockScreen> {
   @override
   void initState() {
     super.initState();
+    SecureScreen.enable();
     if (IBITIVaultService.instance.isPinLocked) {
       _lockRefreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
@@ -124,6 +126,7 @@ class _VaultUnlockScreenState extends State<VaultUnlockScreen> {
   @override
   void dispose() {
     _lockRefreshTimer?.cancel();
+    SecureScreen.disable();
     super.dispose();
   }
 

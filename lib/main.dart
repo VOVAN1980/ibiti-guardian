@@ -41,7 +41,23 @@ void callbackDispatcher() {
 bool get isDesktop =>
     Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
-void main() async {
+void main() {
+  // Release/profile builds: print()/debugPrint output went to the system log
+  // and carried wallet addresses and amounts. Debug builds keep it.
+  if (kDebugMode) {
+    _main();
+    return;
+  }
+  debugPrint = (String? message, {int? wrapWidth}) {};
+  runZoned(
+    _main,
+    zoneSpecification: ZoneSpecification(
+      print: (self, parent, zone, line) {},
+    ),
+  );
+}
+
+Future<void> _main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
   // Desktop: use FFI-based SQLite instead of Android/iOS native plugin.
@@ -50,21 +66,27 @@ void main() async {
     databaseFactory = databaseFactoryFfi;
   }
   // Workmanager is only supported on Android/iOS.
+  // Background update-check registration doesn't need to delay the first
+  // frame (the native splash stays up until runApp).
   if (defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS) {
-    await Workmanager().initialize(
-      callbackDispatcher,
-      isInDebugMode: kDebugMode,
-    );
-    await Workmanager().registerPeriodicTask(
-      "1",
-      "app_update_check",
-      frequency: const Duration(hours: 24),
-      initialDelay: const Duration(minutes: 5),
-      constraints: Constraints(
-        networkType: NetworkType.connected,
-      ),
-    );
+    Future(() async {
+      await Workmanager().initialize(
+        callbackDispatcher,
+        isInDebugMode: kDebugMode,
+      );
+      await Workmanager().registerPeriodicTask(
+        "1",
+        "app_update_check",
+        frequency: const Duration(hours: 24),
+        initialDelay: const Duration(minutes: 5),
+        constraints: Constraints(
+          networkType: NetworkType.connected,
+        ),
+      );
+    }).catchError((Object e) {
+      const GuardianLogger('Guardian').e('Workmanager setup failed: $e');
+    });
   }
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
