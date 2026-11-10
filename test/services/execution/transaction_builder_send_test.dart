@@ -57,6 +57,29 @@ void main() {
       expect(TransactionBuilder.build(send('NOTATOKEN', 1)), isNull);
     });
 
+    test('recipient address shape is checked per chain', () {
+      expect(TransactionBuilder.isValidRecipient(recipient, 'bsc'), isTrue);
+      // A short address used to be zero-padded into a different address.
+      expect(TransactionBuilder.isValidRecipient('0x1234', 'bsc'), isFalse);
+      expect(TransactionBuilder.build(IntentData(
+            type: IntentType.sendAsset,
+            rawInput: 'send',
+            tokenSymbol: 'BNB',
+            toAddress: '0x1234',
+            amount: 1,
+          )), isNull);
+      expect(
+          TransactionBuilder.isValidRecipient(
+              'BHZrgWe7xD9C2W7hEDyGfqB2Lxe1L7ttPDDFkAhvhLfC', 'solana'),
+          isTrue);
+      expect(TransactionBuilder.isValidRecipient('0xabc', 'solana'), isFalse);
+      expect(
+          TransactionBuilder.isValidRecipient(
+              'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t', 'tron'),
+          isTrue);
+      expect(TransactionBuilder.isValidRecipient(recipient, 'tron'), isFalse);
+    });
+
     test('zero amount is refused', () {
       expect(TransactionBuilder.build(send('USDT', 0)), isNull);
     });

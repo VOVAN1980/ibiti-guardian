@@ -1568,5 +1568,6 @@
   "txDetailOpenExplorer": "Открыть в Explorer",
   "txDetailCopied": "{label} скопировано",
   "assistantSendTokenNotOnNetwork": "Токена {token} нет в сети {network}. Переключите сеть или выберите токен в окне отправки.",
-  "assistantSendInvalidRecipient": "Адрес получателя не подходит для сети {network}. Проверьте его и попробуйте снова."
+  "assistantSendInvalidRecipient": "Адрес получателя не подходит для сети {network}. Проверьте его и попробуйте снова.",
+  "walletSendInvalidAddress": "Неверный адрес для сети {network}."
 }

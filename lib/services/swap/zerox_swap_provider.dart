@@ -323,6 +323,8 @@ class ZeroXSwapProvider implements SwapProvider {
         'slippageBps': actualSlippageBps,
         'chainId': request.chainId,
         'takerAddress': request.userAddress,
+        // gasEstimate is in gas UNITS; the fee in wei is units × this price.
+        'gasPriceWei': tx['gasPrice']?.toString(),
       },
     );
   }

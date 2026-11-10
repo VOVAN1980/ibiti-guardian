@@ -19,6 +19,7 @@ import 'package:ibiti_guardian/config/privy_chain_registry.dart';
 import 'package:ibiti_guardian/models/execution_path.dart';
 import 'package:ibiti_guardian/utils/amount_parser.dart';
 import 'package:ibiti_guardian/services/execution/guardian_execution_controller.dart';
+import 'package:ibiti_guardian/services/execution/transaction_builder.dart';
 import 'package:ibiti_guardian/services/execution/tx_status_poller.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
@@ -364,6 +365,19 @@ class _WalletSendModalState extends State<WalletSendModal>
         ));
         return;
       }
+    } else if (!TransactionBuilder.isValidRecipient(toAddress, _activeChainKey)) {
+      // Solana / Tron: catch a wrong address here with a clear message
+      // instead of a failure deep in the signer.
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          t.t('walletSendInvalidAddress', {
+            'network': chain.displayName,
+            'default': 'Invalid ${chain.displayName} address.',
+          }),
+        ),
+        backgroundColor: GuardianColors.danger,
+      ));
+      return;
     }
 
     // Wallet sends are bounded by the wallet Send limit (enforced in the policy

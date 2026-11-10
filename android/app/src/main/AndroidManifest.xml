@@ -12,6 +12,8 @@
         android:label="IBITI Guardian"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:enableOnBackInvokedCallback="true">
 
         <activity

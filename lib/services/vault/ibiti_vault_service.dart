@@ -1112,6 +1112,12 @@ class IBITIVaultService extends ChangeNotifier {
   static const int _maxPinAttempts = 5;
   static const Duration _lockoutDuration = Duration(minutes: 5);
 
+  /// Consecutive wrong PINs after which the Privy session is signed out.
+  /// The 5-minute lockout is wall-clock based and moving the clock forward
+  /// skips it; this cap does not depend on time: past it, signing needs the
+  /// owner's Google/email sign-in again (the boot re-auth screen).
+  static const int _maxPinFailuresBeforeSignOut = 10;
+
   bool get isPinLocked {
     if (_pinLockedUntilCache == null) return false;
     if (DateTime.now().isAfter(_pinLockedUntilCache!)) return false;
@@ -1127,8 +1133,8 @@ class IBITIVaultService extends ChangeNotifier {
       if (lockedUntil != null && DateTime.now().isBefore(lockedUntil)) {
         _pinLockedUntilCache = lockedUntil;
       } else {
+        // The failure count survives restarts; only a correct PIN resets it.
         await _storage.delete(key: _kPinLockedUntil);
-        await _storage.delete(key: _kPinAttempts);
         _pinLockedUntilCache = null;
       }
     }
@@ -1183,6 +1189,16 @@ class IBITIVaultService extends ChangeNotifier {
         await _storage.write(
             key: _kPinLockedUntil, value: lockedUntil.toIso8601String());
         _pinLockedUntilCache = lockedUntil;
+      }
+      if (attempts >= _maxPinFailuresBeforeSignOut && !_privySessionExpired) {
+        _log.w('Too many wrong PINs — signing out of Privy');
+        try {
+          await _privy?.logout();
+        } catch (e) {
+          _log.e('PIN cap logout error', e);
+        }
+        _privySessionExpired = true;
+        notifyListeners();
       }
       return false;
     }

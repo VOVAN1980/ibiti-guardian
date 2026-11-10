@@ -607,15 +607,23 @@ class GuardianExecutionController {
           print('[SwapOrchestrator] TRX balance check failed: $e');
       }
     } else {
-      // EVM: gasRequired = gasEstimate (swap) + gasEstimate (approve if needed)
-      // WalletAdapter.nativeBalance is in Wei.
-      final nativeBalance = _wallet.nativeBalance;
+      // EVM: native needed = swap gas fee + approve gas fee + value sent.
+      // quote.gasEstimate is in gas UNITS (0x "gas"); it used to be added to
+      // wei as is, so the check could never fail on gas. The balance is the
+      // active chain's — skip when the swap modal works on another chain.
+      final nativeBalance = effectiveChainKey == _wallet.chainKey
+          ? _wallet.nativeBalance
+          : null;
       if (nativeBalance != null) {
         final approveGasEstimate = quote.approvalNeeded
             ? BigInt.from(50000 * 5000000000) // ~50k gas * 5 Gwei
             : BigInt.zero;
-        final totalGasRequired =
-            quote.gasEstimate + approveGasEstimate + quote.nativeValue;
+        final gasPriceWei = BigInt.tryParse(
+                quote.extraSummary['gasPriceWei']?.toString() ?? '') ??
+            BigInt.from(5000000000); // 5 Gwei fallback
+        final totalGasRequired = quote.gasEstimate * gasPriceWei +
+            approveGasEstimate +
+            quote.nativeValue;
 
         if (nativeBalance < totalGasRequired) {
           return AssistantResponse.error(
