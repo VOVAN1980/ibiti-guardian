@@ -284,8 +284,13 @@ class _WalletSpaceScreenState extends State<WalletSpaceScreen>
               return _BankBackground(
                 currentAccent: currentAccent,
                 child: SafeArea(
-                  child: CustomScrollView(
-                    physics: const BouncingScrollPhysics(),
+                  // Same pull-to-refresh as Market: a short pull shows the
+                  // spinner. Bouncing physics let the whole page be dragged
+                  // down to the bottom of the screen, with no refresh.
+                  child: RefreshIndicator(
+                    onRefresh: () => VaultPortfolioListener.instance.refresh(),
+                    child: CustomScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(),
                     slivers: [
                       SliverToBoxAdapter(
                         child: FadeTransition(
@@ -440,6 +445,7 @@ class _WalletSpaceScreenState extends State<WalletSpaceScreen>
                         ),
                       ),
                     ],
+                  ),
                   ),
                 ),
               );
