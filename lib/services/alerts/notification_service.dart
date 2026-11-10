@@ -522,6 +522,47 @@ class NotificationService {
     );
   }
 
+  /// One-off reminder at [when], replacing any earlier one with [id].
+  /// Inexact (Android may shift it a little), so no exact-alarm permission
+  /// is needed. Past times are skipped.
+  Future<void> scheduleReminder({
+    required int id,
+    required DateTime when,
+    required String title,
+    required String body,
+  }) async {
+    try {
+      await _notifications.cancel(id: id);
+      if (!when.isAfter(DateTime.now())) return;
+      const details = NotificationDetails(
+        android: AndroidNotificationDetails(
+          'api_key_reminders',
+          'API key reminders',
+          channelDescription: 'Reminders to renew exchange API keys',
+          importance: Importance.high,
+          priority: Priority.high,
+        ),
+        iOS: DarwinNotificationDetails(),
+      );
+      await _notifications.zonedSchedule(
+        id: id,
+        title: title,
+        body: body,
+        scheduledDate: tz.TZDateTime.from(when, tz.local),
+        notificationDetails: details,
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      );
+    } catch (e) {
+      _log.e('Reminder $id not scheduled', e);
+    }
+  }
+
+  Future<void> cancelReminder(int id) async {
+    try {
+      await _notifications.cancel(id: id);
+    } catch (_) {}
+  }
+
   Future<void> scheduleSubscriptionExpiry(DateTime expiryDate) async {
     // Cancel any previous expiry notifications to avoid duplicates
     // We'll use specific IDs for expiry: 107 (7 days), 103 (3 days), 101 (1 day)

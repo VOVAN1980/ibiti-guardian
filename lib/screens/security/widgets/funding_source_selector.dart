@@ -4,6 +4,7 @@ import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_order_service.dart';
 import 'package:ibiti_guardian/screens/market_command/widgets/connect_exchange_modal.dart';
+import 'package:ibiti_guardian/services/exchanges/api_key_expiry_service.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 
 // ─── Funding Source Selector ─────────────────────────────────────────────────
@@ -51,6 +52,7 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
   String? _okxRegion;
 
   Future<void> _loadExchangeData() async {
+    await ApiKeyExpiryService.instance.load();
     final okxReg = await ExchangeAccountStore.instance.getOkxRegion();
     if (mounted) {
       setState(() {
@@ -121,6 +123,104 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
           }
         }
       }
+    }
+  }
+
+  /// MEXC switches off IP-unbound keys after 90 days: shows the estimate,
+  /// and in the last days a tap to mark it renewed or connect a new key.
+  List<Widget> _keyAgeLines(
+      BuildContext context, _FundingOption src, bool isRu) {
+    final expiry = ApiKeyExpiryService.instance;
+    if (src.isWallet || !src.isConnected || !expiry.tracks(src.network)) {
+      return const [];
+    }
+    final left = expiry.daysLeft(src.network);
+    if (left == null) return const [];
+    if (left > 5) {
+      return [
+        Text(
+          isRu
+              ? 'Ключ API действует ещё ~$left дн.'
+              : 'API key valid for ~$left more days',
+          style: const TextStyle(
+              fontSize: 10, color: GuardianColors.textSecondary),
+        ),
+      ];
+    }
+    final extend = expiry.canExtend(src.network);
+    final text = left > 0
+        ? (isRu
+            ? (extend
+                ? 'Ключ API отключится через ~$left дн. — продлите на бирже. Нажмите здесь'
+                : 'Ключ API отключится через ~$left дн. — нужен новый ключ. Нажмите здесь')
+            : (extend
+                ? 'API key switches off in ~$left days — extend it on the exchange. Tap here'
+                : 'API key switches off in ~$left days — a new key is needed. Tap here'))
+        : (isRu
+            ? 'Ключ API, скорее всего, истёк — продлите или подключите новый. Нажмите здесь'
+            : 'The API key has probably expired — extend it or connect a new one. Tap here');
+    return [
+      GestureDetector(
+        onTap: () => _renewDialog(context, src, isRu),
+        child: Text(
+          text,
+          style: TextStyle(
+              fontSize: 10, color: Colors.orangeAccent.withOpacity(0.9)),
+        ),
+      ),
+    ];
+  }
+
+  Future<void> _renewDialog(
+      BuildContext context, _FundingOption src, bool isRu) async {
+    final extend = ApiKeyExpiryService.instance.canExtend(src.network);
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: GuardianColors.surface,
+        title: Text(isRu ? 'Ключ API ${src.label}' : '${src.label} API key'),
+        content: Text(extend
+            ? (isRu
+                ? 'На бирже: «Управление API» → «Мои ключи API» → «Продлить» '
+                    '(доступно в последние 5 дней). После продления нажмите '
+                    '«Уже продлил» — отсчёт 90 дней начнётся заново.'
+                : 'On the exchange: API Management → My API Keys → Extend '
+                    '(offered in the last 5 days). Then tap "Already renewed" '
+                    'to restart the 90-day count.')
+            : (isRu
+                ? 'Биржа отключает ключи без привязки к IP через 90 дней, '
+                    'продлить их нельзя. Создайте на бирже новый ключ (чтение '
+                    'и спотовая торговля, без вывода) и подключите его.'
+                : 'The exchange switches off IP-unbound keys after 90 days '
+                    'and they cannot be extended. Create a new key there '
+                    '(read and spot trading, no withdrawals) and connect it.')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(isRu ? 'Закрыть' : 'Close'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'new'),
+            child: Text(isRu ? 'Новый ключ' : 'New key'),
+          ),
+          if (extend)
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, 'renewed'),
+              child: Text(isRu ? 'Уже продлил' : 'Already renewed'),
+            ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'renewed') {
+      await ApiKeyExpiryService.instance.markStarted(src.network);
+      if (mounted) setState(() {});
+    } else if (choice == 'new' && context.mounted) {
+      ConnectExchangeModal.show(
+        context,
+        exchangeId: src.network,
+        onConnected: _loadExchangeData,
+      );
     }
   }
 
@@ -410,6 +510,7 @@ class _FundingSourceSelectorState extends State<FundingSourceSelector> {
                           color: GuardianColors.textSecondary,
                         ),
                       ),
+                      ..._keyAgeLines(context, src, isRu),
                       if (insufficientBalance)
                         Text(
                           isRu

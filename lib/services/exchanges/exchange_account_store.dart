@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
+import 'package:ibiti_guardian/services/exchanges/api_key_expiry_service.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
 String getOkxIsoTimestamp() {
@@ -241,6 +242,7 @@ class ExchangeAccountStore {
       if (region != null) {
         await _storage.write(key: _keyFor(canonical, 'region'), value: region);
       }
+      await ApiKeyExpiryService.instance.markStarted(canonical);
     } catch (e) {
       _log.e('[CEX_STORE] Error saving credentials for $canonical: $e');
     }
@@ -255,6 +257,7 @@ class ExchangeAccountStore {
       await _storage.delete(key: _keyFor(canonical, 'api_secret'));
       await _storage.delete(key: _keyFor(canonical, 'api_passphrase'));
       await _storage.delete(key: _keyFor(canonical, 'region'));
+      await ApiKeyExpiryService.instance.forget(canonical);
     } catch (e) {
       _log.e('[CEX_STORE] Error disconnecting $canonical: $e');
     }

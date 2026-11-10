@@ -31,6 +31,7 @@ import "package:ibiti_guardian/screens/vault/privy_reauth_screen.dart";
 import "package:ibiti_guardian/screens/settings/language_selection_screen.dart";
 import "package:ibiti_guardian/services/execution/tx_status_poller.dart";
 import "package:ibiti_guardian/services/market/market_memory_service.dart";
+import "package:ibiti_guardian/services/exchanges/api_key_expiry_service.dart";
 
 class BootScreen extends StatefulWidget {
   const BootScreen({super.key});
@@ -191,6 +192,10 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
         if (!isDesktop)
           'TxPollerResume': () =>
               TxStatusPoller.instance.resumeIfPending(onStatus: (_) {}),
+        // After 'Notification' (above), which initializes the plugin.
+        if (!isDesktop)
+          'ApiKeyReminders': () =>
+              ApiKeyExpiryService.instance.refreshReminders(),
       };
 
       _failedDeferredServices.clear();
