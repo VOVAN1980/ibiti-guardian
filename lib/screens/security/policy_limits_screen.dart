@@ -454,58 +454,9 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                     await _ai.updateMandate(mandate.copyWith(maxGasUsd: v));
                 },
               ),
-              _divider(),
-              _editableRow(
-                label: t.t('policyMandateMaxDailyLoss'),
-                value: '\$${mandate.maxDailyLossUsd.toStringAsFixed(0)}',
-                onEdit: () async {
-                  final v = await _editUsd(t.t('policyMandateEditLossTitle'),
-                      mandate.maxDailyLossUsd);
-                  if (v != null)
-                    await _ai
-                        .updateMandate(mandate.copyWith(maxDailyLossUsd: v));
-                },
-              ),
-              _divider(),
-              _editableRow(
-                label: t.t('policyMandateMaxDrawdown'),
-                value: '${mandate.maxDrawdownPct.toStringAsFixed(1)}%',
-                onEdit: () async {
-                  final v = await _editDouble(
-                      t.t('policyMandateEditDrawdownTitle'),
-                      mandate.maxDrawdownPct,
-                      suffix: '%');
-                  if (v != null)
-                    await _ai
-                        .updateMandate(mandate.copyWith(maxDrawdownPct: v));
-                },
-              ),
-              _divider(),
-              _editableRow(
-                label: t.t('policyMandateMaxOpenPositions'),
-                value: '${mandate.maxOpenPositions}',
-                onEdit: () async {
-                  final v = await _editInt(
-                      t.t('policyMandateEditMaxOpenPositionsTitle'),
-                      mandate.maxOpenPositions);
-                  if (v != null)
-                    await _ai
-                        .updateMandate(mandate.copyWith(maxOpenPositions: v));
-                },
-              ),
-              _divider(),
-              _editableRow(
-                label: t.t('policyMandateStopAfterLosses'),
-                value: '${mandate.stopAfterLosses}',
-                onEdit: () async {
-                  final v = await _editInt(
-                      t.t('policyMandateEditStopAfterLossesTitle'),
-                      mandate.stopAfterLosses);
-                  if (v != null)
-                    await _ai
-                        .updateMandate(mandate.copyWith(stopAfterLosses: v));
-                },
-              ),
+              // Daily loss, drawdown, open positions and stop-after-losses
+              // are stored in the mandate but nothing enforces them yet, so
+              // they are not offered here (they read like working limits).
               _divider(),
               _editableRow(
                 label: 'Disaster Stop %',

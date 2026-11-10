@@ -35,7 +35,6 @@ import 'package:ibiti_guardian/services/assistant/swap_voice_orchestrator.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/services/market/market_live_engine.dart';
 import 'package:ibiti_guardian/services/market/market_memory_service.dart';
-import 'package:ibiti_guardian/services/ibiti/ibiti_loop.dart';
 import 'package:ibiti_guardian/services/market/market_intent_normalizer.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_order_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
@@ -173,10 +172,6 @@ class GuardianAssistantService {
         'Максимальный размер одной позиции: \$${s.mandate.maxPositionUsd.toStringAsFixed(0)}. '
         'Максимальная комиссия сети: \$${s.mandate.maxGasUsd.toStringAsFixed(0)}. '
         'Максимальное проскальзывание: ${s.mandate.maxSlippageBps.toStringAsFixed(0)} базисных пунктов. '
-        'Пока не применяются, только сохранены: дневной убыток \$${s.mandate.maxDailyLossUsd.toStringAsFixed(0)}, '
-        'просадка ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%, '
-        'открытых позиций ${s.mandate.maxOpenPositions}, '
-        'остановка после ${s.mandate.stopAfterLosses} убыточных сделок подряд. '
         'Разрешённые действия: $actions. '
         'Разрешённые активы: $assets. '
         'Разрешённые сети: $networks. '
@@ -195,10 +190,6 @@ class GuardianAssistantService {
       'Maximum position size: \$${s.mandate.maxPositionUsd.toStringAsFixed(0)}. '
       'Maximum network fee: \$${s.mandate.maxGasUsd.toStringAsFixed(0)}. '
       'Maximum slippage: ${s.mandate.maxSlippageBps.toStringAsFixed(0)} basis points. '
-      'Saved but not enforced yet: daily loss \$${s.mandate.maxDailyLossUsd.toStringAsFixed(0)}, '
-      'drawdown ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%, '
-      'open positions ${s.mandate.maxOpenPositions}, '
-      'stop after ${s.mandate.stopAfterLosses} consecutive losses. '
       'Allowed actions: $actions. '
       'Allowed assets: $assets. '
       'Allowed networks: $networks. '
@@ -937,44 +928,6 @@ class GuardianAssistantService {
         text =
             '${connected.length} exchanges connected: ${connected.join(", ")}. '
             'MarketLiveEngine tracking $pairCount pairs.';
-      }
-      return info(text, const []);
-    }
-
-    // ── IBITI status fast path ─────────────────────────────────────────────
-    if (lower.contains('jarvis') ||
-        lower.contains('джарвис') ||
-        lower.contains('ibiti') ||
-        lower.contains('ибити') ||
-        lower.contains('автономн') ||
-        lower.contains('autonomous') ||
-        lower.contains('торгует') ||
-        lower.contains('can he trade') ||
-        lower.contains('может торговать') ||
-        lower.contains('observe')) {
-      final loop = IbitiLoop.instance;
-      final mode = loop.executionMode;
-      final isRunning = loop.isRunning;
-      final ticks = loop.tickCount;
-      final events = loop.totalEvents;
-
-      final String text;
-      if (effectiveLang == 'ru') {
-        if (!isRunning) {
-          text = 'IBITI сейчас не запущен. Когнитивный цикл неактивен.';
-        } else {
-          text = 'IBITI активен в режиме ${mode.name}. '
-              '${mode.name == 'observeOnly' ? 'Он только наблюдает, деньги не трогает. ' : 'Внимание: режим ${mode.name}. '}'
-              'Циклов: $ticks. Событий обработано: $events.';
-        }
-      } else {
-        if (!isRunning) {
-          text = 'IBITI is not running. Cognitive loop is inactive.';
-        } else {
-          text = 'IBITI is active in ${mode.name} mode. '
-              '${mode.name == 'observeOnly' ? 'Observing only, no money touched. ' : 'Attention: ${mode.name} mode active. '}'
-              'Ticks: $ticks. Events processed: $events.';
-        }
       }
       return info(text, const []);
     }

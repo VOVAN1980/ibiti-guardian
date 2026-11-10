@@ -1,4 +1,8 @@
-import 'package:ibiti_guardian/services/ibiti/ibiti_database.dart';
+import 'dart:io';
+
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:ibiti_guardian/services/market/market_memory_entry.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
@@ -22,36 +26,86 @@ class MarketMemoryService {
   static final MarketMemoryService instance = MarketMemoryService._();
 
   static const _table = 'market_memory';
-  bool _ready = false;
+  static const _dbFile = 'market_memory.db';
+  static const _columns = 'timestamp, action, symbol, source, ai_mode, '
+      'result, amount, price_then, reason, raw_input';
+
+  Database? _db;
+  Future<Database?>? _opening;
+  bool get _ready => _db != null;
 
   // ── Init ─────────────────────────────────────────────────────────────────
 
-  /// Ensure the table exists. Call once after IbitiDatabase.init().
+  /// Opens the market memory database (once). It used to be a table in the
+  /// IBITI/Jarvis database, which only opened after the Market tab started
+  /// the (now archived) IBITI loop; until then nothing was recorded.
   Future<void> ensureTable() async {
-    if (_ready) return;
-    final db = IbitiDatabase.instance;
-    if (!db.isOpen) return;
+    if (_db != null) return;
+    _opening ??= _open();
+    if (await _opening == null) _opening = null; // allow a later retry
+  }
+
+  Future<Database?> _open() async {
     try {
-      await db.db.execute('''
-        CREATE TABLE IF NOT EXISTS $_table (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          timestamp TEXT NOT NULL,
-          action TEXT NOT NULL,
-          symbol TEXT NOT NULL,
-          source TEXT NOT NULL DEFAULT 'voice',
-          ai_mode TEXT NOT NULL DEFAULT 'manual',
-          result TEXT NOT NULL DEFAULT 'opened_form',
-          amount REAL,
-          price_then REAL,
-          reason TEXT,
-          raw_input TEXT NOT NULL DEFAULT ''
-        )
-      ''');
-      _ready = true;
+      final dir = await getApplicationSupportDirectory();
+      final db = await openDatabase(
+        p.join(dir.path, _dbFile),
+        version: 1,
+        onCreate: (db, _) => db.execute('''
+          CREATE TABLE IF NOT EXISTS $_table (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            action TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'voice',
+            ai_mode TEXT NOT NULL DEFAULT 'manual',
+            result TEXT NOT NULL DEFAULT 'opened_form',
+            amount REAL,
+            price_then REAL,
+            reason TEXT,
+            raw_input TEXT NOT NULL DEFAULT ''
+          )
+        '''),
+      );
+      await _importLegacy(db, dir.path);
+      _db = db;
       _log.i('Table $_table ready');
+      return db;
     } catch (e) {
-      _log.e('Failed to create $_table', e);
+      _log.e('Market memory unavailable', e);
+      return null;
     }
+  }
+
+  /// Moves entries out of the old IBITI/Jarvis database, then deletes its
+  /// folder: the IBITI loop is archived, and the rest of that folder was raw
+  /// market events plus a stack of backups (~190 MB on the test phone).
+  /// If copying fails, the folder is kept and the copy is retried next time.
+  Future<void> _importLegacy(Database db, String supportDir) async {
+    final legacyDir = Directory(p.join(supportDir, 'jarvis'));
+    if (!await legacyDir.exists()) return;
+    final legacyDb = File(p.join(legacyDir.path, 'ibiti_memory.db'));
+    if (await legacyDb.exists()) {
+      try {
+        await db.execute('ATTACH DATABASE ? AS legacy', [legacyDb.path]);
+        try {
+          final hasTable = await db.rawQuery(
+              "SELECT name FROM legacy.sqlite_master "
+              "WHERE type = 'table' AND name = '$_table'");
+          if (hasTable.isNotEmpty) {
+            await db.execute('INSERT INTO $_table ($_columns) '
+                'SELECT $_columns FROM legacy.$_table ORDER BY id');
+          }
+        } finally {
+          await db.execute('DETACH DATABASE legacy');
+        }
+      } catch (e) {
+        _log.e('Legacy market memory not imported', e);
+        return;
+      }
+    }
+    await legacyDir.delete(recursive: true);
+    _log.i('Removed the archived IBITI database');
   }
 
   // ── Write ────────────────────────────────────────────────────────────────
@@ -85,7 +139,7 @@ class MarketMemoryService {
     );
 
     try {
-      await IbitiDatabase.instance.db.insert(_table, entry.toMap());
+      await _db!.insert(_table, entry.toMap());
       _log.d('Recorded: ${entry.summary}');
     } catch (e) {
       _log.e('Failed to record market memory', e);
@@ -100,7 +154,7 @@ class MarketMemoryService {
     if (!_ready) return const [];
 
     try {
-      final rows = await IbitiDatabase.instance.db.query(
+      final rows = await _db!.query(
         _table,
         orderBy: 'id DESC',
         limit: limit,
@@ -119,7 +173,7 @@ class MarketMemoryService {
     if (!_ready) return const [];
 
     try {
-      final rows = await IbitiDatabase.instance.db.query(
+      final rows = await _db!.query(
         _table,
         where: 'symbol = ?',
         whereArgs: [symbol.toUpperCase()],
@@ -140,7 +194,7 @@ class MarketMemoryService {
     if (!_ready) return const [];
 
     try {
-      final rows = await IbitiDatabase.instance.db.query(
+      final rows = await _db!.query(
         _table,
         where: 'action = ?',
         whereArgs: [action],
@@ -160,7 +214,7 @@ class MarketMemoryService {
     if (!_ready) return 0;
 
     try {
-      final result = await IbitiDatabase.instance.db
+      final result = await _db!
           .rawQuery('SELECT COUNT(*) as c FROM $_table');
       return (result.first['c'] as int?) ?? 0;
     } catch (e) {
@@ -177,7 +231,7 @@ class MarketMemoryService {
 
     try {
       final today = DateTime.now().toIso8601String().substring(0, 10);
-      final rows = await IbitiDatabase.instance.db.query(
+      final rows = await _db!.query(
         _table,
         where: "timestamp >= ?",
         whereArgs: ['${today}T00:00:00'],
@@ -222,12 +276,10 @@ class MarketMemoryService {
   }
 
   Future<void> clearForTest() async {
-    final db = IbitiDatabase.instance;
-    if (!db.isOpen) return;
-    if (!_ready) await ensureTable();
-    if (!_ready) return;
+    final db = _db;
+    if (db == null) return;
     try {
-      await db.db.delete(_table);
+      await db.delete(_table);
     } catch (_) {}
   }
 }

@@ -30,6 +30,7 @@ import "package:ibiti_guardian/screens/vault/vault_unlock_screen.dart";
 import "package:ibiti_guardian/screens/vault/privy_reauth_screen.dart";
 import "package:ibiti_guardian/screens/settings/language_selection_screen.dart";
 import "package:ibiti_guardian/services/execution/tx_status_poller.dart";
+import "package:ibiti_guardian/services/market/market_memory_service.dart";
 
 class BootScreen extends StatefulWidget {
   const BootScreen({super.key});
@@ -171,6 +172,7 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
       final deferredSteps = <String, Future<void> Function()>{
         // First: MonitoringService registers a Workmanager task.
         'BackgroundTasks': setupBackgroundTasks,
+        'MarketMemory': () => MarketMemoryService.instance.ensureTable(),
         'ThreatIntelligence': () => ThreatIntelligenceService.instance.init(),
         if (!isDesktop) 'Billing': () => BillingService.instance.init(),
         if (!isDesktop)

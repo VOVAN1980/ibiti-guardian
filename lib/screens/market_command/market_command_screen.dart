@@ -25,7 +25,6 @@ import 'package:ibiti_guardian/services/market/watchlist_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_interface.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_registry.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
-import 'package:ibiti_guardian/services/ibiti/ibiti_loop.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/utils/price_formatter.dart';
@@ -81,10 +80,6 @@ class MarketCommandScreenState extends State<MarketCommandScreen> {
     _log.i('connectAll START (parallel, non-blocking)');
     unawaited(ExchangeRegistry.instance.connectAll().then((_) {
       _log.i('connectAll DONE вЂ” all exchanges attempted');
-      // в”Ђв”Ђ IBITI: start cognitive loop in observeOnly mode в”Ђв”Ђ
-      if (!IbitiLoop.instance.isRunning) {
-        unawaited(IbitiLoop.instance.start());
-      }
     }).catchError((e) {
       _log.e('connectAll CRASH', e);
     }));

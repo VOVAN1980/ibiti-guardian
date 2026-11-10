@@ -1558,13 +1558,9 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 - AI mandate assets: ${mandate.allowedAssets.isEmpty ? 'any' : mandate.allowedAssets.join(', ')}
 - AI mandate networks: ${mandate.allowedNetworks.isEmpty ? 'any' : mandate.allowedNetworks.join(', ')}
 - AI mandate venues: ${mandate.allowedVenues.isEmpty ? 'any' : mandate.allowedVenues.join(', ')}
-- AI mandate max daily trading limit USD: ${mandate.maxPositionUsd.toStringAsFixed(2)}
-- AI mandate max daily loss USD (configured, not enforced yet): ${mandate.maxDailyLossUsd.toStringAsFixed(2)}
-- AI mandate max drawdown pct (configured, not enforced yet): ${mandate.maxDrawdownPct.toStringAsFixed(2)}
+- AI mandate max position size USD: ${mandate.maxPositionUsd.toStringAsFixed(2)}
 - AI mandate max gas USD: ${mandate.maxGasUsd.toStringAsFixed(2)}
 - AI mandate max slippage bps: ${mandate.maxSlippageBps}
-- AI mandate max open positions (configured, not enforced yet): ${mandate.maxOpenPositions}
-- AI mandate stop after losses (configured, not enforced yet): ${mandate.stopAfterLosses}
 - AI mandate requires human for unknown: ${mandate.requireHumanForUnknown}
 - User preferred stablecoin: ${UserMemoryService.instance.preferences.preferredStablecoin ?? 'not set'}
 - User preferred venue: ${UserMemoryService.instance.preferences.preferredVenue ?? 'not set'}
