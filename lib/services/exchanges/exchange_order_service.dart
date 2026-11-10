@@ -63,6 +63,42 @@ class ExchangeOrderService {
     _adapters['gateio'] = GateioSpotExecutionAdapter();
   }
 
+  /// Why the AI may not place this order on its own, or null if it may.
+  String? _aiMandateBlock({
+    required AiControlSettings settings,
+    required String exchangeId,
+    required String symbol,
+    required bool isBuy,
+    required double valueUsdt,
+  }) {
+    final mandate = settings.mandate;
+    if (!settings.allowedActions.contains(AiAction.swap)) {
+      return 'Blocked by AI Policy: trading is not allowed for the AI in AI Control.';
+    }
+    if (!mandate.allowsVenue(exchangeId)) {
+      return 'Blocked by AI Policy: $exchangeId is outside the AI mandate venues.';
+    }
+    final base = _baseAsset(symbol);
+    if (!mandate.allowsAsset(base)) {
+      return 'Blocked by AI Policy: $base is outside the AI mandate assets.';
+    }
+    if (isBuy && valueUsdt > mandate.maxPositionUsd) {
+      return 'Blocked by AI Policy: order value (\$${valueUsdt.toStringAsFixed(2)}) '
+          'exceeds the AI position cap of \$${mandate.maxPositionUsd.toStringAsFixed(2)}.';
+    }
+    return null;
+  }
+
+  static String _baseAsset(String symbol) {
+    final s = symbol.toUpperCase().replaceAll(RegExp(r'[-/_]'), '');
+    for (final quote in const ['USDT', 'USDC', 'EUR']) {
+      if (s.length > quote.length && s.endsWith(quote)) {
+        return s.substring(0, s.length - quote.length);
+      }
+    }
+    return s;
+  }
+
   /// Places a spot market order on a connected CEX
   Future<ExchangeOrderResult> placeMarketOrder({
     required String exchangeId,
@@ -167,11 +203,41 @@ class ExchangeOrderService {
       final txValueUsdt = isBuy ? amount : amount * price;
       final delegation = DelegationController.instance;
 
-      if (isBuy) {
+      // Orders the AI places itself (voice/chat/automation — the trade window
+      // passes 'ui') are bound by the AI mandate, which the assistant presents
+      // as active. It used to be checked nowhere on this path.
+      final isAiOrder = source != 'ui';
+      if (isAiOrder) {
+        final mandateBlock = _aiMandateBlock(
+          settings: settings,
+          exchangeId: id,
+          symbol: symbol,
+          isBuy: isBuy,
+          valueUsdt: txValueUsdt,
+        );
+        if (mandateBlock != null) {
+          await MarketMemoryService.instance.record(
+            action: isBuy ? 'buy' : 'sell',
+            symbol: symbol,
+            source: source,
+            aiMode: modeStr,
+            result: 'blocked',
+            amount: amount,
+            priceThen: price,
+            reason: mandateBlock,
+            rawInput: 'CEX spot order on $exchangeId',
+          );
+          return ExchangeOrderResult(isSuccess: false, errorMessage: mandateBlock);
+        }
+      }
+
+      // Daily budget: buys always; the AI's own sells too (selling the whole
+      // balance used to be unlimited).
+      if (isBuy || isAiOrder) {
         if (!delegation.canSpend(txValueUsdt)) {
           final msg = 'Blocked by AI Policy: Order value (\$${txValueUsdt.toStringAsFixed(2)}) exceeds remaining daily budget. ${delegation.usageSummary()}';
           await MarketMemoryService.instance.record(
-            action: 'buy',
+            action: isBuy ? 'buy' : 'sell',
             symbol: symbol,
             source: source,
             aiMode: modeStr,
@@ -305,8 +371,8 @@ class ExchangeOrderService {
         price: price,
       );
 
-      // If successful, commit usage to delegation controller (only for BUY)
-      if (result.isSuccess && isBuy) {
+      // If successful, commit usage to the daily budget (buys, and AI sells).
+      if (result.isSuccess && (isBuy || isAiOrder)) {
         delegation.commitUsage(txValueUsdt);
       }
 

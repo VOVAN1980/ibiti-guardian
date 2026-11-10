@@ -93,6 +93,18 @@ class _AIControlScreenState extends State<AIControlScreen> {
     return l.t('policyExpiryHours', {'hours': diff.inHours});
   }
 
+  /// Giving the AI more power needs PIN/biometrics; taking it away does not.
+  Future<bool> _authorizeLoosening() async {
+    if (!mounted) return false;
+    return VaultUnlockScreen.requireAuth(context, forceSetup: true);
+  }
+
+  Future<void> _toggleAction(AiAction action, AiControlSettings s) async {
+    final enable = !s.allowedActions.contains(action);
+    if (enable && !await _authorizeLoosening()) return;
+    await _service.toggleAction(action, enable);
+  }
+
   // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
@@ -158,11 +170,10 @@ class _AIControlScreenState extends State<AIControlScreen> {
                       _formatAiMode(mode),
                       s.mode == mode,
                       onTap: () async {
-                        if (mode == AiMode.fullAutonomy &&
-                            s.mode != AiMode.fullAutonomy) {
-                          final ok =
-                              await VaultUnlockScreen.requireAuth(context);
-                          if (!ok) return;
+                        // Any raise (Manual → Guarded → Full Autonomy) needs PIN.
+                        if (mode.index > s.mode.index &&
+                            !await _authorizeLoosening()) {
+                          return;
                         }
                         await _service.updateMode(mode);
                       },
@@ -202,8 +213,7 @@ class _AIControlScreenState extends State<AIControlScreen> {
                 locked: locked,
                 onTap: locked
                     ? () {}
-                    : () => _service.toggleAction(
-                        action, !s.allowedActions.contains(action)),
+                    : () => _toggleAction(action, s),
               );
             }).toList()),
             const SizedBox(height: 12),
@@ -225,8 +235,7 @@ class _AIControlScreenState extends State<AIControlScreen> {
                 locked: locked,
                 onTap: locked
                     ? () {}
-                    : () => _service.toggleAction(
-                        action, !s.allowedActions.contains(action)),
+                    : () => _toggleAction(action, s),
               );
             }).toList()),
             const SizedBox(height: 20),
@@ -238,7 +247,14 @@ class _AIControlScreenState extends State<AIControlScreen> {
                 .map((dur) => _checkRow(
                       _formatDuration(dur),
                       s.duration == dur,
-                      onTap: () => _service.updateDuration(dur),
+                      onTap: () async {
+                        // A longer permission window loosens control.
+                        if (dur.index > s.duration.index &&
+                            !await _authorizeLoosening()) {
+                          return;
+                        }
+                        await _service.updateDuration(dur);
+                      },
                     ))
                 .toList()),
             const SizedBox(height: 20),

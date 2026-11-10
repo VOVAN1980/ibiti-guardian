@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:ibiti_guardian/screens/vault/vault_unlock_screen.dart';
 import 'package:ibiti_guardian/screens/vault/components/privy_auth_modal.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/utils/token_symbol_normalizer.dart';
@@ -500,6 +501,13 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
     // Signing needs a live Privy session; it can expire while the wallet
     // still looks connected. Cancelled re-login leaves the preview as is.
     if (!await ensurePrivySession(context)) return;
+    if (!mounted) return;
+    // Swaps move funds like sends do, so they need PIN too — once per swap,
+    // not again on "Continue swap" after the approve step.
+    if (_flowState != _SwapFlowState.awaitingApproval &&
+        !await VaultUnlockScreen.requireAuth(context, forceSetup: true)) {
+      return;
+    }
     if (!mounted) return;
 
     print('[SwapModal] _confirmSwap called, '

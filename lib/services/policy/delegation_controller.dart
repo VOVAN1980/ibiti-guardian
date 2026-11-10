@@ -1,4 +1,7 @@
+import 'dart:convert';
+
 import 'package:ibiti_guardian/models/transaction_request.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ibiti_guardian/services/policy/delegation_store.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 
@@ -15,8 +18,14 @@ import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 /// - Reservations WITH a bound txHash expire after [_polledTtl] (180s)
 ///   → poller is running but chain is slow; generous window before rollback
 class DelegationController {
-  DelegationController._();
+  DelegationController._() {
+    _restore();
+  }
   static final instance = DelegationController._();
+
+  /// Today's committed usage survives app restarts (it used to live only in
+  /// memory, so a restart refilled the daily budget).
+  static const _prefsKey = 'delegation_daily_usage_v1';
 
   final DelegationStore store = InMemoryDelegationStore();
 
@@ -35,7 +44,8 @@ class DelegationController {
   /// Reservation → txHash binding (set after dispatch returns a hash).
   final Map<String, String> _reservationToHash = {};
 
-  DateTime _lastReset = DateTime.now();
+  /// UTC day the usage belongs to, "yyyy-mm-dd".
+  String _day = _dayKey(DateTime.now());
 
   /// TTL for reservations that never got a txHash bound.
   /// Short: if dispatch didn't return a hash within 30s, it failed silently.
@@ -146,6 +156,7 @@ class DelegationController {
     if (res != null) {
       _reservedUsd -= res.amount;
       _usedTodayUsd += res.amount;
+      _persist();
     }
   }
 
@@ -162,6 +173,7 @@ class DelegationController {
   void commitUsage(double amountUsd) {
     _checkDailyReset();
     _usedTodayUsd += amountUsd;
+    _persist();
   }
 
   // ── Public read-only accessors (for SpendReconciler, UI telemetry) ──────
@@ -243,16 +255,48 @@ class DelegationController {
   }
 
   void _checkDailyReset() {
-    final now = DateTime.now();
-    if (now.day != _lastReset.day ||
-        now.month != _lastReset.month ||
-        now.year != _lastReset.year) {
+    final today = _dayKey(DateTime.now());
+    // Only a later day resets. Moving the clock back must not refill the
+    // budget (any change of date used to reset it).
+    if (today.compareTo(_day) > 0) {
       _usedTodayUsd = 0;
       _reservedUsd = 0;
       _reservations.clear();
       _reservationToHash.clear();
-      _lastReset = now;
+      _day = today;
+      _persist();
     }
+  }
+
+  static String _dayKey(DateTime time) {
+    final utc = time.toUtc();
+    String two(int v) => v.toString().padLeft(2, '0');
+    return '${utc.year}-${two(utc.month)}-${two(utc.day)}';
+  }
+
+  Future<void> _restore() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getString(_prefsKey);
+      if (raw == null) return;
+      final saved = jsonDecode(raw) as Map<String, dynamic>;
+      final day = saved['day'] as String?;
+      final used = (saved['used'] as num?)?.toDouble() ?? 0;
+      // Same day — or a "future" day after the clock was moved back.
+      if (day != null && day.compareTo(_day) >= 0) {
+        _day = day;
+        _usedTodayUsd += used; // plus anything committed before restore ran
+      }
+    } catch (_) {
+      // Storage unavailable (tests, first run): start from zero.
+    }
+  }
+
+  void _persist() {
+    final snapshot = jsonEncode({'day': _day, 'used': _usedTodayUsd});
+    SharedPreferences.getInstance()
+        .then((prefs) => prefs.setString(_prefsKey, snapshot))
+        .catchError((_) => false);
   }
 
   void resetUsageForTest() {

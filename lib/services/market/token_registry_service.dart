@@ -328,10 +328,16 @@ class TokenRegistryService {
     WalletAsset? best;
     for (final asset in portfolio.allAssets) {
       if (asset.symbol.toUpperCase() != symbol) continue;
-      // Match by chainId if we know the chain.
-      final chain = PrivyChainRegistry.getChain(chainKey);
-      if (chain.evmChainId != null && asset.chainId != chain.evmChainId)
-        continue;
+      // Same chain only. Solana/Tron have no EVM chainId, so without the
+      // chainKey check a USDT held on another chain could be picked.
+      if (asset.chainKey.isNotEmpty) {
+        if (asset.chainKey != chainKey) continue;
+      } else {
+        final chain = PrivyChainRegistry.getChain(chainKey);
+        if (chain.evmChainId == null || asset.chainId != chain.evmChainId) {
+          continue;
+        }
+      }
       if (asset.address.isEmpty || asset.address == 'native') continue;
       if (best == null || asset.valueUsd > best.valueUsd) {
         best = asset;

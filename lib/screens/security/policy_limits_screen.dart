@@ -195,10 +195,27 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
       builder: (_) => _WalletLimitSheet(
         actionType: actionType,
         currentLimit: current,
-        onSave: (val, expiry) =>
-            _store.updateLimit(actionType, val, expiry: expiry),
+        onSave: (val, expiry) async {
+          if (val > current && !await _authorizeLoosening()) return;
+          await _store.updateLimit(actionType, val, expiry: expiry);
+        },
       ),
     );
+  }
+
+  /// Loosening a protection needs PIN/biometrics; tightening does not.
+  /// Someone holding the unlocked phone must not be able to lift limits.
+  Future<bool> _authorizeLoosening() async {
+    if (!mounted) return false;
+    return VaultUnlockScreen.requireAuth(context, forceSetup: true);
+  }
+
+  /// An allow-list loosens when it gains an entry or becomes empty
+  /// (empty means "everything allowed").
+  static bool _listLoosens(List<String> before, List<String> after) {
+    if (after.isEmpty) return before.isNotEmpty;
+    final old = before.map((e) => e.toLowerCase()).toSet();
+    return after.any((e) => !old.contains(e.toLowerCase()));
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -283,6 +300,9 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                   var v = await _editUsd(
                       t.t('policyEditDailyTitle'), ai.dailyLimit);
                   if (v != null) {
+                    if (v > ai.dailyLimit && !await _authorizeLoosening()) {
+                      return;
+                    }
                     await _ai.updateLimits(daily: v);
                   }
                 },
@@ -299,7 +319,11 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                           ? 'Изменить мин. баланс для торговли'
                           : 'Edit Min Trade Balance',
                       ai.minTradeBalance);
-                  if (v != null) await _ai.updateMinTradeBalance(v);
+                  if (v == null) return;
+                  if (v < ai.minTradeBalance && !await _authorizeLoosening()) {
+                    return;
+                  }
+                  await _ai.updateMinTradeBalance(v);
                 },
               ),
             ]),
@@ -320,6 +344,10 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                   final v = await _editList(t.t('policyMandateEditAssetsTitle'),
                       mandate.allowedAssets);
                   if (v != null) {
+                    if (_listLoosens(mandate.allowedAssets, v) &&
+                        !await _authorizeLoosening()) {
+                      return;
+                    }
                     await _ai.updateMandate(mandate.copyWith(
                         allowedAssets: v.map((e) => e.toUpperCase()).toList()));
                   }
@@ -333,9 +361,12 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                   final v = await _editList(
                       t.t('policyMandateEditNetworksTitle'),
                       mandate.allowedNetworks);
-                  if (v != null)
-                    await _ai
-                        .updateMandate(mandate.copyWith(allowedNetworks: v));
+                  if (v == null) return;
+                  if (_listLoosens(mandate.allowedNetworks, v) &&
+                      !await _authorizeLoosening()) {
+                    return;
+                  }
+                  await _ai.updateMandate(mandate.copyWith(allowedNetworks: v));
                 },
               ),
               _divider(),
@@ -346,6 +377,10 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                   final v = await _editList(t.t('policyMandateEditVenuesTitle'),
                       mandate.allowedVenues);
                   if (v != null) {
+                    if (_listLoosens(mandate.allowedVenues, v) &&
+                        !await _authorizeLoosening()) {
+                      return;
+                    }
                     await _ai.updateMandate(mandate.copyWith(
                         allowedVenues: v.map((e) => e.toLowerCase()).toList()));
                   }
@@ -355,8 +390,14 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
               _toggleRow(
                 label: t.t('policyMandateUnknownHumanReview'),
                 value: mandate.requireHumanForUnknown,
-                onTap: () => _ai.updateMandate(mandate.copyWith(
-                    requireHumanForUnknown: !mandate.requireHumanForUnknown)),
+                onTap: () async {
+                  if (mandate.requireHumanForUnknown &&
+                      !await _authorizeLoosening()) {
+                    return;
+                  }
+                  await _ai.updateMandate(mandate.copyWith(
+                      requireHumanForUnknown: !mandate.requireHumanForUnknown));
+                },
               ),
             ]),
             const SizedBox(height: 20),
@@ -377,9 +418,12 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                   final v = await _editUsd(
                       t.t('policyMandateEditPositionTitle'),
                       mandate.maxPositionUsd);
-                  if (v != null)
-                    await _ai
-                        .updateMandate(mandate.copyWith(maxPositionUsd: v));
+                  if (v == null) return;
+                  if (v > mandate.maxPositionUsd &&
+                      !await _authorizeLoosening()) {
+                    return;
+                  }
+                  await _ai.updateMandate(mandate.copyWith(maxPositionUsd: v));
                 },
               ),
               _divider(),
@@ -391,9 +435,12 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                       t.t('policyMandateEditSlippageTitle'),
                       mandate.maxSlippageBps,
                       suffix: 'bps');
-                  if (v != null)
-                    await _ai
-                        .updateMandate(mandate.copyWith(maxSlippageBps: v));
+                  if (v == null) return;
+                  if (v > mandate.maxSlippageBps &&
+                      !await _authorizeLoosening()) {
+                    return;
+                  }
+                  await _ai.updateMandate(mandate.copyWith(maxSlippageBps: v));
                 },
               ),
               _divider(),
@@ -547,8 +594,14 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
               _toggleRow(
                 label: t.t('policyWalletUnknownContracts'),
                 value: !p.allowUnknownContracts,
-                onTap: () =>
-                    _store.setAllowUnknownContracts(!p.allowUnknownContracts),
+                onTap: () async {
+                  // Allowing unknown contracts switches drainer protection off.
+                  if (!p.allowUnknownContracts &&
+                      !await _authorizeLoosening()) {
+                    return;
+                  }
+                  await _store.setAllowUnknownContracts(!p.allowUnknownContracts);
+                },
               ),
             ]),
             const SizedBox(height: 20),
@@ -599,11 +652,15 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                       color: epk.isActive
                           ? GuardianColors.warning
                           : GuardianColors.success,
-                      onTap: () => epk.isDeployed
-                          ? (epk.isActive
-                              ? _epk.emergencyPause()
-                              : _epk.resumeProtection())
-                          : _epk.createPolicy(),
+                      onTap: () async {
+                        if (!epk.isDeployed) {
+                          await _epk.createPolicy();
+                        } else if (!epk.isActive) {
+                          await _epk.resumeProtection();
+                        } else if (await _authorizeLoosening()) {
+                          await _epk.emergencyPause();
+                        }
+                      },
                     ),
                   ],
                 ),
@@ -645,7 +702,9 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                       t.t('epkDangerPauseTitle'),
                       t.t('epkDangerPauseDesc'),
                     );
-                    if (ok) await _epk.emergencyPause();
+                    if (ok && await _authorizeLoosening()) {
+                      await _epk.emergencyPause();
+                    }
                   },
                 ),
                 if (_epk.state.agentAddress != null) ...[
@@ -727,10 +786,8 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
       ),
     );
     if (result == null || result == current) return;
-    if (result == AiMode.fullAutonomy) {
-      final ok = await VaultUnlockScreen.requireAuth(context);
-      if (!ok) return;
-    }
+    // Any raise (Manual → Guarded → Full Autonomy) needs PIN.
+    if (result.index > current.index && !await _authorizeLoosening()) return;
     await _ai.updateMode(result);
   }
 

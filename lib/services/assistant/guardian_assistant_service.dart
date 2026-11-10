@@ -12,6 +12,8 @@ import 'package:ibiti_guardian/services/assistant/assistant_session_context.dart
 import 'package:ibiti_guardian/services/assistant/language_detector.dart';
 import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
+import 'package:ibiti_guardian/services/assistant/llm_intent_guard.dart';
+import 'package:ibiti_guardian/config/privy_chain_registry.dart';
 import 'package:ibiti_guardian/services/assistant/voice_greeting_service.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 import 'package:ibiti_guardian/services/market/market_data_service.dart';
@@ -171,10 +173,10 @@ class GuardianAssistantService {
         'Максимальный размер одной позиции: \$${s.mandate.maxPositionUsd.toStringAsFixed(0)}. '
         'Максимальная комиссия сети: \$${s.mandate.maxGasUsd.toStringAsFixed(0)}. '
         'Максимальное проскальзывание: ${s.mandate.maxSlippageBps.toStringAsFixed(0)} базисных пунктов. '
-        'Максимальный дневной убыток: \$${s.mandate.maxDailyLossUsd.toStringAsFixed(0)}. '
-        'Максимальная дневная просадка: ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%. '
-        'Максимум открытых позиций: ${s.mandate.maxOpenPositions}. '
-        'Остановка после убыточных сделок подряд: ${s.mandate.stopAfterLosses}. '
+        'Пока не применяются, только сохранены: дневной убыток \$${s.mandate.maxDailyLossUsd.toStringAsFixed(0)}, '
+        'просадка ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%, '
+        'открытых позиций ${s.mandate.maxOpenPositions}, '
+        'остановка после ${s.mandate.stopAfterLosses} убыточных сделок подряд. '
         'Разрешённые действия: $actions. '
         'Разрешённые активы: $assets. '
         'Разрешённые сети: $networks. '
@@ -193,10 +195,10 @@ class GuardianAssistantService {
       'Maximum position size: \$${s.mandate.maxPositionUsd.toStringAsFixed(0)}. '
       'Maximum network fee: \$${s.mandate.maxGasUsd.toStringAsFixed(0)}. '
       'Maximum slippage: ${s.mandate.maxSlippageBps.toStringAsFixed(0)} basis points. '
-      'Maximum daily loss: \$${s.mandate.maxDailyLossUsd.toStringAsFixed(0)}. '
-      'Maximum daily drawdown: ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%. '
-      'Maximum open positions: ${s.mandate.maxOpenPositions}. '
-      'Stop after consecutive losses: ${s.mandate.stopAfterLosses}. '
+      'Saved but not enforced yet: daily loss \$${s.mandate.maxDailyLossUsd.toStringAsFixed(0)}, '
+      'drawdown ${s.mandate.maxDrawdownPct.toStringAsFixed(1)}%, '
+      'open positions ${s.mandate.maxOpenPositions}, '
+      'stop after ${s.mandate.stopAfterLosses} consecutive losses. '
       'Allowed actions: $actions. '
       'Allowed assets: $assets. '
       'Allowed networks: $networks. '
@@ -292,6 +294,90 @@ class GuardianAssistantService {
     );
   }
 
+  AssistantResponse _untrustedExecutionBlockedResponse(String languageCode) {
+    return AssistantResponse(
+      message: languageCode == 'ru'
+          ? 'Для ответа я читал внешние данные (сайт, поиск, историю или рынок), '
+              'поэтому не создаю из него перевод или обмен. '
+              'Если операция нужна, дайте команду отдельным сообщением.'
+          : 'I read external data (a web page, search, history or market data) '
+              'for this answer, so I will not create a send or swap from it. '
+              'If you need the operation, ask for it in a separate message.',
+      speechText: languageCode == 'ru'
+          ? 'Операцию из этого ответа не создаю. Дайте команду отдельно.'
+          : 'I will not create an operation from this answer. Ask separately.',
+      type: ResponseType.info,
+    );
+  }
+
+  AssistantResponse _unsupportedSwapTokenResponse(
+      String languageCode, String symbol) {
+    final chain = IBITIVaultService.instance.chainKey.toUpperCase();
+    return AssistantResponse(
+      message: languageCode == 'ru'
+          ? 'Не знаю адрес токена $symbol в сети $chain, поэтому обмен не готовлю. '
+              'Выберите токен в окне обмена.'
+          : 'I do not know the $symbol token address on $chain, so I will not '
+              'prepare the swap. Pick the token in the swap window.',
+      speechText: languageCode == 'ru'
+          ? 'Не знаю токен $symbol в этой сети.'
+          : 'I do not know the $symbol token on this network.',
+      type: ResponseType.info,
+    );
+  }
+
+  bool _isActiveNativeSymbol(String? symbol) {
+    final native =
+        PrivyChainRegistry.getChain(IBITIVaultService.instance.chainKey)
+            .nativeSymbol
+            ?.toUpperCase();
+    return native != null && symbol?.toUpperCase() == native;
+  }
+
+  /// UI commands authored by the model: none after untrusted content, and a
+  /// send-address prefill only when the address is one the user gave.
+  List<UICommand> _guardLlmUiCommands(
+    List<UICommand> commands, {
+    required String userText,
+    required bool untrustedContext,
+    required Iterable<String> knownAddresses,
+  }) {
+    if (untrustedContext) return const <UICommand>[];
+    return commands.where((c) {
+      if (c.type != UICommandType.fillField || c.target != 'send_address') {
+        return true;
+      }
+      return LlmIntentGuard.isVerifiedRecipient(
+        c.payload?['value']?.toString(),
+        userText: userText,
+        knownAddresses: knownAddresses,
+      );
+    }).map(_withoutResultPayload).toList();
+  }
+
+  /// Order results (isSuccess, orderId, executed qty/price) are set only by
+  /// the app after a real order; from the model they would show a fake
+  /// "order filled" screen.
+  static const _resultPayloadKeys = {
+    'isSuccess',
+    'orderId',
+    'executedQty',
+    'executedPrice',
+  };
+
+  UICommand _withoutResultPayload(UICommand c) {
+    final payload = c.payload;
+    if (payload == null || !payload.keys.any(_resultPayloadKeys.contains)) {
+      return c;
+    }
+    return UICommand(
+      type: c.type,
+      target: c.target,
+      payload: Map<String, dynamic>.from(payload)
+        ..removeWhere((k, _) => _resultPayloadKeys.contains(k)),
+    );
+  }
+
   String _executionOpenMessage(String languageCode, String actionLabel) {
     final mode = AiControlService.instance.settings.mode;
     if (languageCode == 'ru') {
@@ -379,23 +465,7 @@ class GuardianAssistantService {
     for (final entry in AddressBookService.instance.entries) {
       final label = entry.label.trim().toLowerCase();
       if (label.isNotEmpty && input.contains(label)) {
-        return IntentData(
-          type: intent.type,
-          rawInput: intent.rawInput,
-          tokenSymbol: intent.tokenSymbol,
-          toAddress: entry.address,
-          amount: intent.amount,
-          rawAmount: intent.rawAmount,
-          sourceTokenSymbol: intent.sourceTokenSymbol,
-          sourceTokenAddress: intent.sourceTokenAddress,
-          targetTokenSymbol: intent.targetTokenSymbol,
-          targetTokenAddress: intent.targetTokenAddress,
-          amountMode: intent.amountMode,
-          slippageBps: intent.slippageBps,
-          sourceTokenDecimals: intent.sourceTokenDecimals,
-          targetTokenDecimals: intent.targetTokenDecimals,
-          sourceTrigger: intent.sourceTrigger,
-        );
+        return intent.copyWith(toAddress: entry.address);
       }
     }
 
@@ -2973,14 +3043,41 @@ class GuardianAssistantService {
       !voiceConversationOnly,
     );
     final directive = AssistantDirective.fromJson(aiResult);
-    final effectiveIntent =
-        voiceConversationOnly ? null : directive.explicitIntent;
+
+    // The model's JSON is untrusted (it may have read a web page or token
+    // names): keep only the user-level meaning and re-derive addresses and
+    // amounts in the app. See LlmIntentGuard.
+    final untrustedContext = aiResult['untrustedContext'] == true;
+    final knownAddresses = AddressBookService.instance.entries
+        .map((e) => e.address)
+        .toList(growable: false);
+    final llmIntent = voiceConversationOnly ? null : directive.explicitIntent;
+    final guardedIntent = LlmIntentGuard.sanitize(
+      llmIntent,
+      userText: expanded,
+      untrustedContext: untrustedContext,
+      knownAddresses: knownAddresses,
+    );
+    if (llmIntent != null &&
+        llmIntent.isExecutionIntent &&
+        guardedIntent == null) {
+      return _untrustedExecutionBlockedResponse(detectedLang);
+    }
+    final effectiveIntent = guardedIntent == null
+        ? null
+        : _resolveAddressBookRecipient(guardedIntent);
+    final llmUiCommands = _guardLlmUiCommands(
+      directive.uiCommands,
+      userText: expanded,
+      untrustedContext: untrustedContext,
+      knownAddresses: knownAddresses,
+    );
 
     final mergedUiCommands = voiceConversationOnly
         ? const <UICommand>[]
         : _mergeUiCommands(
             _mergeUiCommands(
-              directive.uiCommands,
+              llmUiCommands,
               _fallbackUiCommandsForIntent(effectiveIntent),
             ),
             _fallbackUiCommandsForText(expanded),
@@ -3054,6 +3151,22 @@ class GuardianAssistantService {
     // Resolve specific tokens if it's a swap to fill missing backend data for demo
     if (intent.type == IntentType.swapAsset &&
         intent.sourceTokenAddress == null) {
+      final sourceAddress =
+          _resolveTokenAddress(intent.sourceTokenSymbol, detectedLang);
+      final targetAddress =
+          _resolveTokenAddress(intent.targetTokenSymbol, detectedLang);
+      // An empty address is only valid for the chain's native coin (TRX);
+      // for anything else it would silently become the native coin.
+      if (sourceAddress.isEmpty &&
+          !_isActiveNativeSymbol(intent.sourceTokenSymbol)) {
+        return _unsupportedSwapTokenResponse(
+            detectedLang, intent.sourceTokenSymbol ?? '?');
+      }
+      if (targetAddress.isEmpty &&
+          !_isActiveNativeSymbol(intent.targetTokenSymbol)) {
+        return _unsupportedSwapTokenResponse(
+            detectedLang, intent.targetTokenSymbol ?? '?');
+      }
       final intentMut = IntentData(
         type: IntentType.swapAsset,
         rawInput: intent.rawInput,
@@ -3062,10 +3175,8 @@ class GuardianAssistantService {
         slippageBps: intent.slippageBps,
         sourceTokenSymbol: intent.sourceTokenSymbol,
         targetTokenSymbol: intent.targetTokenSymbol,
-        sourceTokenAddress:
-            _resolveTokenAddress(intent.sourceTokenSymbol, detectedLang),
-        targetTokenAddress:
-            _resolveTokenAddress(intent.targetTokenSymbol, detectedLang),
+        sourceTokenAddress: sourceAddress,
+        targetTokenAddress: targetAddress,
         sourceTokenDecimals: _resolveTokenDecimals(intent.sourceTokenSymbol),
         targetTokenDecimals: _resolveTokenDecimals(intent.targetTokenSymbol),
       );
@@ -3365,6 +3476,7 @@ class GuardianAssistantService {
 
     // Build UICommands from macro actions.
     final commands = <UICommand>[];
+    var modeRaiseBlocked = false;
     for (final action in macro.actions) {
       switch (action.type) {
         case MacroActionType.navigate:
@@ -3393,8 +3505,14 @@ class GuardianAssistantService {
             'fullAutonomy' => AiMode.fullAutonomy,
             _ => null,
           };
+          // A phrase may only tighten the mode. Raising it (towards Full
+          // Autonomy) needs PIN in AI Control — never a typed/spoken macro.
           if (targetMode != null) {
-            AiControlService.instance.updateMode(targetMode);
+            if (targetMode.index <= currentMode.index) {
+              AiControlService.instance.updateMode(targetMode);
+            } else {
+              modeRaiseBlocked = true;
+            }
           }
       }
     }
@@ -3405,10 +3523,15 @@ class GuardianAssistantService {
       UICommandBus.instance.dispatchAll(permitted);
     }
 
+    final raiseNote = !modeRaiseBlocked
+        ? ''
+        : lang == 'ru'
+            ? '\nРежим ИИ макросом не повышаю — включите его в «Безопасность → AI Control» (нужен PIN).'
+            : '\nI will not raise the AI mode from a macro — enable it in Security → AI Control (PIN required).';
     return AssistantResponse(
       message: lang == 'ru'
-          ? '⚡ Макрос «${macro.triggerPhrase}»: ${macro.description}'
-          : '⚡ Macro "${macro.triggerPhrase}": ${macro.description}',
+          ? '⚡ Макрос «${macro.triggerPhrase}»: ${macro.description}$raiseNote'
+          : '⚡ Macro "${macro.triggerPhrase}": ${macro.description}$raiseNote',
       speechText: lang == 'ru'
           ? 'Выполняю ${macro.triggerPhrase}.'
           : 'Executing ${macro.triggerPhrase}.',
@@ -4266,7 +4389,11 @@ class GuardianAssistantService {
       }
     }
 
-    if (mode == AiMode.guarded) {
+    // Selling the whole balance (or a share of it) always goes through the
+    // confirmation window, even in Full Autonomy: one misheard "продай всё"
+    // must not dump a position.
+    final sellsBalanceShare = !isBuy && amt < 0.0;
+    if (mode == AiMode.guarded || sellsBalanceShare) {
       final modalPayload = {
         'symbol': symbol,
         'isBuy': isBuy,

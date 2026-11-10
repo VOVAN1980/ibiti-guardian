@@ -130,9 +130,13 @@ class AiControlSettings {
         (e) => e.name == json['mode'],
         orElse: () => AiMode.guarded,
       ),
+      // Unknown names (removed/renamed actions) are dropped, never mapped to
+      // a money-moving permission.
       allowedActions: (json['allowedActions'] as List?)
               ?.map((e) => AiAction.values
-                  .firstWhere((a) => a.name == e, orElse: () => AiAction.send))
+                  .cast<AiAction?>()
+                  .firstWhere((a) => a?.name == e, orElse: () => null))
+              .whereType<AiAction>()
               .toList() ??
           const [AiAction.send, AiAction.approve, AiAction.revoke],
       dailyLimit: (json['dailyLimit'] ?? 500.0).toDouble(),

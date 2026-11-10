@@ -325,6 +325,8 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
 
   bool _shouldAutoExecuteResponse(AssistantResponse response) {
     if (!_isFullAutonomyMode) return false;
+    // Full Autonomy granted "for 1 hour / 1 day" ends with its TTL.
+    if (!AiControlService.instance.settings.isActive) return false;
     if (response.type != ResponseType.preview) return false;
     return response.pendingTransaction != null || response.swapPlan != null;
   }
@@ -422,9 +424,10 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
 
     final sessionOk = await ensurePrivySession(context);
     if (!mounted) return false;
+    // Full Autonomy (autoApproved) skips the confirmation dialog, never PIN:
+    // signing always needs the person holding the phone.
     final authorized = sessionOk &&
-        (autoApproved ||
-            await VaultUnlockScreen.requireAuth(context, forceSetup: true));
+        await VaultUnlockScreen.requireAuth(context, forceSetup: true);
     if (!authorized) {
       setState(() {
         _isThinking = false;
@@ -544,9 +547,10 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
 
     final sessionOk = await ensurePrivySession(context);
     if (!mounted) return false;
+    // Full Autonomy (autoApproved) skips the confirmation dialog, never PIN:
+    // signing always needs the person holding the phone.
     final authorized = sessionOk &&
-        (autoApproved ||
-            await VaultUnlockScreen.requireAuth(context, forceSetup: true));
+        await VaultUnlockScreen.requireAuth(context, forceSetup: true);
     if (!authorized) {
       setState(() {
         _isThinking = false;

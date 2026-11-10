@@ -1566,4 +1566,7 @@
   "txDetailContract": "Контракт",
   "txDetailHash": "Хеш",
   "txDetailOpenExplorer": "Открыть в Explorer",
-  "txDetailCopied": "{label} скопировано"}
+  "txDetailCopied": "{label} скопировано",
+  "assistantSendTokenNotOnNetwork": "Токена {token} нет в сети {network}. Переключите сеть или выберите токен в окне отправки.",
+  "assistantSendInvalidRecipient": "Адрес получателя не подходит для сети {network}. Проверьте его и попробуйте снова."
+}

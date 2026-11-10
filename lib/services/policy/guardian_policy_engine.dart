@@ -4,6 +4,7 @@ import 'package:ibiti_guardian/models/rpc_simulation_result.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
 import 'package:ibiti_guardian/models/execution_path.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
+import 'package:ibiti_guardian/services/policy/tx_usd_valuer.dart';
 import 'package:ibiti_guardian/services/swap/swap_provider.dart'
     show SwapSlippagePolicy;
 
@@ -210,6 +211,20 @@ class GuardianPolicyEngine {
 
   // в”Ђв”Ђв”Ђ Send V3 в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
+  /// The limit in force for [action] ('SEND' / 'SWAP' / 'APPROVE'). A limit
+  /// set "for 1h / 24h / 7d" falls back to the safe default once it expires —
+  /// it used to stay in force forever while the UI showed it as expired.
+  static double _activeLimit(
+    PolicyProfile profile,
+    String action,
+    double configured,
+    double safeDefault,
+  ) {
+    final expiry = profile.actionExpiries[action];
+    if (expiry != null && !DateTime.now().isBefore(expiry)) return safeDefault;
+    return configured;
+  }
+
   static PolicyResult _checkSendV3(
     TransactionRequest tx,
     SimulationResult staticSim,
@@ -220,11 +235,15 @@ class GuardianPolicyEngine {
   ) {
     final epkAvail = path == ExecutionPath.epkProtected;
 
-    // Dollar Value limit checks against Profile
-    if (tx.amount != null && tx.amount! > profile.sendLimitUsd) {
+    // Dollar limits compare the USD value (token quantity × price), not the
+    // quantity: "$50" used to let 40 SOL through.
+    final usd = TxUsdValuer.limitAmount(tx);
+    final sendLimit = _activeLimit(profile, 'SEND', profile.sendLimitUsd,
+        PolicyProfile.safe().sendLimitUsd);
+    if (tx.amount != null && usd > sendLimit) {
       rules.add('PROFILE_LIMIT_EXCEEDED');
       return PolicyResult.block(
-        'Send amount exceeds your active profile limit (\$${profile.sendLimitUsd.toStringAsFixed(0)}).',
+        'Send amount exceeds your active profile limit (\$${sendLimit.toStringAsFixed(0)}).',
         rules: rules,
         epkAvailable: epkAvail,
       );
@@ -246,8 +265,7 @@ class GuardianPolicyEngine {
       severity: PolicySeverity.info,
       rules: rules,
       epkAvailable: epkAvail,
-      epkRequired:
-          tx.amount != null && tx.amount! > 1000, // example dynamic requirement
+      epkRequired: tx.amount != null && usd > 1000,
     );
   }
 
@@ -290,11 +308,14 @@ class GuardianPolicyEngine {
       );
     }
 
-    // Check 1: Spend limit vs profile
-    if (tx.amount != null && tx.amount! > profile.swapLimitUsd) {
+    // Check 1: Spend limit vs profile (USD value of the source amount)
+    final usd = TxUsdValuer.limitAmount(tx);
+    final swapLimit = _activeLimit(profile, 'SWAP', profile.swapLimitUsd,
+        PolicyProfile.safe().swapLimitUsd);
+    if (tx.amount != null && usd > swapLimit) {
       rules.add('SWAP_PROFILE_LIMIT_EXCEEDED');
       return PolicyResult.block(
-        'Swap amount exceeds your active profile limit (\$${profile.swapLimitUsd.toStringAsFixed(0)}).',
+        'Swap amount exceeds your active profile limit (\$${swapLimit.toStringAsFixed(0)}).',
         rules: rules,
         epkAvailable: epkAvail,
       );
@@ -331,7 +352,7 @@ class GuardianPolicyEngine {
           (priceImpact > 1.0) ? PolicySeverity.warning : PolicySeverity.info,
       rules: rules,
       epkAvailable: epkAvail,
-      epkRequired: tx.amount != null && tx.amount! > 1000,
+      epkRequired: tx.amount != null && usd > 1000,
     );
   }
 
@@ -351,14 +372,16 @@ class GuardianPolicyEngine {
     // Approve limit. Treat it as over-limit and block (the classic wallet-drainer
     // vector). Finite approvals are capped by approveLimitUsd. A single "Approve
     // limit" now covers both cases — no separate unlimited toggle.
+    final approveLimit = _activeLimit(profile, 'APPROVE',
+        profile.approveLimitUsd, PolicyProfile.safe().approveLimitUsd);
     if (tx.isUnlimitedApproval ||
-        (tx.amount != null && tx.amount! > profile.approveLimitUsd)) {
+        (tx.amount != null && TxUsdValuer.limitAmount(tx) > approveLimit)) {
       rules.add('APPROVE_LIMIT_EXCEEDED');
       return PolicyResult.block(
         tx.isUnlimitedApproval
-            ? 'Unlimited approval exceeds your Approve limit (\$${profile.approveLimitUsd.toStringAsFixed(0)}). '
+            ? 'Unlimited approval exceeds your Approve limit (\$${approveLimit.toStringAsFixed(0)}). '
                 'It would let the contract spend your entire balance.'
-            : 'Approve amount exceeds your Approve limit (\$${profile.approveLimitUsd.toStringAsFixed(0)}).',
+            : 'Approve amount exceeds your Approve limit (\$${approveLimit.toStringAsFixed(0)}).',
         severity: PolicySeverity.danger,
         rules: rules,
         epkAvailable: epkAvail,

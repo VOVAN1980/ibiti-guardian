@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:ibiti_guardian/models/execution_path.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
 import 'package:ibiti_guardian/models/rpc_simulation_result.dart';
@@ -58,7 +59,7 @@ class TransactionExplainer {
     PolicyResult policy,
     List<String> warnings,
   ) {
-    final amount = tx.amount?.toStringAsFixed(2) ?? '?';
+    final amount = tx.amount == null ? '?' : _formatAmount(tx.amount!);
     final token = tx.tokenSymbol ?? 'asset';
     final to = _shortAddr(tx.toAddress);
     final from = _shortAddr(tx.fromAddress);
@@ -120,7 +121,7 @@ class TransactionExplainer {
   ) {
     final token = tx.tokenSymbol ?? 'token';
     final spender = _shortAddr(tx.spenderAddress ?? tx.toAddress);
-    final amount = tx.amount?.toStringAsFixed(2);
+    final amount = tx.amount == null ? null : _formatAmount(tx.amount!);
     final network = tx.networkLabel;
     final reason = rpcSim.revertReason ?? 'execution reverted';
     final args = <String, Object>{
@@ -227,7 +228,7 @@ class TransactionExplainer {
     PolicyResult policy,
     List<String> warnings,
   ) {
-    final fromAmount = tx.amount?.toStringAsFixed(4) ?? '?';
+    final fromAmount = tx.amount == null ? '?' : _formatAmount(tx.amount!);
     final fromToken = tx.tokenSymbol ?? '?';
     final toToken = tx.targetTokenSymbol ?? '?';
     final network = tx.networkLabel;
@@ -297,6 +298,21 @@ class TransactionExplainer {
   static String _l(String key, String fallback,
       [Map<String, Object> args = const {}]) {
     return LocalizationService.instance.t(key, {...args, 'default': fallback});
+  }
+
+  /// Readable amount that never hides a small value: 0.004 stays "0.004"
+  /// (fixed 2 decimals showed "0.00"), large values keep 4 decimals.
+  static String _formatAmount(double value) {
+    if (value == 0) return '0';
+    final abs = value.abs();
+    final decimals = abs >= 1
+        ? 4
+        : (4 - (math.log(abs) / math.ln10).floor()).clamp(4, 18).toInt();
+    var text = value.toStringAsFixed(decimals);
+    if (text.contains('.')) {
+      text = text.replaceFirst(RegExp(r'0+$'), '').replaceFirst(RegExp(r'\.$'), '');
+    }
+    return text;
   }
 
   static String _shortAddr(String addr) {

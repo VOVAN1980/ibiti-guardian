@@ -42,7 +42,7 @@ Hands-free trade execution and market intelligence powered by a customized speec
 Define how much execution authority the AI has:
 - **Manual**: Direct manual control. The AI is fully blocked from executing any trade or transaction.
 - **Guarded**: Standard operating mode. The AI analyzes market data and requests your explicit authorization (via biometrics/PIN) before signing any transaction.
-- **Full Autonomy** *(in development)*: Automatic AI execution. The architecture, policy engine, and market limit infrastructure are fully built to support autonomous trading — the AI will carry out market actions independently, strictly bounded by configured budgets and policy constraints. This mode is not yet available in the current release.
+- **Full Autonomy** *(experimental)*: The AI may place exchange market orders on its own within the daily trading budget and the AI mandate (allowed actions, assets, venues and position cap). Selling the whole balance or a share of it always asks for confirmation. On-chain sends and swaps from the chat skip the confirmation dialog but still require your PIN. Switching to this mode requires a PIN.
 
 ### 3. Heuristic Policy Engine & SandboxGuard
 A double-layered shield validating every transaction *before* it leaves your device:

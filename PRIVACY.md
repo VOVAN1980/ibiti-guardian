@@ -2,23 +2,32 @@
 
 ## 🔒 Non-Custodial & Privacy-First Architecture
 
-IBITI Guardian is built with privacy as a core engineering specification. IBITI Guardian does not intentionally collect, sell, or monetize user PII. Some third-party APIs may process transient technical metadata required to provide their service.
+IBITI Guardian is built with privacy as a core engineering specification. IBITI Guardian does not sell or monetize user data and runs no servers of its own that store user wallets or secrets. To work, the app sends some data directly from your device to the third-party services listed below.
 
 ---
 
-## 1. Zero-Knowledge of Private Keys
-* **Local Security**: Your private keys, seed phrases, and exchange API keys are processed and stored locally on your device in an encrypted SQLite database and secure storage container (Vault).
-* **No Server Storage**: We do not run servers that store user wallets or secrets. All cryptographic signatures occur locally on-device.
+## 1. Keys and Secrets
+* **Wallet keys**: Your wallet is an embedded wallet provided by **Privy**. Signing happens through the Privy SDK on your device. IBITI Guardian never receives or stores your private key or seed phrase.
+* **Exchange API keys**: Stored on your device in secure storage and sent only to the exchange they belong to. They are never sent to an AI provider.
+* **PIN**: Stored on your device as a salted hash. It never leaves the device.
 
-## 2. No PII Collection
-* **Zero Tracking**: IBITI Guardian does not collect names, emails, phone numbers, or IP addresses.
-* **No Analytics Cookies**: There are no marketing trackers or user fingerprinting SDKs integrated into the codebase.
+## 2. Personal Data
+* **Sign-in**: To create or restore your wallet you sign in with Google or email through Privy, which processes that identifier under its own privacy policy.
+* **No analytics**: There are no marketing trackers, analytics cookies or fingerprinting SDKs in the app.
 
-## 3. Third-Party Integrations
-For the app to function, it connects to specific secure endpoints. Please review their privacy models if needed:
-* **OpenAI API**: Used for Whisper (STT) and GPT-4o voice responses. Audio snippets are sent only to process transient transcription and voice synthesis.
-* **Moralis & RPC Nodes**: Used for fetching token metadata and simulating transaction state.
-* **Exchange APIs**: Direct CEX queries and order placements (MEXC, OKX, Gate.io, Binance) are executed locally from your device to the exchanges' official endpoints.
+## 3. Third-Party Services
+* **OpenAI**: Speech recognition (Whisper), voice synthesis and the AI assistant. When you talk to the assistant, your message is sent together with wallet context:
+  * shortened addresses (for example `0x7376…9015`) and the active network;
+  * asset balances and their USD value, and the status of your latest transaction;
+  * your AI settings and limits, and your saved assistant preferences and voice macros.
+
+  When the assistant needs it, it can also request the full wallet address, your address book (contact names and addresses), your transaction history and the AI action log. Exchange API keys, your PIN and private keys are never sent.
+* **Web search and page reading**: If the assistant searches the web, the query goes to DuckDuckGo. If it reads a web page, the page address goes to r.jina.ai.
+* **Market analysis (IBITI/Jarvis)**: Market data and your market questions may be sent to the AI providers configured for analysis (Groq, DeepSeek, Anthropic, Mistral, Cerebras, OpenRouter, Google Gemini).
+* **Privy**: Sign-in and embedded-wallet signing.
+* **Moralis, Ankr and RPC nodes**: Balances, token metadata and transaction simulation for your wallet address.
+* **Swap services (0x, Jupiter, SunSwap)**: Receive your wallet address and the swap parameters to build a quote.
+* **Exchanges (MEXC, OKX, Gate.io, Binance)**: Queries and orders go directly from your device to the exchange's official endpoints.
 
 ## 4. Updates
-This privacy policy applies to the local app distribution. Any future features that require network routing will maintain the same zero-PII standard.
+This policy describes the current app version. It will be updated when the app starts sending data to new services.

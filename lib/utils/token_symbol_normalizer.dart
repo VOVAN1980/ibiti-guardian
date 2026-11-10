@@ -98,7 +98,23 @@ class TokenSymbolNormalizer {
     final compact = _aliases[noSpaces];
     if (compact != null) return compact;
 
+    // Russian case forms of a known alias: "эфира", "эфиру" -> "эфир".
+    if (_cyrillicWord.hasMatch(noSpaces)) {
+      for (final ending in _caseEndings) {
+        if (noSpaces.length > ending.length + 2 && noSpaces.endsWith(ending)) {
+          final stem = noSpaces.substring(0, noSpaces.length - ending.length);
+          final inflected = _aliases[stem];
+          if (inflected != null) return inflected;
+        }
+      }
+    }
+
     // Try as-is uppercase (already a valid symbol like "BTC")
     return raw.trim().toUpperCase();
   }
+
+  static final _cyrillicWord = RegExp(r'^[а-яё]+$');
+
+  /// Longest first, so "ом" is tried before "о"-less shorter endings.
+  static const _caseEndings = ['ами', 'ом', 'ем', 'ой', 'ах', 'а', 'у', 'е', 'ы', 'и'];
 }

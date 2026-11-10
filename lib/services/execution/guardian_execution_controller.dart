@@ -30,6 +30,9 @@ import 'package:ibiti_guardian/services/audit_log_service.dart';
 import 'package:ibiti_guardian/services/execution/tx_status_poller.dart';
 import 'package:ibiti_guardian/models/tx_status.dart';
 import 'package:ibiti_guardian/config/privy_chain_registry.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
+import 'package:ibiti_guardian/services/policy/tx_usd_valuer.dart';
+import 'package:ibiti_guardian/utils/token_symbol_normalizer.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/execution/native_transaction_builder.dart';
@@ -97,6 +100,40 @@ class GuardianExecutionController {
 
   // в”Ђв”Ђв”Ђ Phase 6 Orchestration Pipeline в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
 
+  /// A complete send the builder still refused: the token does not exist on
+  /// the active network (e.g. SOL while on BSC). Explain instead of a bare
+  /// "could not build".
+  AssistantResponse? _unknownSendTokenResponse(IntentData intent) {
+    final symbol = intent.tokenSymbol?.trim();
+    if (intent.type != IntentType.sendAsset ||
+        symbol == null ||
+        symbol.isEmpty ||
+        (intent.amount ?? 0) <= 0 ||
+        (intent.toAddress ?? '').isEmpty) {
+      return null;
+    }
+    final network = PrivyChainRegistry.getChain(_wallet.chainKey).displayName;
+    if (!TransactionBuilder.isValidRecipient(
+        intent.toAddress!.trim(), _wallet.chainKey)) {
+      final message =
+          LocalizationService.instance.t('assistantSendInvalidRecipient', {
+        'network': network,
+        'default':
+            'The recipient address is not a valid $network address. Check it and try again.',
+      });
+      return AssistantResponse.info(message,
+          speechText: message, intent: intent);
+    }
+    final token = TokenSymbolNormalizer.normalize(symbol);
+    final message = LocalizationService.instance.t('assistantSendTokenNotOnNetwork', {
+      'token': token,
+      'network': network,
+      'default':
+          '$token is not available on $network. Switch the network or pick the token in the send window.',
+    });
+    return AssistantResponse.info(message, speechText: message, intent: intent);
+  }
+
   Future<AssistantResponse> orchestrate(IntentAction action) async {
     final intent = action.intent;
     final aiIntentGate = _checkAiIntentControl(intent);
@@ -123,6 +160,8 @@ class GuardianExecutionController {
     // 1. Build Payload
     final tx = TransactionBuilder.build(intent);
     if (tx == null) {
+      final unknownToken = _unknownSendTokenResponse(intent);
+      if (unknownToken != null) return unknownToken;
       return AssistantResponse.error('Could not build this transaction.',
           intent: intent);
     }
@@ -361,7 +400,9 @@ class GuardianExecutionController {
         );
       }
 
-      return await _executor.dispatchConfiguredPath(tx, resolvedPath);
+      final result = await _executor.dispatchConfiguredPath(tx, resolvedPath);
+      _commitDailyUsage(tx, result);
+      return result;
     } finally {
       _inFlightKeys.remove(key);
     }
@@ -781,7 +822,10 @@ class GuardianExecutionController {
         );
       }
 
-      return await _executor.dispatchConfiguredPath(step, resolvedPath);
+      final result =
+          await _executor.dispatchConfiguredPath(step, resolvedPath);
+      _commitDailyUsage(step, result);
+      return result;
     } finally {
       _inFlightKeys.remove(key);
     }
@@ -888,7 +932,7 @@ class GuardianExecutionController {
   // Enforces AiControlSettings.dailyLimit BEFORE execution, not just after.
   // DelegationController tracks cumulative spend; this gates the pipeline.
   AssistantResponse? _checkDailyLimit(TransactionRequest tx) {
-    final amount = tx.amount ?? 0.0;
+    final amount = TxUsdValuer.limitAmount(tx);
     if (amount <= 0) return null;
 
     // Daily TRADING limit only — plain wallet operations are bounded by their
@@ -946,14 +990,39 @@ class GuardianExecutionController {
     return null;
   }
 
+  /// A successful AI/market operation counts against the daily trading
+  /// budget. Before, only the pre-check ran, so every operation saw a fresh
+  /// budget and the "daily" limit was really a per-operation one.
+  void _commitDailyUsage(TransactionRequest tx, AssistantResponse result) {
+    if (tx.sourceIntent.origin == IntentOrigin.wallet) return;
+    if (tx.type == TransactionType.approve ||
+        tx.type == TransactionType.revoke) {
+      return;
+    }
+    if (result.type == ResponseType.error) return;
+    final usd = TxUsdValuer.limitAmount(tx);
+    if (usd > 0) _delegation.commitUsage(usd);
+  }
+
   AssistantResponse? _checkAiTransactionControl(
     TransactionRequest tx,
     SimulationResult staticSim,
   ) {
+    // The AI mandate bounds what the AI does. Operations the user starts in
+    // the wallet are bounded by the wallet limits in the policy engine; the
+    // AI's $100 position cap must not block a manual send.
+    if (tx.sourceIntent.origin == IntentOrigin.wallet) return null;
+
     final settings = AiControlService.instance.settings;
+    if (!settings.isActive) {
+      return AssistantResponse.error(
+        'AI permissions are off or have expired. Renew them in Security → AI Control.',
+        intent: tx.sourceIntent,
+      );
+    }
     final mandate = settings.mandate;
     final profile = _profileStore.current;
-    final amount = tx.amount ?? 0.0;
+    final amount = TxUsdValuer.limitAmount(tx);
 
     final requiredAction = _requiredAiActionForTx(tx.type);
     if (requiredAction != null &&

@@ -9,6 +9,8 @@ import 'package:ibiti_guardian/services/adapters/wallet_adapter.dart';
 import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/services/execution/native_transaction_builder.dart';
 import 'package:ibiti_guardian/services/policy/validators/composite_validator.dart';
+import 'package:ibiti_guardian/services/policy/validators/epk_validator.dart';
+import 'package:ibiti_guardian/services/policy/validators/threat_feed_blocklist_validator.dart';
 import 'package:ibiti_guardian/services/vault/epk_contract_resolver.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
@@ -137,16 +139,19 @@ class IBITIVaultSigner {
     }
     if (txContext != null) {
       final state = EPKPolicyManager.instance.state;
-      if (state.isActive) {
-        final composite = CompositeValidator(verifiedReceive: verifiedReceive);
-        final epkResult = await composite.validate(txContext, state);
-        if (!epkResult.isValid) {
-          final reason = epkResult.userMessage ??
-              epkResult.rejectionReason ??
-              'EPK policy blocked this transaction.';
-          _log.w('EPK block: $reason');
-          throw EPKValidationException(reason);
-        }
+      // Paused EPK turns off the strict target/spend checks, but never the
+      // known-scam blocklist: pausing protection must not make signing to a
+      // flagged address possible.
+      final EPKValidator validator = state.isActive
+          ? CompositeValidator(verifiedReceive: verifiedReceive)
+          : const ThreatFeedBlocklistValidator();
+      final epkResult = await validator.validate(txContext, state);
+      if (!epkResult.isValid) {
+        final reason = epkResult.userMessage ??
+            epkResult.rejectionReason ??
+            'EPK policy blocked this transaction.';
+        _log.w('EPK block: $reason');
+        throw EPKValidationException(reason);
       }
     }
 
@@ -186,15 +191,16 @@ class IBITIVaultSigner {
       }
 
       final state = EPKPolicyManager.instance.state;
-      if (state.isActive) {
-        final composite = CompositeValidator();
-        final validationResult = await composite.validate(txContext, state);
-        if (!validationResult.isValid) {
-          final reason = validationResult.userMessage ??
-              validationResult.rejectionReason ??
-              'EPK policy blocked this transaction.';
-          throw EPKValidationException(reason);
-        }
+      // Blocklist always; the strict checks only while EPK is active.
+      final EPKValidator validator = state.isActive
+          ? CompositeValidator()
+          : const ThreatFeedBlocklistValidator();
+      final validationResult = await validator.validate(txContext, state);
+      if (!validationResult.isValid) {
+        final reason = validationResult.userMessage ??
+            validationResult.rejectionReason ??
+            'EPK policy blocked this transaction.';
+        throw EPKValidationException(reason);
       }
 
       final abiString =

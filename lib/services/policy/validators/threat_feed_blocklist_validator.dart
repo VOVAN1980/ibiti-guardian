@@ -25,9 +25,9 @@ class ThreatFeedBlocklistValidator extends EPKValidator {
         reason: 'THREAT_FEED_MATCH',
         severity: 'danger',
         userMessage:
-            'Security Alert: The destination address is flagged in the global threat intelligence feed as a \${threatRecord.category.name}.',
+            'Security Alert: The destination address is flagged in the global threat intelligence feed as a ${threatRecord.category.name}.',
         debugDetails:
-            'Matched threat feed record: \${threatRecord.label} (Base Risk \${threatRecord.baseRiskWeight})',
+            'Matched threat feed record: ${threatRecord.label} (Base Risk ${threatRecord.baseRiskWeight})',
       );
     }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:ibiti_guardian/screens/vault/vault_unlock_screen.dart';
 import 'package:ibiti_guardian/services/market/market_data_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_order_service.dart';
@@ -175,6 +176,11 @@ class _CexSpotTradeModalState extends State<CexSpotTradeModal> {
   }
 
   Future<void> _executeOrder() async {
+    // A market order spends the exchange balance — same PIN gate as a send.
+    if (!await VaultUnlockScreen.requireAuth(context, forceSetup: true)) {
+      return;
+    }
+    if (!mounted) return;
     setState(() {
       _isExecuting = true;
       _errorMessage = null;

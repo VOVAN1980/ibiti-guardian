@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
-import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 
 /// Persistent storage for the user's execution policy.
@@ -179,12 +178,10 @@ class PolicyProfileStore extends ChangeNotifier {
   Future<void> _syncDependents() async {
     final unifiedDaily = _currentProfile.sendLimitUsd;
 
-    final ai = AiControlService.instance.settings;
-    if (ai.dailyLimit != unifiedDaily) {
-      await AiControlService.instance.updateLimits(
-        daily: unifiedDaily,
-      );
-    }
+    // The AI/trading daily limit (AiControlSettings.dailyLimit) is set on its
+    // own row in Policy & Limits and must not be overwritten here: it used to
+    // be reset to the send limit on every load(), so a $50 trading budget
+    // silently became the send limit (up to $100000 for "no limit").
 
     final epk = EPKPolicyManager.instance.state;
     if (epk.dailyLimit != unifiedDaily) {

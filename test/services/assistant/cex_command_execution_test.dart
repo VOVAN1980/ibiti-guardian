@@ -213,21 +213,25 @@ void main() {
       mockMexc.balances['SOL'] = 10.0; // base balance
       mockMexc.balances['USDT'] = 0.0; // Sell must succeed with 0 USDT/quote balance
 
-      // 1. sell all SOL
+      // 1. sell all SOL — selling a share of the balance always asks for
+      // confirmation, even in Full Autonomy: no order, a prefilled window.
       var response = await GuardianAssistantService.instance.process(
         'sell all SOL',
         source: AssistantInputSource.voice,
       );
       expect(response.type, ResponseType.info);
-      expect(mockMexc.ordersPlaced.last['amount'], 10.0); // 10.0 SOL
+      expect(mockMexc.ordersPlaced, isEmpty);
+      expect(dispatchedCommands.last.target, 'cex_trade');
+      expect(dispatchedCommands.last.payload?['initialAmount'], 10.0);
 
-      // 2. sell 50% SOL
+      // 2. sell 50% SOL — same
       response = await GuardianAssistantService.instance.process(
         'sell 50% SOL',
         source: AssistantInputSource.voice,
       );
       expect(response.type, ResponseType.info);
-      expect(mockMexc.ordersPlaced.last['amount'], 5.0); // 5.0 SOL
+      expect(mockMexc.ordersPlaced, isEmpty);
+      expect(dispatchedCommands.last.payload?['initialAmount'], 5.0);
 
       // 3. sell 2 SOL
       response = await GuardianAssistantService.instance.process(

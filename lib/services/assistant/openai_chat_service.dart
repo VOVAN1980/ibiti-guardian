@@ -59,6 +59,16 @@ class OpenAIChatService {
   /// Internal Message History — capped at 6 turns (12 messages).
   /// Beyond 6 turns, gpt-4o-mini degrades on intent classification.
   static const _maxHistoryTurns = 6;
+
+  /// Tools whose results carry third-party text (web pages, search results,
+  /// token names from history or markets). A response produced after any of
+  /// them is flagged `untrustedContext` so no transaction is built from it.
+  static const _untrustedContentTools = {
+    'web_search',
+    'read_url',
+    'get_transaction_history',
+    'get_market_overview',
+  };
   final List<Map<String, dynamic>> _history = [];
 
   void clearHistory() {
@@ -403,6 +413,7 @@ $personalContext
 
     // Track if a guardian modal was requested during tool execution
     String? pendingGuardianMode;
+    var usedUntrustedTool = false;
 
     try {
       int maxLoops = 3;
@@ -492,6 +503,9 @@ $personalContext
           for (final tool in toolCalls) {
             final functionName = tool['function']['name'];
             final callId = tool['id'];
+            if (_untrustedContentTools.contains(functionName)) {
+              usedUntrustedTool = true;
+            }
             String toolResult;
             if (!_isToolAllowedByMode(functionName)) {
               toolResult = jsonEncode({
@@ -579,6 +593,7 @@ $personalContext
 
           // Enforce mode constraints on AI output (defense-in-depth)
           _enforceModeOnResponse(decoded);
+          decoded['untrustedContext'] = usedUntrustedTool;
 
           return decoded;
         } else {
@@ -1464,6 +1479,14 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
   }
 
   /// Safe chain ID label for AI context — never throws.
+  /// "0x7376…9015" — enough to tell wallets apart, not a full identifier
+  /// sent to the LLM provider on every turn.
+  static String _maskAddress(String? address) {
+    if (address == null || address.isEmpty) return 'none';
+    if (address.length <= 12) return address;
+    return '${address.substring(0, 6)}…${address.substring(address.length - 4)}';
+  }
+
   static String _safeChainIdLabel(WalletAdapter wallet) {
     try {
       return wallet.chainId.toString();
@@ -1513,14 +1536,14 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 
     return '''
 - Wallet connected: ${wallet.isConnected}
-- Active address: ${wallet.address}
+- Active address: ${_maskAddress(wallet.address)}
 - Active chain key: ${wallet.chainKey}
 - Active chain id: ${_safeChainIdLabel(wallet)}
 - Active vault cards: ${evmCards.length} of ${vault.maxEvmCards} max (tiers: Black, Silver, Gold, Platinum)
 - EVM card balances USD: $perCardLines
 - Can create more cards: ${vault.canCreateAdditionalEvmCard}
-- Solana address: ${vault.solanaAddress ?? 'none'}
-- Tron address: ${vault.tronAddress ?? 'none'}
+- Solana address: ${_maskAddress(vault.solanaAddress)}
+- Tron address: ${_maskAddress(vault.tronAddress)}
 - Portfolio total USD: ${summary?.totalBalanceUsd.toStringAsFixed(2) ?? 'unknown'}
 - Asset count: ${summary?.assetsCount ?? assets.length}
 - Top assets: ${topAssets.isEmpty ? 'none' : topAssets}
@@ -1536,12 +1559,12 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 - AI mandate networks: ${mandate.allowedNetworks.isEmpty ? 'any' : mandate.allowedNetworks.join(', ')}
 - AI mandate venues: ${mandate.allowedVenues.isEmpty ? 'any' : mandate.allowedVenues.join(', ')}
 - AI mandate max daily trading limit USD: ${mandate.maxPositionUsd.toStringAsFixed(2)}
-- AI mandate max daily loss USD: ${mandate.maxDailyLossUsd.toStringAsFixed(2)}
-- AI mandate max drawdown pct: ${mandate.maxDrawdownPct.toStringAsFixed(2)}
+- AI mandate max daily loss USD (configured, not enforced yet): ${mandate.maxDailyLossUsd.toStringAsFixed(2)}
+- AI mandate max drawdown pct (configured, not enforced yet): ${mandate.maxDrawdownPct.toStringAsFixed(2)}
 - AI mandate max gas USD: ${mandate.maxGasUsd.toStringAsFixed(2)}
 - AI mandate max slippage bps: ${mandate.maxSlippageBps}
-- AI mandate max open positions: ${mandate.maxOpenPositions}
-- AI mandate stop after losses: ${mandate.stopAfterLosses}
+- AI mandate max open positions (configured, not enforced yet): ${mandate.maxOpenPositions}
+- AI mandate stop after losses (configured, not enforced yet): ${mandate.stopAfterLosses}
 - AI mandate requires human for unknown: ${mandate.requireHumanForUnknown}
 - User preferred stablecoin: ${UserMemoryService.instance.preferences.preferredStablecoin ?? 'not set'}
 - User preferred venue: ${UserMemoryService.instance.preferences.preferredVenue ?? 'not set'}
