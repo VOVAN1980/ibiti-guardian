@@ -106,8 +106,9 @@ class SpeechFormatter {
 
   static String _normalizePercentages(String text, String lang) {
     return text.replaceAllMapped(_percentPattern, (match) {
-      final parsed = _parseNumber(match.group(1)!, lang: lang);
-      if (parsed == null) return match.group(0)!;
+      final raw = _parseNumber(match.group(1)!, lang: lang);
+      if (raw == null) return match.group(0)!;
+      final parsed = _roundForSpeech(raw, percent: true);
       final number =
           lang == 'ru' ? _numberWordsRu(parsed) : _numberWordsEn(parsed);
       if (lang == 'ru') {
@@ -259,17 +260,15 @@ class SpeechFormatter {
     );
   }
 
-  static String _currencyWords(_SpokenNumber number, String lang) {
-    if (number.whole == BigInt.zero &&
-        number.fraction.isNotEmpty &&
-        int.parse(number.fraction.padRight(2, '0').substring(0, 2)) == 0) {
-      return lang == 'ru' ? 'меньше одного цента' : 'less than one cent';
-    }
+  static String _currencyWords(_SpokenNumber raw, String lang) {
+    final number = _roundForSpeech(raw);
 
+    // Under a cent (meme-coin prices): a decimal of a dollar, e.g.
+    // "ноль целых пятьдесят две десятимиллионных доллара".
     if (number.fraction.length > 2) {
       final spoken =
           lang == 'ru' ? _numberWordsRu(number) : _numberWordsEn(number);
-      return lang == 'ru' ? '$spoken доллара США' : '$spoken US dollars';
+      return lang == 'ru' ? '$spoken доллара' : '$spoken of a dollar';
     }
 
     final sign = number.negative
@@ -294,6 +293,8 @@ class SpeechFormatter {
       if (cents == 0) return '$sign$wholeWords $dollars';
       final centWords = _integerWordsRu(BigInt.from(cents));
       final centUnit = _pluralRu(cents, 'цент', 'цента', 'центов');
+      // $0.16 → "шестнадцать центов", not "ноль долларов шестнадцать центов".
+      if (number.whole == BigInt.zero) return '$sign$centWords $centUnit';
       return '$sign$wholeWords $dollars $centWords $centUnit';
     }
 
@@ -301,35 +302,75 @@ class SpeechFormatter {
     if (cents == 0) return '$sign$wholeWords $dollars';
     final centWords = _integerWordsEn(BigInt.from(cents));
     final centUnit = cents == 1 ? 'cent' : 'cents';
+    if (number.whole == BigInt.zero) return '$sign$centWords $centUnit';
     return '$sign$wholeWords $dollars $centWords $centUnit';
   }
 
-  static String _numberWordsRu(_SpokenNumber number) {
+  static String _numberWordsRu(_SpokenNumber raw) {
+    final number = _roundForSpeech(raw);
     final sign = number.negative
         ? 'минус '
         : number.explicitPlus
             ? 'плюс '
             : '';
-    final whole = _integerWordsRu(number.whole);
-    if (number.fraction.isEmpty) return '$sign$whole';
-
-    if (number.fraction.length > _fractionUnitsRu.length) {
-      final digits = number.fraction
-          .split('')
-          .map((digit) => _digitRu[int.parse(digit)])
-          .join(', ');
-      return '$sign$whole целых, $digits';
+    if (number.fraction.isEmpty) {
+      return '$sign${_integerWordsRu(number.whole)}';
+    }
+    if (number.fraction.length > _maxSpokenDecimals) {
+      return '${sign}меньше одной миллиардной';
     }
 
+    // "одна целая", "две целых" — the whole agrees with feminine "целая";
+    // the fraction unit is singular after 1, 21, 31… ("двадцать одна сотая").
+    final whole = _integerWordsRu(number.whole, feminine: true);
     final numerator = BigInt.parse(number.fraction);
     final wholeUnit = _endsInOne(number.whole) ? 'целая' : 'целых';
     final numeratorWords = _integerWordsRu(numerator, feminine: true);
     final units = _fractionUnitsRu[number.fraction.length - 1];
-    final fractionUnit = numerator == BigInt.one ? units.$1 : units.$2;
+    final fractionUnit = _endsInOne(numerator) ? units.$1 : units.$2;
     return '$sign$whole $wholeUnit $numeratorWords $fractionUnit';
   }
 
-  static String _numberWordsEn(_SpokenNumber number) {
+  /// Spoken numbers are rounded (the screen keeps exact values):
+  /// 1 and above to hundredths (percentages of 10 and above to tenths),
+  /// below 1 to two significant digits — 3.8680899 → 3.87,
+  /// 0.00972158 → 0.0097, 214.5774% → 214.6%.
+  static _SpokenNumber _roundForSpeech(_SpokenNumber n, {bool percent = false}) {
+    final fraction = n.fraction;
+    if (fraction.isEmpty) return n;
+    int keep;
+    if (n.whole > BigInt.zero) {
+      keep = percent && n.whole >= BigInt.from(10) ? 1 : 2;
+    } else {
+      final firstNonZero = fraction.indexOf(RegExp(r'[1-9]'));
+      if (firstNonZero < 0) return n;
+      keep = firstNonZero + 2;
+    }
+    if (fraction.length <= keep) return n;
+
+    final scaled = BigInt.parse('${n.whole}$fraction');
+    final divisor = BigInt.from(10).pow(fraction.length - keep);
+    var rounded = scaled ~/ divisor;
+    if ((scaled % divisor) * BigInt.two >= divisor) rounded += BigInt.one;
+
+    final unit = BigInt.from(10).pow(keep);
+    final newFraction = (rounded % unit)
+        .toString()
+        .padLeft(keep, '0')
+        .replaceFirst(RegExp(r'0+$'), '');
+    return _SpokenNumber(
+      whole: rounded ~/ unit,
+      fraction: newFraction,
+      negative: n.negative,
+      explicitPlus: n.explicitPlus,
+    );
+  }
+
+  /// Beyond billionths a decimal is not understandable by ear.
+  static const _maxSpokenDecimals = 9;
+
+  static String _numberWordsEn(_SpokenNumber raw) {
+    final number = _roundForSpeech(raw);
     final sign = number.negative
         ? 'minus '
         : number.explicitPlus

@@ -225,7 +225,8 @@ class IntentParser {
     'delete approval',
     'clear approval',
     'отзови',
-    'отзыв',
+    // Not 'отзыв': that is also "review/feedback" ("оставлю отзыв") and
+    // opened the Panic window.
     'ревок',
     'убери разрешение',
     'отмени разрешение',
@@ -252,7 +253,6 @@ class IntentParser {
     'получить крипту',
     'получить токены',
     'хочу получить',
-    'как получить',
   ];
 
   static const _historyKeywords = [
@@ -312,6 +312,14 @@ class IntentParser {
   /// Parse raw user [input] into a structured [IntentData].
   static IntentData parse(String input) {
     final normalized = input.trim().toLowerCase();
+
+    // Questions ("как отправить?", "стоит ли купить BTC?") and stories about
+    // the past ("я отправил вчера 100 долларов") are conversation: no send,
+    // swap, trade or revoke intent comes from them here, so no window opens.
+    // The LLM answers them, and still returns an intent for a polite request.
+    if (isConversational(normalized)) {
+      return _parseNonExecution(input, normalized);
+    }
 
     // --- CEX Buy / Sell Spot Intents ---
     final buyTokenForAmountMatch = _buyTokenForAmountPattern.firstMatch(input);
@@ -604,6 +612,11 @@ class IntentParser {
       return IntentData(type: IntentType.revokeApproval, rawInput: input);
     }
 
+    return _parseNonExecution(input, normalized);
+  }
+
+  /// Informational and navigation intents (no money moves).
+  static IntentData _parseNonExecution(String input, String normalized) {
     // 5. Show risks
     if (_containsAny(normalized, _riskKeywords)) {
       return IntentData(type: IntentType.showRisks, rawInput: input);
@@ -661,6 +674,31 @@ class IntentParser {
 
   static bool _containsAny(String text, List<String> keywords) {
     return keywords.any((kw) => text.contains(kw));
+  }
+
+  static const _questionStarts = [
+    'как ', 'что ', 'чем ', 'зачем', 'почему', 'сколько ', 'когда ', 'где ',
+    'куда ', 'кто ', 'какой ', 'какая ', 'какое ', 'какие ', 'каким ',
+    'стоит ли', 'можно ли', 'нужно ли', 'надо ли', 'правда ли',
+    'how ', 'what ', 'why ', 'when ', 'where ', 'which ', 'who ',
+    'should i', 'is it ', 'is there', 'are there', 'do i ', 'does ',
+    'can i ', 'could i ',
+  ];
+
+  static final _pastTenseAction = RegExp(
+    r'(?<![а-яё])(?:отправил|отправила|отправили|перев[её]л|перевела|перевели|'
+    r'купил|купила|купили|продал|продала|продали|обменял|обменяла|обменяли)'
+    r'(?![а-яё])|\b(?:sent|bought|sold|swapped)\b',
+  );
+
+  /// A question or a story about something already done — not a command.
+  static bool isConversational(String text) {
+    final t = text.trim().toLowerCase();
+    if (t.isEmpty) return false;
+    if (t.endsWith('?')) return true;
+    if (_questionStarts.any(t.startsWith)) return true;
+    if (t.contains(' ли ')) return true;
+    return _pastTenseAction.hasMatch(t);
   }
 
   static double? extractAmount(String input) {

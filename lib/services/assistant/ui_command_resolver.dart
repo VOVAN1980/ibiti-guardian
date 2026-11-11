@@ -2,6 +2,7 @@ import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
+import 'package:ibiti_guardian/services/intents/intent_parser.dart';
 
 /// Central firewall for all UI commands.
 ///
@@ -237,10 +238,16 @@ class UICommandResolver {
     }
   }
 
-  /// Returns fallback UI commands based on raw text matching.
-  /// This is a safety net for the LLM path when fast-path missed.
+  /// Safety net for the LLM path: opens a window only when the user's own
+  /// words clearly ask for it — "открой / покажи / перейди / open / show…"
+  /// or an unambiguous command ("отправь деньги", "отзови разрешения").
+  /// Questions and conversation open nothing: "я в панике, рынок падает"
+  /// used to open the Panic window, "что такое политика лимитов?" Policy,
+  /// "как обменять BNB?" the swap window. The model's own uiCommands still
+  /// apply when it decides a window is wanted.
   static List<UICommand> fallbackUiCommandsForText(String input) {
-    final lower = input.toLowerCase();
+    final lower = input.toLowerCase().trim();
+    if (lower.isEmpty) return const [];
     if (AiControlService.instance.settings.mode == AiMode.manual &&
         (lower.contains('send') ||
             lower.contains('swap') ||
@@ -249,188 +256,154 @@ class UICommandResolver {
       return const [];
     }
 
-    // Balance — AI answers verbally, no navigation (P3-3 fix).
-    // User must say "открой кошелёк" explicitly to navigate.
-    if (_matchesAnyPhrase(lower, [
-          'мой баланс',
-          'покажи баланс',
-          'проверь баланс',
-          'баланс кошелька',
-          'my balance',
-          'show balance',
-          'check balance',
-        ]) &&
-        !lower.contains('истор')) {
-      return const [];
+    final asksToOpen = _matchesAnyPhrase(lower, _openVerbs);
+    if (!asksToOpen && IntentParser.isConversational(lower)) return const [];
+    bool openAnd(List<String> words) =>
+        asksToOpen && _matchesAnyPhrase(lower, words);
+
+    const wallet = UICommand(type: UICommandType.navigate, target: 'wallet');
+    UICommand modal(String target) =>
+        UICommand(type: UICommandType.openModal, target: target);
+
+    // Balance: the AI answers; only "открой/покажи баланс" goes to Wallet.
+    if (openAnd(['баланс', 'balance']) && !lower.contains('истор')) {
+      return const [wallet];
     }
 
-    // Address — only explicit address phrases
+    // Address / receive
     if (_matchesAnyPhrase(lower, [
-      'мой адрес',
-      'адрес кошелька',
-      'покажи адрес',
-      'my address',
-      'wallet address',
-      'show address',
-    ])) {
-      return const [
-        UICommand(type: UICommandType.navigate, target: 'wallet'),
-        UICommand(type: UICommandType.openModal, target: 'wallet_receive'),
-      ];
+          'мой адрес',
+          'покажи адрес',
+          'my address',
+          'show address',
+          'show my address',
+        ]) ||
+        openAnd(['адрес', 'address', 'получени', 'receive', 'пополнени'])) {
+      return [wallet, modal('wallet_receive')];
     }
-
-    // Receive — only explicit receive phrases
     if (_matchesAnyPhrase(lower, [
+      'хочу получить',
       'получить крипту',
       'получить токены',
-      'хочу получить',
       'receive crypto',
       'receive tokens',
       'receive funds',
     ])) {
-      return const [
-        UICommand(type: UICommandType.navigate, target: 'wallet'),
-        UICommand(type: UICommandType.openModal, target: 'wallet_receive'),
-      ];
+      return [wallet, modal('wallet_receive')];
     }
 
-    // Send — only when explicitly about sending (with object)
+    // Send
     if (_matchesAnyPhrase(lower, [
-      'отправить токены',
-      'отправить деньги',
-      'отправить крипту',
-      'отправь токены',
-      'отправь деньги',
-      'send tokens',
-      'send crypto',
-      'send funds',
-    ])) {
-      return const [
-        UICommand(type: UICommandType.navigate, target: 'wallet'),
-        UICommand(type: UICommandType.openModal, target: 'wallet_send'),
-      ];
+          'отправь токены',
+          'отправь деньги',
+          'отправь крипту',
+          'отправь монеты',
+          'хочу отправить',
+          'send tokens',
+          'send crypto',
+          'send funds',
+        ]) ||
+        openAnd(['отправк', 'окно отправки', 'send window'])) {
+      return [wallet, modal('wallet_send')];
     }
 
-    if (lower.contains('security center') ||
-        lower.contains('центр безопасности')) {
+    if (openAnd(['центр безопасности', 'security center', 'безопасност'])) {
       return const [
         UICommand(type: UICommandType.navigate, target: 'security_center'),
       ];
     }
 
-    // Market — only explicit open/show commands
+    if (openAnd(['рынок', 'market'])) {
+      return const [UICommand(type: UICommandType.navigate, target: 'market')];
+    }
+
+    if (openAnd(['политик', 'policy', 'лимит', 'limits'])) {
+      return [modal('policy_limits')];
+    }
+
+    if (openAnd(['ai center', 'центр ai', 'центр ии', 'ai control',
+      'управление ии', 'управление ai'])) {
+      return [modal('ai_control')];
+    }
+
+    if (openAnd(['epk', 'епк'])) {
+      return [modal('epk_control')];
+    }
+
+    if (openAnd(['аудит', 'audit'])) {
+      return [modal('audit_history')];
+    }
+
+    // History
     if (_matchesAnyPhrase(lower, [
-      'открой рынок',
-      'покажи рынок',
-      'перейди на рынок',
-      'open market',
-      'show market',
-      'go to market',
-    ])) {
-      return const [
-        UICommand(type: UICommandType.navigate, target: 'market'),
-      ];
-    }
-
-    if (lower.contains('политик') || lower.contains('policy')) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'policy_limits'),
-      ];
-    }
-
-    if (lower.contains('ai center') ||
-        (lower.contains('центр') && lower.contains('ai'))) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'ai_control'),
-      ];
-    }
-
-    if (lower.contains('epk')) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'epk_control'),
-      ];
-    }
-
-    if (_matchesAnyPhrase(lower, [
-      'аудит кошелька',
-      'аудит разрешений',
-      'покажи аудит',
-      'audit wallet',
-      'audit history',
-    ])) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'audit_history'),
-      ];
-    }
-
-    // History — only explicit history phrases
-    if (_matchesAnyPhrase(lower, [
-      'покажи историю',
-      'история операций',
-      'история транзакций',
-      'мои операции',
-      'мои транзакции',
-      'show history',
-      'transaction history',
-      'my history',
-    ])) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'wallet_history'),
-      ];
-    }
-
-    if (lower.contains('адресн') ||
-        lower.contains('address book') ||
-        lower.contains('мои контакты')) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'wallet_address_book'),
-      ];
-    }
-
-    if (lower.contains('настройк') && lower.contains('кошел')) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'wallet_settings'),
-      ];
-    }
-
-    if (_matchesAnyPhrase(lower, [
-          'обменять',
-          'обменяй',
-          'swap tokens',
+          'покажи историю',
+          'show history',
+          'show my history',
         ]) ||
-        (lower.contains('swap') && lower.contains(' to '))) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'wallet_swap'),
-      ];
+        openAnd(['истори', 'операци', 'транзакци', 'history', 'transactions'])) {
+      return [modal('wallet_history')];
     }
 
-    if (lower.contains('panic') ||
-        lower.contains('паник') ||
-        lower.contains('revoke') ||
-        lower.contains('отозв') ||
-        (lower.contains('срочно') &&
-            (lower.contains('разрешен') ||
-                lower.contains('отозв') ||
-                lower.contains('всё') ||
-                lower.contains('все')))) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'panic'),
-      ];
+    if (openAnd(['адресн', 'контакт', 'address book', 'contacts'])) {
+      return [wallet, modal('wallet_address_book')];
     }
 
+    if (openAnd(['настройки кошел', 'настройки кошёл', 'wallet settings'])) {
+      return [wallet, modal('wallet_settings')];
+    }
+
+    // Swap
+    if (_matchesAnyPhrase(lower, ['обменяй', 'хочу обменять', 'swap tokens']) ||
+        openAnd(['обмен', 'swap'])) {
+      return [modal('wallet_swap')];
+    }
+
+    // Panic / revoke: only as a clear request.
+    if (_matchesAnyPhrase(lower, [
+          'режим паники',
+          'кнопка паники',
+          'кнопку паники',
+          'panic mode',
+          'panic button',
+        ]) ||
+        openAnd(['паник', 'panic']) ||
+        (_matchesAnyPhrase(lower, ['отзови', 'отозвать', 'revoke']) &&
+            _matchesAnyPhrase(
+                lower, ['разрешен', 'доступ', 'approval', 'allowance']))) {
+      return [modal('panic')];
+    }
+
+    // Safe scan
     if ((lower.contains('скан') && lower.contains('кошел')) ||
         (lower.contains('scan') && lower.contains('wallet')) ||
+        (lower.contains('провер') && lower.contains('разрешен')) ||
+        (lower.contains('check') && lower.contains('approval')) ||
         lower.contains('safe review') ||
-        lower.contains('безопасный режим') ||
-        (lower.contains('провер') &&
-            (lower.contains('разрешен') || lower.contains('контракт')))) {
-      return const [
-        UICommand(type: UICommandType.openModal, target: 'safe'),
-      ];
+        lower.contains('безопасный режим')) {
+      return [modal('safe')];
     }
 
     return const [];
   }
+
+  static const _openVerbs = [
+    'открой',
+    'открыть',
+    'откройте',
+    'покажи',
+    'показать',
+    'покажите',
+    'перейди',
+    'перейти',
+    'зайди',
+    'запусти',
+    'выведи',
+    'open ',
+    'show ',
+    'go to',
+    'take me',
+    'launch',
+  ];
 
   /// Helper: returns true if [text] contains any of the given [phrases].
   static bool _matchesAnyPhrase(String text, List<String> phrases) {

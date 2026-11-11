@@ -72,6 +72,35 @@ void main() {
       expect(result, isNot(contains('1111')));
     });
 
+    test('the whole part agrees with "целая": одна целая, две целых', () {
+      expect(SpeechFormatter.normalize('1.5 BTC', lang: 'ru'),
+          'одна целая пять десятых биткоина');
+      expect(SpeechFormatter.normalize('2.5 BTC', lang: 'ru'),
+          'две целых пять десятых биткоина');
+      expect(SpeechFormatter.normalize('0.21 BTC', lang: 'ru'),
+          'ноль целых двадцать одна сотая биткоина');
+    });
+
+    test('long decimals are rounded for speech', () {
+      expect(SpeechFormatter.normalize('3.8680899 USDT', lang: 'ru'),
+          'три целых восемьдесят семь сотых ю эс ди ти');
+      expect(SpeechFormatter.normalize('0.00972158 BNB', lang: 'ru'),
+          'ноль целых девяносто семь десятитысячных би эн би');
+      expect(SpeechFormatter.normalize('+214.5774%', lang: 'ru'),
+          'плюс двести четырнадцать целых шесть десятых процента');
+      expect(SpeechFormatter.normalize('1.999 BTC', lang: 'ru'),
+          'два биткоина');
+    });
+
+    test('cents and sub-cent prices sound natural', () {
+      expect(SpeechFormatter.normalize(r'$0.16', lang: 'ru'),
+          'шестнадцать центов');
+      expect(SpeechFormatter.normalize(r'$3.87', lang: 'ru'),
+          'три доллара восемьдесят семь центов');
+      expect(SpeechFormatter.normalize(r'$0.0000052', lang: 'ru'),
+          'ноль целых пятьдесят две десятимиллионных доллара');
+    });
+
     test('speaks English numbers naturally', () {
       final result = SpeechFormatter.normalize(
         'Balance: 1234.50 USDT and +2.5%.',
