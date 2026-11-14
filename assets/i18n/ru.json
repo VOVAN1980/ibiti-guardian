@@ -566,7 +566,7 @@
   "walletSettingsTokenFilters": "Фильтры токенов",
   "walletSettingsHideZero": "Скрывать нулевые токены",
   "walletSettingsSpamFilter": "Фильтр спам-токенов",
-  "walletSettingsSpamFilterSub": "Скрывать токены дешевле $0.01",
+  "walletSettingsSpamFilterSub": "Скрывать токены дешевле $0.01 и спам в истории",
   "walletSettingsManageTokens": "Управление токенами",
   "walletSettingsAddressBook": "Адресная книга",
   "walletAddressBookTitle": "Адресная книга",
@@ -1569,5 +1569,11 @@
   "txDetailCopied": "{label} скопировано",
   "assistantSendTokenNotOnNetwork": "Токена {token} нет в сети {network}. Переключите сеть или выберите токен в окне отправки.",
   "assistantSendInvalidRecipient": "Адрес получателя не подходит для сети {network}. Проверьте его и попробуйте снова.",
-  "walletSendInvalidAddress": "Неверный адрес для сети {network}."
+  "walletSendInvalidAddress": "Неверный адрес для сети {network}.",
+  "copyAddress": "Копировать адрес",
+  "edit": "Изменить",
+  "delete": "Удалить",
+  "cancel": "Отмена",
+  "save": "Сохранить",
+  "addressBookRecentLabel": "Недавний {short}"
 }

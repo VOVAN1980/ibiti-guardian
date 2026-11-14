@@ -1514,4 +1514,11 @@
   "txDetailContract": "Hợp đồng",
   "txDetailHash": "Hash",
   "txDetailOpenExplorer": "Mở trong explorer",
-  "txDetailCopied": "Đã sao chép {label}"}
+  "txDetailCopied": "Đã sao chép {label}",
+  "copyAddress": "Sao chép địa chỉ",
+  "edit": "Sửa",
+  "delete": "Xóa",
+  "cancel": "Hủy",
+  "save": "Lưu",
+  "addressBookRecentLabel": "Gần đây {short}"
+}

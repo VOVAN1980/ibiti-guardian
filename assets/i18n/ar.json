@@ -1514,4 +1514,11 @@
   "txDetailContract": "العقد",
   "txDetailHash": "التجزئة (Hash)",
   "txDetailOpenExplorer": "فتح في المستكشف",
-  "txDetailCopied": "تم نسخ {label}"}
+  "txDetailCopied": "تم نسخ {label}",
+  "copyAddress": "نسخ العنوان",
+  "edit": "تعديل",
+  "delete": "حذف",
+  "cancel": "إلغاء",
+  "save": "حفظ",
+  "addressBookRecentLabel": "حديث {short}"
+}

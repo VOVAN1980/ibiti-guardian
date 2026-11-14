@@ -1514,4 +1514,11 @@
   "txDetailContract": "合约",
   "txDetailHash": "哈希",
   "txDetailOpenExplorer": "在浏览器中打开",
-  "txDetailCopied": "已复制{label}"}
+  "txDetailCopied": "已复制{label}",
+  "copyAddress": "复制地址",
+  "edit": "编辑",
+  "delete": "删除",
+  "cancel": "取消",
+  "save": "保存",
+  "addressBookRecentLabel": "最近 {short}"
+}

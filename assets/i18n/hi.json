@@ -1514,4 +1514,11 @@
   "txDetailContract": "कॉन्ट्रैक्ट",
   "txDetailHash": "हैश",
   "txDetailOpenExplorer": "एक्सप्लोरर में खोलें",
-  "txDetailCopied": "{label} कॉपी किया गया"}
+  "txDetailCopied": "{label} कॉपी किया गया",
+  "copyAddress": "पता कॉपी करें",
+  "edit": "संपादित करें",
+  "delete": "हटाएं",
+  "cancel": "रद्द करें",
+  "save": "सहेजें",
+  "addressBookRecentLabel": "हाल का {short}"
+}

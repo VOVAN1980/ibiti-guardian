@@ -1,3 +1,4 @@
+import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/services/dapp/dapp_verified_receive.dart';
 import 'package:ibiti_guardian/services/policy/validators/epk_validator.dart';
@@ -23,6 +24,24 @@ class TargetSelectorGuard extends EPKValidator {
       return EpkValidatorResult.pass();
     }
     final toAddress = tx.toAddress.toLowerCase();
+
+    // The user decides where their own money goes. A send or swap started in
+    // the wallet's own Send / Swap window, reviewed and confirmed with the PIN,
+    // goes to any address or swap route (an exchange deposit, a friend, the
+    // swap provider's contracts). The default profile is STRICT and the app
+    // has no screen to whitelist an address, so this guard used to refuse
+    // every manual send and swap. Manual operations stay bounded by the
+    // wallet Send / Swap / Approve limits (policy engine) and the threat
+    // blocklist; AI, market and dApp requests still face this guard.
+    if (tx.sourceIntent.origin == IntentOrigin.wallet) {
+      return EpkValidatorResult.pass();
+    }
+
+    // Revoking sets an allowance to zero: it can only take permissions away,
+    // so a strict whitelist must never stand between the user and a revoke.
+    if (tx.type == TransactionType.revoke) {
+      return EpkValidatorResult.pass();
+    }
 
     // Self transfers are always allowed
     if (toAddress == tx.fromAddress.toLowerCase()) {

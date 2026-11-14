@@ -1514,4 +1514,11 @@
   "txDetailContract": "컨트랙트",
   "txDetailHash": "해시",
   "txDetailOpenExplorer": "익스플로러에서 열기",
-  "txDetailCopied": "{label} 복사됨"}
+  "txDetailCopied": "{label} 복사됨",
+  "copyAddress": "주소 복사",
+  "edit": "편집",
+  "delete": "삭제",
+  "cancel": "취소",
+  "save": "저장",
+  "addressBookRecentLabel": "최근 {short}"
+}

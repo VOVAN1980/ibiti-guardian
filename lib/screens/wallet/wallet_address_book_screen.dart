@@ -299,10 +299,16 @@ Future<void> _showAddressDialog(
             final address = addrCtrl.text.trim();
             if (label.isEmpty || address.isEmpty) return;
             if (existing != null &&
-                existing.address.toLowerCase() != address.toLowerCase()) {
-              await AddressBookService.instance.remove(existing.address);
+                existing.address.toLowerCase() == address.toLowerCase()) {
+              // Renaming: change the name in place. Adding again used to
+              // leave the old "Recent 0x…" entry next to the renamed copy.
+              await AddressBookService.instance.update(address, label);
+            } else {
+              if (existing != null) {
+                await AddressBookService.instance.remove(existing.address);
+              }
+              await AddressBookService.instance.add(label, address);
             }
-            await AddressBookService.instance.add(label, address);
             if (context.mounted) Navigator.pop(context);
           },
           child: Text(t.t('save', {'default': 'Save'})),

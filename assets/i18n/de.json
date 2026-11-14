@@ -1514,4 +1514,11 @@
   "txDetailContract": "Vertrag",
   "txDetailHash": "Hash",
   "txDetailOpenExplorer": "Im Explorer öffnen",
-  "txDetailCopied": "{label} kopiert"}
+  "txDetailCopied": "{label} kopiert",
+  "copyAddress": "Adresse kopieren",
+  "edit": "Bearbeiten",
+  "delete": "Löschen",
+  "cancel": "Abbrechen",
+  "save": "Speichern",
+  "addressBookRecentLabel": "Zuletzt {short}"
+}

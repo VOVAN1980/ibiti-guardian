@@ -566,7 +566,7 @@
   "walletSettingsTokenFilters": "Фільтри токенів",
   "walletSettingsHideZero": "Приховати токени нульового балансу",
   "walletSettingsSpamFilter": "Фільтр маркерів спаму",
-  "walletSettingsSpamFilterSub": "Сховати токени вартістю < 0,01 $",
+  "walletSettingsSpamFilterSub": "Приховувати токени дешевші за $0.01 і спам в історії",
   "walletSettingsManageTokens": "Керуйте токенами",
   "walletSettingsAddressBook": "Адресна книга",
   "walletAddressBookTitle": "Адресна книга",
@@ -1514,4 +1514,11 @@
   "txDetailContract": "Контракт",
   "txDetailHash": "Хеш",
   "txDetailOpenExplorer": "Відкрити в Explorer",
-  "txDetailCopied": "{label} скопійовано"}
+  "txDetailCopied": "{label} скопійовано",
+  "copyAddress": "Копіювати адресу",
+  "edit": "Змінити",
+  "delete": "Видалити",
+  "cancel": "Скасувати",
+  "save": "Зберегти",
+  "addressBookRecentLabel": "Недавній {short}"
+}

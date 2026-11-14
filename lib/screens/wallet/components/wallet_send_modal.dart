@@ -548,8 +548,12 @@ class _WalletSendModalState extends State<WalletSendModal>
           !AddressBookService.instance.entries.any(
             (entry) => entry.address.toLowerCase() == recipient.toLowerCase(),
           )) {
-        final label =
-            'Recent ${recipient.substring(0, recipient.length > 6 ? 6 : recipient.length)}';
+        final label = t.t('addressBookRecentLabel', {
+          'short': recipient.substring(
+              0, recipient.length > 6 ? 6 : recipient.length),
+          'default':
+              'Recent ${recipient.substring(0, recipient.length > 6 ? 6 : recipient.length)}',
+        });
         AddressBookService.instance.add(label, recipient);
       }
 

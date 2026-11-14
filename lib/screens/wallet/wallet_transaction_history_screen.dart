@@ -7,6 +7,12 @@ import 'package:ibiti_guardian/services/execution/tx_registry.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/history/tx_history_service.dart';
 import 'package:ibiti_guardian/services/history/tx_history_merge.dart';
+import 'package:ibiti_guardian/services/history/tx_spam_filter.dart';
+import 'package:ibiti_guardian/services/adapters/portfolio_adapter.dart';
+import 'package:ibiti_guardian/services/market/token_registry_service.dart';
+import 'package:ibiti_guardian/services/wallet/token_manager_service.dart';
+import 'package:ibiti_guardian/services/wallet/wallet_settings_service.dart';
+import 'package:ibiti_guardian/config/privy_chain_registry.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
@@ -101,23 +107,55 @@ class _WalletTransactionHistoryScreenState
     }
   }
 
+  /// History without spam airdrops and zero-amount "address poisoning"
+  /// transfers while the wallet's spam filter (Wallet settings) is on.
+  List<OnChainTx> get _visible {
+    if (!WalletSettingsService.instance.spamFilter) return _txns;
+    final chainKey = _chainKey;
+    final chainId = PrivyChainRegistry.getChain(chainKey).evmChainId;
+    final custom = TokenManagerService.instance.customTokens
+        .where((c) => chainId == null || c.chainId == chainId)
+        .map((c) => c.address.toLowerCase())
+        .toSet();
+    final sentTokens = {
+      for (final t in _txns)
+        if (t.type == OnChainTxType.send &&
+            t.value > 0 &&
+            (t.contractAddress ?? '').isNotEmpty)
+          t.contractAddress!.toLowerCase(),
+    };
+    bool known(String contract) =>
+        custom.contains(contract) ||
+        PortfolioAdapter.isCoreToken(chainKey, contract) ||
+        TokenRegistryService.instance
+                .resolveBuiltInAddress(contract, chainKey)
+                .address !=
+            null;
+    return _txns
+        .where((t) => !TxSpamFilter.isSpam(t,
+            isKnownToken: known, sentTokens: sentTokens))
+        .toList();
+  }
+
   List<OnChainTx> get _filtered {
+    final txns = _visible;
     switch (_filter) {
       case _TxFilter.all:
-        return _txns;
+        return txns;
       case _TxFilter.sent:
-        return _txns.where((t) => t.type == OnChainTxType.send).toList();
+        return txns.where((t) => t.type == OnChainTxType.send).toList();
       case _TxFilter.received:
-        return _txns.where((t) => t.type == OnChainTxType.receive).toList();
+        return txns.where((t) => t.type == OnChainTxType.receive).toList();
       case _TxFilter.approvals:
-        return _txns.where((t) => t.type == OnChainTxType.approval).toList();
+        return txns.where((t) => t.type == OnChainTxType.approval).toList();
       case _TxFilter.swaps:
-        return _txns.where((t) => t.type == OnChainTxType.swap).toList();
+        return txns.where((t) => t.type == OnChainTxType.swap).toList();
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final filtered = _filtered; // computed once per build, not per row
     return Scaffold(
       backgroundColor: GuardianColors.background,
       appBar: AppBar(
@@ -180,14 +218,14 @@ class _WalletTransactionHistoryScreenState
                     ? _ErrorState(
                         error: _error!,
                         onRetry: () => _loadHistory(reset: true))
-                    : _filtered.isEmpty && _nextCursor == null
+                    : filtered.isEmpty && _nextCursor == null
                         ? _EmptyState(filter: _filter)
                         : ListView.builder(
                             padding: const EdgeInsets.fromLTRB(16, 8, 16, 28),
-                            itemCount: _filtered.length +
+                            itemCount: filtered.length +
                                 (_nextCursor != null ? 1 : 0),
                             itemBuilder: (context, idx) {
-                              if (idx == _filtered.length) {
+                              if (idx == filtered.length) {
                                 // Load more button
                                 return Padding(
                                   padding: const EdgeInsets.all(16),
@@ -208,7 +246,7 @@ class _WalletTransactionHistoryScreenState
                                         ),
                                 );
                               }
-                              final tx = _filtered[idx];
+                              final tx = filtered[idx];
                               return Padding(
                                 padding: const EdgeInsets.only(bottom: 10),
                                 child: GestureDetector(

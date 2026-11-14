@@ -1514,4 +1514,11 @@
   "txDetailContract": "Sözleşme",
   "txDetailHash": "Hash",
   "txDetailOpenExplorer": "Explorer’da aç",
-  "txDetailCopied": "{label} kopyalandı"}
+  "txDetailCopied": "{label} kopyalandı",
+  "copyAddress": "Adresi kopyala",
+  "edit": "Düzenle",
+  "delete": "Sil",
+  "cancel": "İptal",
+  "save": "Kaydet",
+  "addressBookRecentLabel": "Son {short}"
+}

@@ -27,6 +27,7 @@ import 'package:ibiti_guardian/services/swap/zerox_swap_provider.dart';
 import 'package:ibiti_guardian/services/swap/jupiter_swap_provider.dart';
 import 'package:ibiti_guardian/services/swap/sunswap_provider.dart';
 import 'package:ibiti_guardian/services/audit_log_service.dart';
+import 'package:ibiti_guardian/utils/guardian_logger.dart';
 import 'package:ibiti_guardian/services/execution/tx_status_poller.dart';
 import 'package:ibiti_guardian/models/tx_status.dart';
 import 'package:ibiti_guardian/config/privy_chain_registry.dart';
@@ -60,6 +61,22 @@ class GuardianExecutionController {
   final _orchestrator = WalletOrchestrator.instance;
   final _delegation = DelegationController.instance;
   static const Duration _swapQuoteTtl = Duration(minutes: 5);
+  static const _log = GuardianLogger('ExecController');
+
+  /// A confirmation that stops before the transaction is dispatched used to
+  /// leave no trace: nothing in the journal, nothing in the log. Every such
+  /// stop is now written to both.
+  AssistantResponse _stopBeforeDispatch(
+      TransactionRequest tx, String stage, String message) {
+    _log.w('confirm stopped [$stage]: $message');
+    AuditLogService.instance.recordPolicyBlock(
+      intentType: tx.sourceIntent.type,
+      actionLabel: tx.typeLabel,
+      summary: tx.displaySummary,
+      reason: message,
+    );
+    return AssistantResponse.error(message, intent: tx.sourceIntent);
+  }
 
   // ── P0 Safety: Double-execution guard ──────────────────────────────────────
   // Prevents double-tap on Confirm from dispatching the same tx twice.
@@ -302,13 +319,17 @@ class GuardianExecutionController {
 
     if (_requiresSimulationGate(tx, staticSim, policy) &&
         (!rpcSim.success || rpcSim.estimatedGas == null)) {
-      return AssistantResponse.error(
-        'This action requires a successful simulation before it can be confirmed.',
-        intent: tx.sourceIntent,
+      return _stopBeforeDispatch(
+        tx,
+        'simulation',
+        'This action requires a successful simulation before it can be '
+            'confirmed.${rpcSim.revertReason != null ? ' ${rpcSim.revertReason}' : ''}',
       );
     }
 
     if (policy.blocked) {
+      _log.w('preview blocked by policy: ${policy.reason} '
+          'rules=${policy.appliedRules.join(',')}');
       AuditLogService.instance.recordPolicyBlock(
         intentType: tx.sourceIntent.type,
         actionLabel: tx.typeLabel,
@@ -361,26 +382,30 @@ class GuardianExecutionController {
     // ── P0 Safety: Double-execution guard ──────────────────────────────────
     final key = _executionKey(tx);
     if (!_inFlightKeys.add(key)) {
-      return AssistantResponse.error(
-        'This transaction is already being processed. Please wait.',
-        intent: tx.sourceIntent,
-      );
+      return _stopBeforeDispatch(tx, 'in_flight',
+          'This transaction is already being processed. Please wait.');
     }
 
     try {
+      _log.i('confirm start: ${tx.typeLabel} ${tx.displaySummary} '
+          'chain=${tx.chainKey} path=${path.name}');
       if (!_wallet.isConnected) {
-        return AssistantResponse.error('Wallet disconnected mid-execution.',
-            intent: tx.sourceIntent);
+        return _stopBeforeDispatch(
+            tx, 'wallet', 'Wallet disconnected mid-execution.');
       }
 
       // ── P0 Safety: Daily limit pre-check ──────────────────────────────────
       final dailyBlock = _checkDailyLimit(tx);
-      if (dailyBlock != null) return dailyBlock;
+      if (dailyBlock != null) {
+        return _stopBeforeDispatch(tx, 'daily_limit', dailyBlock.message);
+      }
 
       // Re-run preview immediately before execution to prevent stale confirms:
       // policy/network/path may have changed while the user was reading preview.
       final revalidated = await previewTransaction(tx);
       if (revalidated.type == ResponseType.error) {
+        // previewTransaction journals its policy blocks itself; log the rest.
+        _log.w('confirm stopped [revalidate]: ${revalidated.message}');
         return revalidated;
       }
       final aiGate = _checkAiTransactionControl(
@@ -388,21 +413,28 @@ class GuardianExecutionController {
         TransactionSimulator.analyze(tx),
       );
       if (aiGate != null) {
-        return aiGate;
+        return _stopBeforeDispatch(tx, 'ai_gate', aiGate.message);
       }
 
       final expectedPath = _executor.normalizeExecutionPath(tx, path);
       final resolvedPath = revalidated.executionPath ?? expectedPath;
       if (resolvedPath != expectedPath) {
-        return AssistantResponse.error(
-          'Execution route changed after preview. Please review and confirm again.',
-          intent: tx.sourceIntent,
+        return _stopBeforeDispatch(
+          tx,
+          'route',
+          'Execution route changed after preview '
+              '(${expectedPath.name} -> ${resolvedPath.name}). '
+              'Please review and confirm again.',
         );
       }
 
       final result = await _executor.dispatchConfiguredPath(tx, resolvedPath);
+      _log.i('confirm result: ${result.type.name} ${result.message}');
       _commitDailyUsage(tx, result);
       return result;
+    } catch (e, st) {
+      _log.e('confirm threw: $e\n$st');
+      return _stopBeforeDispatch(tx, 'exception', 'Send failed: $e');
     } finally {
       _inFlightKeys.remove(key);
     }

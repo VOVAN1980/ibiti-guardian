@@ -566,7 +566,7 @@
   "walletSettingsTokenFilters": "Token filters",
   "walletSettingsHideZero": "Hide zero-balance tokens",
   "walletSettingsSpamFilter": "Spam token filter",
-  "walletSettingsSpamFilterSub": "Hide tokens worth < $0.01",
+  "walletSettingsSpamFilterSub": "Hide tokens worth < $0.01 and spam in History",
   "walletSettingsManageTokens": "Manage tokens",
   "walletSettingsAddressBook": "Address book",
   "walletAddressBookTitle": "Address book",
@@ -1514,4 +1514,11 @@
   "txDetailContract": "Contract",
   "txDetailHash": "Hash",
   "txDetailOpenExplorer": "Open in explorer",
-  "txDetailCopied": "{label} copied"}
+  "txDetailCopied": "{label} copied",
+  "copyAddress": "Copy address",
+  "edit": "Edit",
+  "delete": "Delete",
+  "cancel": "Cancel",
+  "save": "Save",
+  "addressBookRecentLabel": "Recent {short}"
+}

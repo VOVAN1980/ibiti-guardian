@@ -82,6 +82,12 @@ class PortfolioAdapter extends ChangeNotifier {
   factory PortfolioAdapter() => instance;
   PortfolioAdapter._internal();
 
+  /// True when [contract] is one of the wallet's own core tokens on
+  /// [chainKey] (e.g. IBITI and USDT on BNB Chain).
+  static bool isCoreToken(String chainKey, String contract) =>
+      (_knownTokens[chainKey] ?? const <_KnownToken>[]).any(
+          (t) => t.contract.toLowerCase() == contract.toLowerCase());
+
   static const _log = GuardianLogger('PortfolioAdapter');
 
   final PortfolioService _portfolioService = PortfolioService();

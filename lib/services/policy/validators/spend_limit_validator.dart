@@ -1,3 +1,4 @@
+import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/services/policy/validators/epk_validator.dart';
 import 'package:ibiti_guardian/services/policy/validators/epk_validator_result.dart';
@@ -15,6 +16,13 @@ class SpendLimitValidator extends EPKValidator {
 
     if (tx.type != TransactionType.send) {
       // Limits generally apply to sending funds, approvals are handled elsewhere
+      return EpkValidatorResult.pass();
+    }
+
+    // A manual send from the wallet's Send window is already held to the
+    // wallet Send limit in dollars by the policy engine (priced, not
+    // stablecoin-only). This V1 check would refuse every BNB/ETH send outright.
+    if (tx.sourceIntent.origin == IntentOrigin.wallet) {
       return EpkValidatorResult.pass();
     }
 

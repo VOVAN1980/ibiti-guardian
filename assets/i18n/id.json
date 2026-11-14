@@ -1514,4 +1514,11 @@
   "txDetailContract": "Kontrak",
   "txDetailHash": "Hash",
   "txDetailOpenExplorer": "Buka di explorer",
-  "txDetailCopied": "{label} disalin"}
+  "txDetailCopied": "{label} disalin",
+  "copyAddress": "Salin alamat",
+  "edit": "Ubah",
+  "delete": "Hapus",
+  "cancel": "Batal",
+  "save": "Simpan",
+  "addressBookRecentLabel": "Terbaru {short}"
+}

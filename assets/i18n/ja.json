@@ -1514,4 +1514,11 @@
   "txDetailContract": "コントラクト",
   "txDetailHash": "ハッシュ",
   "txDetailOpenExplorer": "エクスプローラーで開く",
-  "txDetailCopied": "{label}をコピーしました"}
+  "txDetailCopied": "{label}をコピーしました",
+  "copyAddress": "アドレスをコピー",
+  "edit": "編集",
+  "delete": "削除",
+  "cancel": "キャンセル",
+  "save": "保存",
+  "addressBookRecentLabel": "最近 {short}"
+}
