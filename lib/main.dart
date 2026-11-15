@@ -14,6 +14,7 @@ import "package:ibiti_guardian/services/security/ai_control_service.dart";
 import "package:ibiti_guardian/services/policy/policy_profile_store.dart";
 import "package:ibiti_guardian/services/vault/epk_policy_manager.dart";
 import "package:ibiti_guardian/services/execution/tx_registry.dart";
+import "package:ibiti_guardian/services/wallet/address_book_service.dart";
 import "package:ibiti_guardian/services/assistant/user_memory_service.dart";
 import "package:ibiti_guardian/screens/wallet/components/wallet_send_modal.dart";
 import "package:ibiti_guardian/services/voice/voice_turn_controller.dart";
@@ -86,6 +87,7 @@ Future<void> _initCoreServices() async {
     UserMemoryService.instance.init(),
     WalletSendModal.loadMuteState(),
     TxRegistry.instance.load(),
+    AddressBookService.instance.ready,
   ]);
 
   // ── Phase 3: PolicyProfileStore depends on AiControlService + EPKPolicyManager

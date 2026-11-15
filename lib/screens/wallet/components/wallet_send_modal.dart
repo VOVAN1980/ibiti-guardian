@@ -518,9 +518,37 @@ class _WalletSendModalState extends State<WalletSendModal>
         path,
       );
 
+      final sent = result.type != ResponseType.error && result.detail != null;
+
+      // A sent transaction is tracked and its recipient remembered even if
+      // this window was closed while it was being sent.
+      if (sent) {
+        if (tx.chainId > 0 && result.detail!.startsWith('0x')) {
+          TxStatusPoller.instance.start(
+            txHash: result.detail!,
+            chainId: tx.chainId,
+            walletAddress: tx.fromAddress,
+            operationLabel: tx.displaySummary,
+            assetLabel: '${tx.amount ?? ''} ${tx.tokenSymbol ?? ''}'.trim(),
+            onStatus: (_) {},
+          );
+        }
+
+        final recipient = tx.toAddress.trim();
+        if (recipient.isNotEmpty) {
+          final short = recipient.substring(
+              0, recipient.length > 6 ? 6 : recipient.length);
+          final label = t.t('addressBookRecentLabel', {
+            'short': short,
+            'default': 'Recent $short',
+          });
+          AddressBookService.instance.addIfMissing(label, recipient);
+        }
+      }
+
       if (!mounted) return;
 
-      if (result.type == ResponseType.error || result.detail == null) {
+      if (!sent) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(
           content: Text(result.message),
           backgroundColor: GuardianColors.danger,
@@ -528,34 +556,9 @@ class _WalletSendModalState extends State<WalletSendModal>
         return;
       }
 
-      if (tx.chainId > 0 && result.detail!.startsWith('0x')) {
-        TxStatusPoller.instance.start(
-          txHash: result.detail!,
-          chainId: tx.chainId,
-          walletAddress: tx.fromAddress,
-          operationLabel: tx.displaySummary,
-          assetLabel: '${tx.amount ?? ''} ${tx.tokenSymbol ?? ''}'.trim(),
-          onStatus: (_) {},
-        );
-      }
-
       final shortHash = result.detail!.length > 12
           ? '${result.detail!.substring(0, 12)}...'
           : result.detail!;
-
-      final recipient = _addressController.text.trim();
-      if (recipient.isNotEmpty &&
-          !AddressBookService.instance.entries.any(
-            (entry) => entry.address.toLowerCase() == recipient.toLowerCase(),
-          )) {
-        final label = t.t('addressBookRecentLabel', {
-          'short': recipient.substring(
-              0, recipient.length > 6 ? 6 : recipient.length),
-          'default':
-              'Recent ${recipient.substring(0, recipient.length > 6 ? 6 : recipient.length)}',
-        });
-        AddressBookService.instance.add(label, recipient);
-      }
 
       Navigator.pop(context);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
