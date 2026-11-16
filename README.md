@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/version-1.0.0-informational?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/flutter-%3E%3D_3.3.4-02569B?style=flat-square&logo=flutter" alt="Flutter">
-  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
+  <a href="LICENSING.md"><img src="https://img.shields.io/badge/license-source--available-orange?style=flat-square" alt="License: IBITI Labs Guardian License 1.0"></a>
   <img src="https://img.shields.io/badge/platform-Android_|_iOS-3DDC84?style=flat-square&logo=android" alt="Platforms">
 </p>
 
@@ -168,4 +168,13 @@ graph TD
 
 ## 🛡️ License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+IBITI Guardian is **source-available, not open source**. It is published under the
+**IBITI Labs Guardian License 1.0**: you may read and audit the code, build and test it privately, use an
+official build for yourself, and contribute. Hackathons and other competitions, commercial use and
+publishing or distributing the app or a modified version require written permission from IBITI Labs
+(info@ibiticoin.com).
+
+See [LICENSE](LICENSE) for the terms and [LICENSING.md](LICENSING.md) for a plain-words summary.
+Third-party code and sound effects keep their own licenses ([THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+Earlier commits (up to and including `5bc6f06`, 16 November 2026) were published under the MIT License and
+keep it.

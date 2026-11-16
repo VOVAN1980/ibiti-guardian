@@ -7,7 +7,7 @@ Please read this disclaimer carefully before using **IBITI Guardian**. By using 
 ---
 
 ## 1. Experimental Software
-IBITI Guardian is experimental software provided "as is" and "as available", without warranty of any kind, express or implied. Under no circumstances shall the authors, contributors, or copyright holders be liable for any claim, damages, or other liability arising from or in connection with the software or its use.
+IBITI Guardian is experimental software provided "as is" and "as available", without warranty of any kind, express or implied. Liability is limited as set out in section 10 of [`LICENSE`](LICENSE): to the maximum extent permitted by law, while liability for intent or gross negligence is not limited. If this disclaimer and `LICENSE` differ, `LICENSE` prevails.
 
 ## 2. No Financial Advice
 Nothing in this software, its documentation, or its AI-generated voice/text outputs constitutes financial, investment, or legal advice. The AI assistant (Jarvis) operates on parsed parameters and heuristic rules; it does not analyze market sentiment, financial viability, or suitability of any asset for your portfolio.

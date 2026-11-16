@@ -1,7 +1,6 @@
 import 'package:ibiti_guardian/services/security/security_event_service.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/services/alerts/notification_service.dart';
-import 'package:ibiti_guardian/services/audio_manager.dart';
 import 'package:ibiti_guardian/models/security_event.dart';
 
 class AlertService {
@@ -74,14 +73,12 @@ class AlertService {
           event.message,
           payload: payload,
         );
-        AudioManager.instance.playCritical();
       } else {
         NotificationService.instance.showWarningAlert(
           event.title,
           event.message,
           payload: payload,
         );
-        AudioManager.instance.playAlert();
       }
     }
   }

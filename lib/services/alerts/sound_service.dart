@@ -17,58 +17,11 @@ class SoundService {
     // Preload sounds if needed
   }
 
-  DateTime _lastAlertPlay = DateTime.fromMillisecondsSinceEpoch(0);
-
-  Future<void> playAlert() async {
-    final now = DateTime.now();
-    if (now.difference(_lastAlertPlay).inMilliseconds < 2000) return;
-    _lastAlertPlay = now;
-
-    final soundId =
-        SettingsService.instance.settings.soundSettings.selectedAlertSoundId;
-    await _stopAndPlay('sounds/alert_$soundId.wav', intensive: false, duration: 3000);
-  }
-
-  Future<void> previewAlertSound(String soundId) async {
-    await _stopAndPlay('sounds/alert_$soundId.wav', intensive: false);
-  }
+  // Alerts have no sound of their own: their notification vibrates. The app
+  // plays only the boot sounds and the coin sound on a wallet top-up.
 
   Future<void> playSound(String fileName) async {
     await _stopAndPlay('sounds/$fileName', intensive: false, duration: 2000);
-  }
-
-  Future<void> playCritical() async {
-    final settings = SettingsService.instance.settings.soundSettings;
-    if (!settings.criticalAlarmEnabled) return;
-
-    final soundId = settings.selectedCriticalSoundId;
-    final assetPath = soundId == 'lion_roar'
-        ? 'sounds/lion_roar.wav'
-        : 'sounds/critical_$soundId.wav';
-    await _stopAndPlay(assetPath, intensive: false);
-  }
-
-  Future<void> previewCriticalSound(String soundId) async {
-    final assetPath = soundId == 'lion_roar'
-        ? 'sounds/lion_roar.wav'
-        : 'sounds/critical_$soundId.wav';
-    await _stopAndPlay(assetPath, intensive: false);
-  }
-
-  Future<void> playPanic() async {
-    final settings = SettingsService.instance.settings.soundSettings;
-    if (!settings.panicAlarmEnabled) return;
-
-    final soundId = settings.selectedPanicSoundId;
-    final assetPath =
-        soundId == 'lion_roar' ? 'sounds/lion_roar.wav' : 'sounds/$soundId.wav';
-    await _stopAndPlay(assetPath, intensive: true);
-  }
-
-  Future<void> previewPanicSound(String soundId) async {
-    final assetPath =
-        soundId == 'lion_roar' ? 'sounds/lion_roar.wav' : 'sounds/$soundId.wav';
-    await _stopAndPlay(assetPath, intensive: true);
   }
 
   /// Play the user's selected wallet top-up sound (coins).

@@ -18,8 +18,7 @@ import 'package:ibiti_guardian/utils/guardian_logger.dart';
 //   price change ≥ thresholdPct% within windowMinutes
 //
 // When detected:
-//   1. Push notification via NotificationService.showPriceAlert()
-//   2. Alert sound + vibration via SoundService.playAlert()
+//   1. Push notification via NotificationService.showPriceAlert() (vibrates)
 //
 // NEVER auto-trades. NEVER buys or sells. NEVER returns old JARVIS auto-trading.
 // This is a pure notification service — user decides what to do.

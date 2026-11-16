@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The top-up notification plays these by name at runtime, which the resource
+     shrinker of a release build cannot see. Without this they are removed and
+     the top-up notification is not shown. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/coins_1,@raw/coins_2,@raw/coins_3" />

@@ -289,11 +289,13 @@ class WalletTopUpDetector with WidgetsBindingObserver {
     // Always show notification (works in background too)
     final body = _buildBody(increases);
     _log.d('📲 Triggering notification: $body | ${summary.networkName}');
-    NotificationService.instance.showTopUpNotification(
-      title: 'Пополнение кошелька',
-      body: body,
-      chainLabel: summary.networkName,
-    );
+    NotificationService.instance
+        .showTopUpNotification(
+          title: 'Пополнение кошелька',
+          body: body,
+          chainLabel: summary.networkName,
+        )
+        .catchError((Object e) => _log.e('Top-up notification failed', e));
   }
 
   void _snapshotBalances(PortfolioSummary summary, String walletKey) {

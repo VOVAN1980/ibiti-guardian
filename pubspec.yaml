@@ -63,8 +63,6 @@ flutter:
   uses-material-design: true
   assets:
     - assets/logo/
-    - assets/mascot/
-    - assets/mascot/neural/
     - assets/i18n/
     - assets/sounds/
     - assets/abi/

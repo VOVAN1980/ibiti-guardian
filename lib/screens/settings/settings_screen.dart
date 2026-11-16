@@ -614,57 +614,6 @@ class _SoundsScreenState extends State<_SoundsScreen> {
               },
             ),
             const SizedBox(height: 20),
-            _SectionHeader(label: t.t('settingsSoundSectionNotifications')),
-            _ToggleRow(
-              title: t.t('settingsSoundCriticalAlarm'),
-              subtitle: t.t('settingsSoundCriticalAlarmSub'),
-              value: _ss.criticalAlarmEnabled,
-              onChanged: (v) {
-                AudioManager.instance.stopAll();
-                _update(_ss.copyWith(criticalAlarmEnabled: v));
-              },
-            ),
-            _ToggleRow(
-              title: t.t('settingsSoundPanicAlarm'),
-              subtitle: t.t('settingsSoundPanicAlarmSub'),
-              value: _ss.panicAlarmEnabled,
-              onChanged: (v) {
-                AudioManager.instance.stopAll();
-                _update(_ss.copyWith(panicAlarmEnabled: v));
-              },
-            ),
-            const SizedBox(height: 20),
-            _SectionHeader(label: t.t('settingsSectionSoundSelection')),
-            _SoundPicker(
-              label: t.t('settingsSoundAlertSelect'),
-              options: SoundSettings.alertSounds,
-              selected: _ss.selectedAlertSoundId,
-              onSelect: (id) async {
-                await AudioManager.instance.previewAlertSound(id);
-                _update(_ss.copyWith(selectedAlertSoundId: id));
-              },
-            ),
-            const SizedBox(height: 12),
-            _SoundPicker(
-              label: t.t('settingsSoundCriticalSelect'),
-              options: SoundSettings.criticalSounds,
-              selected: _ss.selectedCriticalSoundId,
-              onSelect: (id) async {
-                await AudioManager.instance.previewCriticalSound(id);
-                _update(_ss.copyWith(selectedCriticalSoundId: id));
-              },
-            ),
-            const SizedBox(height: 12),
-            _SoundPicker(
-              label: t.t('settingsSoundPanicSelect'),
-              options: SoundSettings.panicSounds,
-              selected: _ss.selectedPanicSoundId,
-              onSelect: (id) async {
-                await AudioManager.instance.previewPanicSound(id);
-                _update(_ss.copyWith(selectedPanicSoundId: id));
-              },
-            ),
-            const SizedBox(height: 20),
             _SectionHeader(label: 'Пополнение кошелька'),
             _ToggleRow(
               title: 'Звук пополнения',
@@ -1445,14 +1394,14 @@ class _AboutScreenState extends State<_AboutScreen> {
                     title: t.t('settingsAboutPrivacy'),
                     icon: Icons.privacy_tip_outlined,
                     onTap: () => _launch(
-                        'https://github.com/VOVAN1980/IBITI Guardian/blob/main/privacy.html'),
+                        'https://github.com/VOVAN1980/ibiti-guardian/blob/main/PRIVACY.md'),
                   ),
                   _Divider(),
                   _AboutTile(
                     title: LocalizationService.instance.t('settingsAboutTerms'),
                     icon: Icons.gavel_outlined,
-                    onTap: () =>
-                        _launch('https://github.com/VOVAN1980/IBITI Guardian'),
+                    onTap: () => _launch(
+                        'https://github.com/VOVAN1980/ibiti-guardian/blob/main/LICENSING.md'),
                   ),
                   _Divider(),
                   _AboutTile(
@@ -1466,7 +1415,7 @@ class _AboutScreenState extends State<_AboutScreen> {
                     title: LocalizationService.instance.t('settingsAboutRate'),
                     icon: Icons.star_outline_rounded,
                     onTap: () =>
-                        _launch('https://github.com/VOVAN1980/IBITI Guardian'),
+                        _launch('https://github.com/VOVAN1980/ibiti-guardian'),
                   ),
                 ],
               ),

@@ -4,7 +4,6 @@ import 'package:ibiti_guardian/services/alerts/notification_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_interface.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_registry.dart';
 import 'package:ibiti_guardian/services/wallet/market_price_alert_service.dart';
-import 'package:ibiti_guardian/services/alerts/sound_service.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
@@ -155,14 +154,7 @@ class PriceAlertMonitor {
       _log.e('Notification failed', e);
     }
 
-    // 3. Play alert sound + vibration
-    try {
-      SoundService.instance.playAlert();
-    } catch (e) {
-      _log.e('Sound/vibration failed', e);
-    }
-
-    // 4. Remove the one-shot alert
+    // 3. Remove the one-shot alert (the notification itself vibrates)
     await MarketPriceAlertService.instance.removeAlert(symbol, alert.isAbove);
   }
 }

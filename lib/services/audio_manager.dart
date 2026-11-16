@@ -14,7 +14,7 @@ import 'package:ibiti_guardian/services/alerts/sound_service.dart';
 ///
 /// Usage:
 ///   await AudioManager.instance.speakTts('Transaction confirmed');
-///   await AudioManager.instance.playAlert();
+///   await AudioManager.instance.playTopUp();
 ///   await AudioManager.instance.stopAll();
 class AudioManager {
   AudioManager._();
@@ -81,75 +81,15 @@ class AudioManager {
     }
   }
 
-  // ── Alerts (priority: high) ─────────────────────────────────────────────────
+  // Alerts have no sound of their own: their notification vibrates.
 
-  /// Play an alert sound. Interrupts TTS but not panic.
-  Future<void> playAlert() async {
-    if (!_acquire(AudioPriority.high)) return;
-    try {
-      await _sound.playAlert();
-    } finally {
-      _release(AudioPriority.high);
-    }
-  }
-
-  /// Play a critical alarm. Interrupts TTS but not panic.
-  Future<void> playCritical() async {
-    if (!_acquire(AudioPriority.high)) return;
-    try {
-      await _sound.playCritical();
-    } finally {
-      _release(AudioPriority.high);
-    }
-  }
-
-  // ── Panic (priority: critical — NOTHING interrupts this) ────────────────────
-
-  /// Play a panic alarm. Interrupts EVERYTHING.
-  Future<void> playPanic() async {
-    if (!_acquire(AudioPriority.critical)) return;
-    try {
-      await _sound.playPanic();
-    } finally {
-      _release(AudioPriority.critical);
-    }
-  }
-
-  // ── Low priority (preview, boot sounds) ─────────────────────────────────────
+  // ── Low priority (boot sounds) ──────────────────────────────────────────────
 
   /// Play a generic sound file. Lowest priority — interrupted by anything.
   Future<void> playSound(String fileName) async {
     if (!_acquire(AudioPriority.low)) return;
     try {
       await _sound.playSound(fileName);
-    } finally {
-      _release(AudioPriority.low);
-    }
-  }
-
-  /// Preview sounds from settings.
-  Future<void> previewAlertSound(String soundId) async {
-    if (!_acquire(AudioPriority.low)) return;
-    try {
-      await _sound.previewAlertSound(soundId);
-    } finally {
-      _release(AudioPriority.low);
-    }
-  }
-
-  Future<void> previewCriticalSound(String soundId) async {
-    if (!_acquire(AudioPriority.low)) return;
-    try {
-      await _sound.previewCriticalSound(soundId);
-    } finally {
-      _release(AudioPriority.low);
-    }
-  }
-
-  Future<void> previewPanicSound(String soundId) async {
-    if (!_acquire(AudioPriority.low)) return;
-    try {
-      await _sound.previewPanicSound(soundId);
     } finally {
       _release(AudioPriority.low);
     }

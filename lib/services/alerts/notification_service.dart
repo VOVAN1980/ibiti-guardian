@@ -44,17 +44,12 @@ class NotificationService {
       onDidReceiveNotificationResponse: _onTap,
     );
 
-    // Clean up orphaned channels from old dynamic-ID scheme.
-    // Previously we created 'price_alerts_standard', 'price_alerts_cyber', etc.
-    // Now we use a single 'price_alerts' channel.
+    // Remove the channels of older builds. They played alarm and siren sounds
+    // that are no longer in the app; alerts now just vibrate.
     final android = _notifications.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
     if (android != null) {
-      for (final old in [
-        'price_alerts_standard',
-        'price_alerts_cyber',
-        'price_alerts_minimal'
-      ]) {
+      for (final old in _retiredChannels) {
         try {
           await android.deleteNotificationChannel(channelId: old);
         } catch (e) {
@@ -186,16 +181,33 @@ class NotificationService {
     });
   }
 
+  /// Channels created by older builds, removed at start-up.
+  static const List<String> _retiredChannels = [
+    'price_alerts_standard',
+    'price_alerts_cyber',
+    'price_alerts_minimal',
+    'price_alerts_default',
+    'app_updates',
+    'critical_v2_alarm_1',
+    'critical_v2_alarm_premium',
+    'critical_v2_siren',
+    'critical_v2_lion_roar',
+    'warning_v2_standard',
+    'warning_v2_cyber',
+    'warning_v2_minimal',
+  ];
+
+  /// Alerts have no sound of their own: they vibrate like an ordinary
+  /// notification. Android fixes a channel's vibration when the channel is
+  /// first created, so "vibration off" uses its own channel.
+  static String _alertChannel(String base, bool vibrate) =>
+      vibrate ? base : '${base}_novib';
+
   // ── Price alert notification ID counter (unique per alert) ──────────────
   int _priceAlertIdCounter = 500;
 
-  /// Tracks last used sound so we can delete the old Android channel on change.
-  String? _lastAlertSoundId;
-
   /// Show a price alert as a normal, tappable notification.
-  /// Respects existing SoundSettings: sound on/off, vibration on/off,
-  /// and user-selected alert sound from app settings.
-  /// Falls back to default sound if custom sound fails.
+  /// No sound; vibrates when vibration is on in the app's settings.
   Future<void> showPriceAlert({
     required String title,
     required String body,
@@ -220,48 +232,26 @@ class NotificationService {
     }
 
     final id = _priceAlertIdCounter++;
-    final soundSettings = SettingsService.instance.settings.soundSettings;
-    final encodedPayload = json.encode(payload);
+    final vibrate =
+        SettingsService.instance.settings.soundSettings.vibrationEnabled;
 
-    // Try with user's custom sound first
     try {
-      final soundId = soundSettings.selectedAlertSoundId;
-      final resourceName = _mapSoundToResource('alert', soundId);
-      final channelId = 'price_alerts_$soundId';
-
-      // Android caches channel sound — if user changed sound, delete old channel.
-      if (_lastAlertSoundId != null && _lastAlertSoundId != soundId) {
-        final android = _notifications.resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>();
-        try {
-          await android?.deleteNotificationChannel(
-              channelId: 'price_alerts_$_lastAlertSoundId');
-          _log.d('Deleted old channel: price_alerts_$_lastAlertSoundId');
-        } catch (e) {
-          _log.d('old channel delete: $e');
-        }
-      }
-      _lastAlertSoundId = soundId;
-
       final AndroidNotificationDetails androidDetails =
           AndroidNotificationDetails(
-        channelId,
+        _alertChannel('price_alerts_v3', vibrate),
         'Price Alerts',
         channelDescription: 'Market price target notifications',
         importance: Importance.high,
         priority: Priority.high,
-        playSound: soundSettings.soundEnabled,
-        sound: soundSettings.soundEnabled
-            ? RawResourceAndroidNotificationSound(resourceName)
-            : null,
-        enableVibration: soundSettings.vibrationEnabled,
+        playSound: false,
+        enableVibration: vibrate,
         autoCancel: true,
       );
 
       final NotificationDetails platformDetails = NotificationDetails(
         android: androidDetails,
-        iOS: DarwinNotificationDetails(
-          presentSound: soundSettings.soundEnabled,
+        iOS: const DarwinNotificationDetails(
+          presentSound: false,
           presentAlert: true,
           presentBadge: true,
         ),
@@ -272,46 +262,11 @@ class NotificationService {
         title: title,
         body: body,
         notificationDetails: platformDetails,
-        payload: encodedPayload,
+        payload: json.encode(payload),
       );
-      _log.d('Price alert notification shown successfully (custom sound)');
-      return;
+      _log.d('Price alert notification shown');
     } catch (e) {
-      _log.e('Custom sound notification failed, trying fallback', e);
-    }
-
-    // Fallback: simple notification with default system sound
-    try {
-      const AndroidNotificationDetails fallback = AndroidNotificationDetails(
-        'price_alerts_default',
-        'Price Alerts',
-        channelDescription: 'Market price target notifications',
-        importance: Importance.high,
-        priority: Priority.high,
-        playSound: true,
-        enableVibration: true,
-        autoCancel: true,
-      );
-
-      const NotificationDetails fallbackDetails = NotificationDetails(
-        android: fallback,
-        iOS: DarwinNotificationDetails(
-          presentSound: true,
-          presentAlert: true,
-          presentBadge: true,
-        ),
-      );
-
-      await _notifications.show(
-        id: id,
-        title: title,
-        body: body,
-        notificationDetails: fallbackDetails,
-        payload: encodedPayload,
-      );
-      _log.d('Price alert notification shown (fallback/default sound)');
-    } catch (e) {
-      _log.e('BOTH notification attempts failed!', e);
+      _log.e('Price alert notification failed', e);
     }
   }
 
@@ -322,28 +277,24 @@ class NotificationService {
     final String body = LocalizationService.instance
         .t('settingsUpdateNewMsg', {'version': version});
 
-    final soundSettings = SettingsService.instance.settings.soundSettings;
-    final soundId =
-        soundSettings.selectedAlertSoundId; // Using alert sound for updates
-    final resourceName = _mapSoundToResource('alert', soundId);
+    final vibrate =
+        SettingsService.instance.settings.soundSettings.vibrationEnabled;
 
     final AndroidNotificationDetails androidDetails =
         AndroidNotificationDetails(
-      'app_updates',
+      _alertChannel('app_updates_v2', vibrate),
       'Software Updates',
       channelDescription: 'Notifications for new app versions',
       importance: Importance.max,
       priority: Priority.high,
-      playSound: soundSettings.soundEnabled,
-      sound: soundSettings.soundEnabled
-          ? RawResourceAndroidNotificationSound(resourceName)
-          : null,
+      playSound: false,
+      enableVibration: vibrate,
     );
 
     final NotificationDetails platformDetails = NotificationDetails(
       android: androidDetails,
       iOS: const DarwinNotificationDetails(
-        presentSound: true,
+        presentSound: false,
         presentAlert: true,
       ),
     );
@@ -364,32 +315,25 @@ class NotificationService {
       return;
     }
 
-    final soundSettings = SettingsService.instance.settings.soundSettings;
-    final soundId = soundSettings.selectedCriticalSoundId;
-    final resourceName = _mapSoundToResource('critical', soundId);
-
-    // Dynamic channel ID to force sound update on Android
-    final channelId = 'critical_v2_$soundId';
+    final vibrate =
+        SettingsService.instance.settings.soundSettings.vibrationEnabled;
 
     final AndroidNotificationDetails androidDetails =
         AndroidNotificationDetails(
-      channelId,
+      _alertChannel('critical_v3', vibrate),
       'Critical Threats',
-      channelDescription: 'Emergency alerts with custom sound',
+      channelDescription: 'Alerts about critical threats',
       importance: Importance.max,
       priority: Priority.high,
-      enableVibration: soundSettings.vibrationEnabled,
-      playSound: soundSettings.soundEnabled,
-      sound: soundSettings.soundEnabled
-          ? RawResourceAndroidNotificationSound(resourceName)
-          : null,
+      enableVibration: vibrate,
+      playSound: false,
       color: const Color(0xFFFF4B4B),
     );
 
     final NotificationDetails platformDetails = NotificationDetails(
       android: androidDetails,
       iOS: const DarwinNotificationDetails(
-        presentSound: true,
+        presentSound: false,
         presentAlert: true,
         presentBadge: true,
       ),
@@ -402,23 +346,6 @@ class NotificationService {
       notificationDetails: platformDetails,
       payload: payload != null ? json.encode(payload) : null,
     );
-  }
-
-  String _mapSoundToResource(String type, String soundId) {
-    if (soundId == 'lion_roar') return 'lion_roar';
-
-    switch (type) {
-      case 'critical':
-        return 'critical_$soundId';
-      case 'alert':
-        return 'alert_$soundId';
-      case 'panic':
-        // Some panic sounds share names or are dedicated
-        if (soundId == 'panic_ultra' || soundId == 'emergency') return soundId;
-        return soundId;
-      default:
-        return 'alert_standard';
-    }
   }
 
   bool _isQuietMode() {
@@ -458,31 +385,24 @@ class NotificationService {
       {Map<String, dynamic>? payload}) async {
     if (_isQuietMode()) return;
 
-    final soundSettings = SettingsService.instance.settings.soundSettings;
-    final soundId = soundSettings.selectedAlertSoundId;
-    final resourceName = _mapSoundToResource('alert', soundId);
-
-    // Dynamic channel ID
-    final channelId = 'warning_v2_$soundId';
+    final vibrate =
+        SettingsService.instance.settings.soundSettings.vibrationEnabled;
 
     final AndroidNotificationDetails androidDetails =
         AndroidNotificationDetails(
-      channelId,
+      _alertChannel('warning_v3', vibrate),
       'Security Warnings',
       channelDescription: 'Alerts for high-risk approvals',
       importance: Importance.high,
       priority: Priority.high,
-      enableVibration: soundSettings.vibrationEnabled,
-      playSound: soundSettings.soundEnabled,
-      sound: soundSettings.soundEnabled
-          ? RawResourceAndroidNotificationSound(resourceName)
-          : null,
+      enableVibration: vibrate,
+      playSound: false,
     );
 
     final NotificationDetails platformDetails = NotificationDetails(
       android: androidDetails,
       iOS: const DarwinNotificationDetails(
-        presentSound: true,
+        presentSound: false,
         presentAlert: true,
       ),
     );
