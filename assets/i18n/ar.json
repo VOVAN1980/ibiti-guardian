@@ -1520,5 +1520,16 @@
   "delete": "حذف",
   "cancel": "إلغاء",
   "save": "حفظ",
-  "addressBookRecentLabel": "حديث {short}"
+  "addressBookRecentLabel": "حديث {short}",
+  "addressBookTrustAi": "ثقة للذكاء الاصطناعي",
+  "addressBookUntrustAi": "إزالة من الموثوقة",
+  "addressBookTrustedBadge": "موثوق للذكاء الاصطناعي",
+  "addressBookTrustedDone": "يمكن للذكاء الاصطناعي الآن الإرسال إلى هذا العنوان",
+  "addressBookUntrustedDone": "لم يعد بإمكان الذكاء الاصطناعي الإرسال إلى هذا العنوان",
+  "trustedAddressesTitle": "العناوين الموثوقة",
+  "trustedAddressesHint": "يمكن للذكاء الاصطناعي الإرسال إلى هذه العناوين فقط. تحويلاتك الخاصة غير مقيدة.",
+  "trustedAddressesEmpty": "لا توجد عناوين موثوقة بعد",
+  "trustedAddressesAdd": "إضافة",
+  "trustedAddressesPickTitle": "اختر جهة اتصال",
+  "trustedAddressesNoCandidates": "احفظ العنوان في دفتر العناوين أولاً."
 }

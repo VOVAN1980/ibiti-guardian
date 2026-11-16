@@ -27,10 +27,6 @@ class TransactionExplainer {
         'Protected execution is unavailable on this route. Guardian is using local safeguards only.',
       );
     }
-    if (tx.toAddress.isNotEmpty &&
-        profile.trustedAddresses.contains(tx.toAddress.toLowerCase())) {
-      warnings.add('Destination matches your trusted address book.');
-    }
     if (staticSim.hasFlags) {
       warnings.addAll(staticSim.warningLabels);
     }

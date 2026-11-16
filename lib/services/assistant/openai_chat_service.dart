@@ -12,6 +12,10 @@ import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 import 'package:ibiti_guardian/services/adapters/security_adapter.dart';
 import 'package:ibiti_guardian/services/execution/tx_registry.dart';
 import 'package:ibiti_guardian/services/wallet/address_book_service.dart';
+import 'package:ibiti_guardian/models/policy_profile.dart';
+import 'package:ibiti_guardian/services/assistant/ui_command_resolver.dart';
+import 'package:ibiti_guardian/services/policy/policy_profile_store.dart';
+import 'package:ibiti_guardian/services/policy/trusted_address_directory.dart';
 import 'package:ibiti_guardian/services/market/market_data_service.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 
@@ -185,6 +189,13 @@ Answer only from this list, the live context below and your tool results.
   No futures, margin, leverage, staking, lending, earn or copy trading.
 - Security: approval scan, revoke (Panic), EPK on-chain policy, limits in
   Policy, AI modes Manual / Guarded / Full Autonomy.
+- Trusted addresses (AI whitelist; Command Center → Trusted addresses): the
+  only addresses you, the AI, may send to (on every wallet network) while
+  the policy is STRICT. Only
+  the owner adds them, with the PIN (Address book → ⋯ → Trust for AI, or Add
+  on that screen). You can list and explain them (get_trusted_addresses) and
+  open the screen (openModal trusted_addresses) but never add or remove
+  entries. The owner's own manual sends are not limited by this list.
 - There is no autonomous trading bot running in the app; you act only on the
   user's request and within the limits.
 If something is not covered here, in the context or by a tool, say plainly
@@ -228,7 +239,7 @@ $personalContext
         "function": {
           "name": "get_vault_info",
           "description":
-              "Fetch information about the user's vault: number of wallet cards (EVM cards), all addresses (EVM, Solana, Tron). Use for questions about: how many cards, how many wallets, how many addresses, card count, wallet structure. Russian triggers: сколько карточек, сколько карт, карточки, карты, кошельки, адреса. ALWAYS use this tool when user asks about cards (карточки/карты)."
+              "Fetch information about the user's vault: number of wallet cards (EVM cards), all addresses (EVM, Solana, Tron). Use for questions about: how many cards, how many wallets, how many addresses, card count, wallet structure. Russian triggers: сколько карточек, сколько карт, карточки, карты, кошельки, адреса. ALWAYS use this tool when user asks about cards (карточки/карты). NOT for trusted / whitelisted addresses (доверенные адреса, белый список): use get_trusted_addresses."
         }
       },
       {
@@ -376,7 +387,20 @@ $personalContext
           "description":
               "Fetch the user's saved contacts (address book). Returns list of {label, address}. "
                   "Use when user asks: 'мои контакты', 'адресная книга', 'contacts', 'кому я отправлял', "
-                  "or when user mentions a name to send to (e.g. 'отправь Алисе')."
+                  "or when user mentions a name to send to (e.g. 'отправь Алисе'). "
+                  "NOT for trusted addresses / whitelist: use get_trusted_addresses."
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_trusted_addresses",
+          "description":
+              "Fetch the user's TRUSTED ADDRESSES (AI whitelist): the addresses the AI may send to. "
+                  "Returns {label (address book name or null), address (short), full_address, type: address|contract}, "
+                  "count, policy_mode, strict. READ-ONLY: you cannot add or remove entries; only the owner can, with the PIN. "
+                  "Use when user asks: 'доверенные адреса', 'белый список', 'вайтлист', 'whitelist', "
+                  "'trusted addresses', 'кому ты можешь переводить'. Do NOT use get_address_book for these."
         }
       },
       {
@@ -1032,8 +1056,9 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
         return jsonEncode({
           'error': 'policy_change_requires_user',
           'message':
-              'The Trust List is part of the security policy and can only be '
-              'changed by the user in Settings > Trusted list.',
+              'Trusted addresses are part of the security policy and can only '
+              'be changed by the owner, with the PIN: Command Center > Trusted '
+              'addresses, or Address book > Trust for AI.',
           'timestamp': ts,
         });
 
@@ -1196,6 +1221,15 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
           'timestamp': ts,
         });
 
+      case 'get_trusted_addresses':
+        _setActivity('Загружаю доверенные адреса...');
+        final payload = buildTrustedAddressesPayload(
+          PolicyProfileStore.instance.current,
+          TrustedAddressDirectory.current(),
+        );
+        _setActivity(null);
+        return jsonEncode({...payload, 'timestamp': ts});
+
       case 'get_pending_transactions':
         _setActivity('Проверяю статус транзакций...');
         final reg = TxRegistry.instance;
@@ -1311,6 +1345,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
         'get_transaction_history',
         'get_audit_log',
         'get_address_book',
+        'get_trusted_addresses',
         'get_pending_transactions',
       };
       return readOnlyTools.contains(toolName);
@@ -1551,6 +1586,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
         .join(', ');
     final aiSettings = AiControlService.instance.settings;
     final mandate = aiSettings.mandate;
+    final trustProfile = PolicyProfileStore.instance.current;
     final evmCards = vault.evmCardAddresses;
     final perCardLines = evmCards.isEmpty
         ? 'none'
@@ -1584,6 +1620,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 - Recent tx count: ${TxRegistry.instance.history.length}
 - Latest tx: ${latestTx == null ? 'none' : '${latestTx.status.name} ${latestTx.assetLabel ?? latestTx.operationLabel ?? latestTx.txHash.substring(0, 8)}'}
 - Saved recipients: ${AddressBookService.instance.entries.length}
+- Trusted addresses (AI whitelist, read-only for AI): ${trustProfile.trustedAddresses.length + trustProfile.trustedContracts.length}; policy mode ${trustProfile.mode.name}${trustProfile.mode == PolicyMode.safe ? ' (STRICT: AI may send only to these)' : ''}
 - AI mode: ${aiSettings.mode.name}
 - Allowed AI actions: ${aiSettings.allowedActions.map((e) => e.name).join(', ')}
 - AI daily limit USD: ${aiSettings.dailyLimit.toStringAsFixed(2)}
@@ -1598,7 +1635,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 - User preferred stablecoin: ${UserMemoryService.instance.preferences.preferredStablecoin ?? 'not set'}
 - User preferred venue: ${UserMemoryService.instance.preferences.preferredVenue ?? 'not set'}
 - User preferred network: ${UserMemoryService.instance.preferences.preferredNetwork ?? 'not set'}
-- Known app surfaces: wallet, market, security_center, settings, wallet_send, wallet_receive, wallet_swap, wallet_history, wallet_settings, wallet_address_book, safe, panic, ai_control, policy_limits, epk_control, audit_history
+- Known app surfaces: wallet, market, security_center, settings, wallet_send, wallet_receive, wallet_swap, wallet_history, wallet_settings, wallet_address_book, trusted_addresses, safe, panic, ai_control, policy_limits, epk_control, audit_history
 - AI can open screens, open modals, fill send/swap fields, prepare preview flows, analyze balances, compare market routes, and explain limits.
 - OKX Spot connected: $okxConnected (Region: $okxRegionStr, Quote Currency: $okxQuoteStr)
 - OKX Quote/Trading Rules: If OKX region is eea, OKX trading is processed in USDC instead of USDT (e.g. BTC-USDC, SOL-USDC) due to MiCA regulations. If global, trading is primarily in USDT. No blind fallback to USDT is permitted. Use USDT only if the exact OKX pair exists and findBestPair selected it; if the resolved pair is not available, trading is blocked. Explain this to the user in their preferred language if they ask.
@@ -1619,6 +1656,20 @@ ${ScreenContextService.instance.buildContextPrompt()}
   /// descriptions when the query contains ambiguous keywords like "кошелёк".
   static String? _buildToolHint(String input) {
     final lower = input.toLowerCase();
+
+    // Trusted addresses (AI whitelist) → get_trusted_addresses. Checked first:
+    // "доверенные адреса карты" is still about the whitelist.
+    if (UICommandResolver.mentionsTrustedList(
+      lower,
+      contactLabels: AddressBookService.instance.entries.map((e) => e.label),
+    )) {
+      return '[TOOL ROUTING: The user is asking about TRUSTED ADDRESSES (AI '
+          'whitelist), not the address book and not their own wallet '
+          'address. You MUST call get_trusted_addresses. You cannot add or '
+          'remove trusted addresses; if asked, say only the owner can, with '
+          'the PIN, in Command Center → Trusted addresses or Address book → '
+          'Trust for AI.]';
+    }
 
     // Card / vault structure queries → get_vault_info
     final cardPatterns = [
@@ -1653,4 +1704,33 @@ ${ScreenContextService.instance.buildContextPrompt()}
 
     return null;
   }
+}
+
+/// The `get_trusted_addresses` tool result, without the timestamp.
+@visibleForTesting
+Map<String, dynamic> buildTrustedAddressesPayload(
+  PolicyProfile profile,
+  List<TrustedAddressItem> items,
+) {
+  final list = [
+    for (final i in items)
+      {
+        'label': i.label,
+        'address': i.shortAddress,
+        'full_address': i.address,
+        'type': i.isContract ? 'contract' : 'address',
+      },
+  ];
+  return {
+    'trusted': list,
+    'count': list.length,
+    'policy_mode': profile.mode.name,
+    'strict': profile.mode == PolicyMode.safe,
+    'ai_can_modify': false,
+    'how_to_change': 'Owner only, with PIN: Command Center > Trusted '
+        'addresses > Add, or Address book > Trust for AI.',
+    'note': 'Applies to AI, market and dApp sends on every wallet network '
+        "while the policy is STRICT; the owner's own wallet sends are not "
+        'limited.',
+  };
 }

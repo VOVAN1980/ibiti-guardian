@@ -1520,5 +1520,16 @@
   "delete": "हटाएं",
   "cancel": "रद्द करें",
   "save": "सहेजें",
-  "addressBookRecentLabel": "हाल का {short}"
+  "addressBookRecentLabel": "हाल का {short}",
+  "addressBookTrustAi": "AI के लिए भरोसेमंद बनाएं",
+  "addressBookUntrustAi": "भरोसेमंद से हटाएं",
+  "addressBookTrustedBadge": "AI के लिए भरोसेमंद",
+  "addressBookTrustedDone": "अब AI इस पते पर भेज सकता है",
+  "addressBookUntrustedDone": "AI अब इस पते पर नहीं भेज सकता",
+  "trustedAddressesTitle": "भरोसेमंद पते",
+  "trustedAddressesHint": "AI केवल इन पतों पर भेज सकता है। आपके अपने ट्रांसफर सीमित नहीं हैं।",
+  "trustedAddressesEmpty": "अभी कोई भरोसेमंद पता नहीं",
+  "trustedAddressesAdd": "जोड़ें",
+  "trustedAddressesPickTitle": "संपर्क चुनें",
+  "trustedAddressesNoCandidates": "पहले पता एड्रेस बुक में सहेजें।"
 }

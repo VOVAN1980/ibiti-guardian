@@ -1520,5 +1520,16 @@
   "delete": "Usuń",
   "cancel": "Anuluj",
   "save": "Zapisz",
-  "addressBookRecentLabel": "Ostatni {short}"
+  "addressBookRecentLabel": "Ostatni {short}",
+  "addressBookTrustAi": "Zaufaj dla AI",
+  "addressBookUntrustAi": "Usuń z zaufanych",
+  "addressBookTrustedBadge": "Zaufany dla AI",
+  "addressBookTrustedDone": "AI może teraz wysyłać na ten adres",
+  "addressBookUntrustedDone": "AI nie może już wysyłać na ten adres",
+  "trustedAddressesTitle": "Zaufane adresy",
+  "trustedAddressesHint": "AI może wysyłać tylko na te adresy. Twoje własne przelewy nie są ograniczone.",
+  "trustedAddressesEmpty": "Brak zaufanych adresów",
+  "trustedAddressesAdd": "Dodaj",
+  "trustedAddressesPickTitle": "Wybierz kontakt",
+  "trustedAddressesNoCandidates": "Najpierw zapisz adres w książce adresowej."
 }

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:ibiti_guardian/utils/address_key.dart';
 
 /// Simple SharedPreferences-backed address book.
 /// Entries: [{label: "Alice", address: "0x..."}]
@@ -46,7 +47,7 @@ class AddressBookService extends ChangeNotifier {
         final seen = <String>{};
         _entries = [
           for (final e in loaded)
-            if (seen.add(e.address.toLowerCase())) e,
+            if (seen.add(AddressKey.of(e.address))) e,
         ];
         notifyListeners();
         if (_entries.length != loaded.length) await _save();
@@ -72,7 +73,7 @@ class AddressBookService extends ChangeNotifier {
   }
 
   int _indexOf(String address) => _entries
-      .indexWhere((e) => e.address.toLowerCase() == address.toLowerCase());
+      .indexWhere((e) => AddressKey.same(e.address, address));
 
   /// Adds [address] under [label]. If the address is already in the book,
   /// it gets the new name instead of a second copy.
@@ -102,7 +103,7 @@ class AddressBookService extends ChangeNotifier {
   Future<void> remove(String address) async {
     await _ready;
     _entries
-        .removeWhere((e) => e.address.toLowerCase() == address.toLowerCase());
+        .removeWhere((e) => AddressKey.same(e.address, address));
     notifyListeners();
     await _save();
   }

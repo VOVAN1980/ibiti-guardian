@@ -1520,5 +1520,16 @@
   "delete": "Hapus",
   "cancel": "Batal",
   "save": "Simpan",
-  "addressBookRecentLabel": "Terbaru {short}"
+  "addressBookRecentLabel": "Terbaru {short}",
+  "addressBookTrustAi": "Percayakan ke AI",
+  "addressBookUntrustAi": "Hapus dari tepercaya",
+  "addressBookTrustedBadge": "Tepercaya untuk AI",
+  "addressBookTrustedDone": "AI sekarang dapat mengirim ke alamat ini",
+  "addressBookUntrustedDone": "AI tidak lagi dapat mengirim ke alamat ini",
+  "trustedAddressesTitle": "Alamat tepercaya",
+  "trustedAddressesHint": "AI hanya dapat mengirim ke alamat ini. Transfer Anda sendiri tidak dibatasi.",
+  "trustedAddressesEmpty": "Belum ada alamat tepercaya",
+  "trustedAddressesAdd": "Tambah",
+  "trustedAddressesPickTitle": "Pilih kontak",
+  "trustedAddressesNoCandidates": "Simpan dulu alamat di buku alamat."
 }

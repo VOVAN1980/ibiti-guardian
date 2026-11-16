@@ -1520,5 +1520,16 @@
   "delete": "삭제",
   "cancel": "취소",
   "save": "저장",
-  "addressBookRecentLabel": "최근 {short}"
+  "addressBookRecentLabel": "최근 {short}",
+  "addressBookTrustAi": "AI에 신뢰",
+  "addressBookUntrustAi": "신뢰 목록에서 제거",
+  "addressBookTrustedBadge": "AI 신뢰됨",
+  "addressBookTrustedDone": "이제 AI가 이 주소로 보낼 수 있습니다",
+  "addressBookUntrustedDone": "AI가 더 이상 이 주소로 보낼 수 없습니다",
+  "trustedAddressesTitle": "신뢰 주소",
+  "trustedAddressesHint": "AI는 이 주소로만 보낼 수 있습니다. 직접 하는 송금은 제한되지 않습니다.",
+  "trustedAddressesEmpty": "아직 신뢰 주소가 없습니다",
+  "trustedAddressesAdd": "추가",
+  "trustedAddressesPickTitle": "연락처 선택",
+  "trustedAddressesNoCandidates": "먼저 주소록에 주소를 저장하세요."
 }

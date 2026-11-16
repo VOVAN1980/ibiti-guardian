@@ -1520,5 +1520,16 @@
   "delete": "Löschen",
   "cancel": "Abbrechen",
   "save": "Speichern",
-  "addressBookRecentLabel": "Zuletzt {short}"
+  "addressBookRecentLabel": "Zuletzt {short}",
+  "addressBookTrustAi": "Der KI vertrauen",
+  "addressBookUntrustAi": "Aus Vertrauten entfernen",
+  "addressBookTrustedBadge": "Für KI freigegeben",
+  "addressBookTrustedDone": "Die KI kann jetzt an diese Adresse senden",
+  "addressBookUntrustedDone": "Die KI kann nicht mehr an diese Adresse senden",
+  "trustedAddressesTitle": "Vertrauenswürdige Adressen",
+  "trustedAddressesHint": "Die KI kann nur an diese Adressen senden. Ihre eigenen Überweisungen sind nicht eingeschränkt.",
+  "trustedAddressesEmpty": "Noch keine vertrauenswürdigen Adressen",
+  "trustedAddressesAdd": "Hinzufügen",
+  "trustedAddressesPickTitle": "Kontakt wählen",
+  "trustedAddressesNoCandidates": "Speichern Sie die Adresse zuerst im Adressbuch."
 }

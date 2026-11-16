@@ -1520,5 +1520,16 @@
   "delete": "Видалити",
   "cancel": "Скасувати",
   "save": "Зберегти",
-  "addressBookRecentLabel": "Недавній {short}"
+  "addressBookRecentLabel": "Недавній {short}",
+  "addressBookTrustAi": "Довірити ШІ",
+  "addressBookUntrustAi": "Прибрати з довірених",
+  "addressBookTrustedBadge": "Довірено ШІ",
+  "addressBookTrustedDone": "Тепер ШІ може надсилати на цю адресу",
+  "addressBookUntrustedDone": "ШІ більше не може надсилати на цю адресу",
+  "trustedAddressesTitle": "Довірені адреси",
+  "trustedAddressesHint": "ШІ може надсилати лише на ці адреси. Ваші власні перекази не обмежені.",
+  "trustedAddressesEmpty": "Поки немає довірених адрес",
+  "trustedAddressesAdd": "Додати",
+  "trustedAddressesPickTitle": "Виберіть контакт",
+  "trustedAddressesNoCandidates": "Спочатку збережіть адресу в адресній книзі."
 }

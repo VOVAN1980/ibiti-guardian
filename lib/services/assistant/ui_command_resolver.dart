@@ -265,6 +265,17 @@ class UICommandResolver {
     UICommand modal(String target) =>
         UICommand(type: UICommandType.openModal, target: target);
 
+    // Trusted addresses (the AI whitelist) come before the generic
+    // "адрес / address" rule below, which would open Receive instead.
+    if (mentionsTrustedList(lower)) {
+      return asksToOpen ? [modal('trusted_addresses')] : const [];
+    }
+
+    // Address book before "адрес": "адресную книгу" contains "адрес".
+    if (openAnd(['адресн', 'контакт', 'address book', 'contacts'])) {
+      return [wallet, modal('wallet_address_book')];
+    }
+
     // Balance: the AI answers; only "открой/покажи баланс" goes to Wallet.
     if (openAnd(['баланс', 'balance']) && !lower.contains('истор')) {
       return const [wallet];
@@ -385,6 +396,93 @@ class UICommandResolver {
 
     return const [];
   }
+
+  /// The one phrase rule for "trusted addresses" (the AI whitelist), shared
+  /// by every assistant layer. Expects lower-case text. [contactLabels] are
+  /// the address-book names: naming a contact ("удали MEXC из белого
+  /// списка") makes an ambiguous "white list" phrase about this list.
+  ///
+  /// False for transfers and trades that merely mention the list ("переведи
+  /// 10 USDT на доверенный адрес"): those keep their normal money flow.
+  static bool mentionsTrustedList(
+    String lower, {
+    Iterable<String> contactLabels = const [],
+  }) {
+    if (looksLikeMoneyCommand(lower)) return false;
+    if (_trustedListPattern.hasMatch(lower)) return true;
+    if (!_ambiguousListPattern.hasMatch(lower)) return false;
+    final namesContact = contactLabels.any((label) {
+      final l = label.trim().toLowerCase();
+      return l.length >= 2 && lower.contains(l);
+    });
+    // Otherwise "белый список" may be an exchange's IP / API whitelist or
+    // the AI's allowed coins, networks and actions.
+    return namesContact || !_otherWhitelistContext.hasMatch(lower);
+  }
+
+  /// A transfer, swap or trade: a money imperative ("отправь", "закинь",
+  /// "send …"), or any money verb together with an amount ("можешь
+  /// перевести 10 USDT", "хочу отправить всё"). "Кому ты можешь
+  /// переводить?" has no amount and stays a question.
+  static bool looksLikeMoneyCommand(String lower) =>
+      _moneyImperative.hasMatch(lower) ||
+      (_moneyStem.hasMatch(lower) && _amount.hasMatch(lower));
+
+  static const _ru = 'а-яёіїєґ';
+
+  static final _moneyImperative = RegExp(
+    '(^|[^$_ru])(отправь|отправьте|переведи|переведите|перекинь|закинь|'
+    'скинь|пошли|перешли|вышли|купи|продай|обменяй|поменяй|свапни|'
+    'відправ|відправте|надішли|переказ|переведіть)([^$_ru]|\$)|'
+    r'^(please\s+|ok(ay)?\s+|hey\s+\w+\s+)?(send|transfer|pay|buy|sell|swap|move)\s',
+  );
+
+  static final _moneyStem = RegExp(
+    r'отправ|перев[её]?д|перевест|перекин|закин|скин|пошл|перешл|вышл|'
+    r'купи|купит|прода|обмен|поменя|свап|відправ|надісл|надішл|переказ|'
+    r'(^|[^a-z])(send|sending|transfer|pay|move|buy|sell|swap)([^a-z]|$)',
+  );
+
+  static final _amount = RegExp(
+    '(^|[\\s\$])\\d+([.,]\\d+)?([\\s%]|\$)|'
+    '(^|[^$_ru])(все|всё|весь|половин\\S*|усе|все)([^$_ru]|\$)|'
+    r'(^|[^a-z])(all|half|everything)([^a-z]|$)',
+  );
+
+  static final _trustedListPattern = RegExp(
+    '(доверенн(ый|ая|ое|ые|ого|ому|ым|ыми|ых|ом|ую)\\s+'
+    '(адрес|контакт|спис|кошел|получател))|'
+    '(^|[^$_ru])(в|из|к|среди)\\s+доверенн(ые|ых|ым)(?!\\s+лиц)|'
+    'адрес\\S*\\s+(\\S+\\s+)?доверенн(ый|ые|ых|ым|ыми|ого|ом|ая|ую)'
+    '(?!\\s+лиц)|'
+    'список\\s+доверенн|'
+    'адрес\\S*\\s+(из|в)\\s+бел(ого|ом|ый)\\s+спис|'
+    'кому\\s+(ты|ии)\\s+(можешь|может|можно)\\s+(перевод|перевест|отправ)|'
+    'довірен\\S*\\s+(адрес|контакт|спис)|'
+    r'(who|where)\s+can\s+you\s+(send|transfer)|'
+    r'trusted\s+(address|contact|list|recipient|wallet)',
+  );
+
+  static final _ambiguousListPattern = RegExp(
+    r'бел(ый|ого|ом|ому)\s+спис|вайт\s*-?\s*лист|'
+    r'разреш[её]нн\S*\s+адрес|'
+    r'адрес\S*\s+(\S+\s+)?разреш[её]н([ыао]|\s|$|[,.?!])|'
+    r'біл(ий|ого|ому)\s+спис|'
+    r'trust\s*list|white\s*-?\s*list|allow\s*-?\s*list',
+  );
+
+  static final _otherWhitelistContext = RegExp(
+    r'(^|[^a-z])(ip|api|key|keys|exchange|mexc|gate|gateio|binance|okx|'
+    r'bybit|coin|coins|token|tokens|action|actions|network|networks|pair|'
+    r'pairs|venue|venues|withdraw\w*)([^a-z]|$)|'
+    '(^|[^$_ru])(ключ\\S*|апи|айпи|ип|бирж\\S*|бинанс\\S*|мекс\\S*|'
+    'гейт\\S*|окх|монет\\S*|токен\\S*|действи[еяй]\\S*|вывод\\S*|'
+    'сет(ь|и|ей|ям|ях)|пар(а|ы|у)|площадк\\S*)([^$_ru]|\$)',
+  );
+
+  /// True when [lower] asks to open or show something.
+  static bool asksToOpenWindow(String lower) =>
+      _matchesAnyPhrase(lower, _openVerbs);
 
   static const _openVerbs = [
     'открой',

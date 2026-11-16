@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
+import 'package:ibiti_guardian/utils/address_key.dart';
 
 /// Persistent storage for the user's execution policy.
 ///
@@ -119,7 +120,7 @@ class PolicyProfileStore extends ChangeNotifier {
 
   /// Adds a specific address to the trusted list, bypassing static unknown warnings.
   Future<void> addTrustedAddress(String address) async {
-    final addr = address.toLowerCase();
+    final addr = AddressKey.of(address);
     final updated = List<String>.from(_currentProfile.trustedAddresses);
     if (!updated.contains(addr)) {
       updated.add(addr);
@@ -132,7 +133,7 @@ class PolicyProfileStore extends ChangeNotifier {
 
   /// Adds a specific contract address to the trusted list.
   Future<void> addTrustedContract(String address) async {
-    final addr = address.toLowerCase();
+    final addr = AddressKey.of(address);
     final updated = List<String>.from(_currentProfile.trustedContracts);
     if (!updated.contains(addr)) {
       updated.add(addr);
@@ -145,7 +146,7 @@ class PolicyProfileStore extends ChangeNotifier {
 
   /// Removes an address from the trusted list.
   Future<void> removeTrustedAddress(String address) async {
-    final addr = address.toLowerCase();
+    final addr = AddressKey.of(address);
     final updated = List<String>.from(_currentProfile.trustedAddresses);
     if (updated.remove(addr)) {
       _currentProfile = _currentProfile.copyWith(trustedAddresses: updated);
@@ -157,7 +158,7 @@ class PolicyProfileStore extends ChangeNotifier {
 
   /// Removes a contract from the trusted list.
   Future<void> removeTrustedContract(String address) async {
-    final addr = address.toLowerCase();
+    final addr = AddressKey.of(address);
     final updated = List<String>.from(_currentProfile.trustedContracts);
     if (updated.remove(addr)) {
       _currentProfile = _currentProfile.copyWith(trustedContracts: updated);

@@ -63,7 +63,13 @@ class ScreenContextService {
 
   // ── Getters ───────────────────────────────────────────────────────────────
   String get activeScreen => _activeScreen;
-  String? get activeSubScreen => _activeSubScreen;
+  String? get activeSubScreen =>
+      _overlays.isNotEmpty ? _overlays.last : _activeSubScreen;
+
+  /// Screens pushed over the current tab (Trusted addresses, Address book),
+  /// newest last. They win over the tab's own sub-screen (a live token
+  /// detail underneath keeps updating, but the user is looking at the top).
+  final List<String> _overlays = [];
   String? get activeExchange => _activeExchange;
   String? get activeTerminalView => _activeTerminalView;
   String? get focusedSymbol => _focusedSymbol;
@@ -128,6 +134,20 @@ class ScreenContextService {
     _activeScreen = screen;
     _activeSubScreen = subScreen;
     _log.d('Screen: $screen${subScreen != null ? ' / $subScreen' : ''}');
+  }
+
+  /// Called by a pushed screen (e.g. Trusted addresses) when it opens. It can
+  /// open over any tab, so it sets only the sub-screen, not the tab.
+  void setSubScreen(String sub) {
+    _overlays.add(sub);
+    _log.d('Sub-screen: $sub');
+  }
+
+  /// Called when that screen closes. Removes only that screen's own entry,
+  /// so a late close can't wipe another screen's context.
+  void clearSubScreen(String sub) {
+    final i = _overlays.lastIndexOf(sub);
+    if (i >= 0) _overlays.removeAt(i);
   }
 
   /// Called by ExchangeTerminalScreen when user switches exchange.
@@ -226,8 +246,9 @@ class ScreenContextService {
     buf.writeln(
         "IMPORTANT: Always respond in the same language as the user's query.");
     buf.write('Screen: $_activeScreen');
-    if (_activeSubScreen != null) buf.write(' / $_activeSubScreen');
+    if (activeSubScreen != null) buf.write(' / $activeSubScreen');
     buf.writeln();
+    final overlay = _overlays.isNotEmpty ? _overlays.last : null;
 
     // ── Human-readable screen description ──────────────────────────────────
     buf.writeln(_screenDescription());
@@ -240,7 +261,7 @@ class ScreenContextService {
       buf.writeln();
     }
 
-    if (_focusedSymbol != null) {
+    if (_focusedSymbol != null && overlay == null) {
       buf.write('Focused token: $_focusedSymbol');
       if (_focusedTokenName != null) buf.write(' ($_focusedTokenName)');
       if (_focusedPrice != null) {
@@ -303,6 +324,19 @@ class ScreenContextService {
 
   /// Returns a short description of the current screen and available actions.
   String _screenDescription() {
+    final overlay = _overlays.isNotEmpty ? _overlays.last : null;
+    if (overlay == 'trusted_addresses') {
+      return 'Description: Trusted addresses (AI whitelist). User sees the '
+          'addresses the AI may send to, named from the address book. '
+          'Owner-only actions: Add from address book (PIN), Remove, Copy '
+          'address. The AI cannot add or remove entries; use '
+          'get_trusted_addresses for details.';
+    }
+    if (overlay == 'address_book') {
+      return 'Description: Address book. Saved recipients with names. '
+          'Owner actions per contact: Copy, Edit, Delete, Trust for AI (PIN) '
+          'or Remove from trusted. Use get_address_book for the list.';
+    }
     if (_activeSubScreen == 'token_detail' && _focusedSymbol != null) {
       final ex = _activeExchange != null
           ? ' on ${_activeExchange!.toUpperCase()}'
@@ -322,7 +356,7 @@ class ScreenContextService {
       case 'chat':
         return 'Description: Text chat with AI. Same capabilities as voice.';
       case 'security':
-        return 'Description: Security center. Sub-screens: Guardian Control (Safe/Panic), AI Control (modes/limits), Policy Limits, EPK Control, Audit History, AI Memory.';
+        return 'Description: Security center. Sub-screens: Guardian Control (Safe/Panic), AI Control (modes/limits), Policy Limits, EPK Control, Audit History, AI Memory, Trusted addresses (AI whitelist).';
       case 'wallet':
         return 'Description: Wallet space. EVM cards (Black/Silver/Gold/Platinum), balances. Actions: Send, Receive, Swap. Can view token details and transaction history.';
       case 'market':

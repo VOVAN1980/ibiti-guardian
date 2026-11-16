@@ -5,6 +5,7 @@ import 'package:ibiti_guardian/screens/security/ai_control_screen.dart';
 import 'package:ibiti_guardian/screens/security/epk_control_screen.dart';
 import 'package:ibiti_guardian/screens/security/guardian_control_screen.dart';
 import 'package:ibiti_guardian/screens/security/policy_limits_screen.dart';
+import 'package:ibiti_guardian/screens/security/trusted_addresses_screen.dart';
 import 'package:ibiti_guardian/services/adapters/security_adapter.dart';
 import 'package:ibiti_guardian/services/adapters/wallet_adapter.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
@@ -388,57 +389,45 @@ class _SecurityCenterScreenState extends State<SecurityCenterScreen> {
     );
   }
 
-  // ── Trust List ─────────────────────────────────────────────────────────────
+  // ── Trusted addresses ─────────────────────────────────────────────────────
+  // One green row; the list lives on its own screen so the Command Center
+  // stays short.
 
   Widget _buildTrustList(BuildContext context, PolicyProfile profile) {
     final t = LocalizationProvider.of(context);
-    final trustedItems = <MapEntry<String, String>>[
-      ...profile.trustedAddresses
-          .map((item) => MapEntry(t.t('securityTrustTypeAddress'), item)),
-      ...profile.trustedContracts
-          .map((item) => MapEntry(t.t('securityTrustTypeContract'), item)),
-    ];
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(t.t('securityTrustedEntities'),
-            style: GuardianTextStyles.titleMedium),
-        const SizedBox(height: 16),
-        if (trustedItems.isEmpty)
-          Text(
-            t.t('securityNoTrusted'),
-            style: GuardianTextStyles.bodySecondary,
-          )
-        else
-          ListView.separated(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: trustedItems.length,
-            separatorBuilder: (_, __) =>
-                const Divider(color: GuardianColors.glassBorder),
-            itemBuilder: (context, i) {
-              final item = trustedItems[i];
-              return ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: const Icon(
-                  Icons.verified,
-                  color: GuardianColors.accent,
-                ),
-                title: Text(
-                  item.value,
-                  style: GuardianTextStyles.bodyPrimary.copyWith(
-                    fontFamily: 'monospace',
-                  ),
-                ),
-                subtitle: Text(
-                  item.key,
-                  style: GuardianTextStyles.caption,
-                ),
-              );
-            },
-          ),
-      ],
+    final count =
+        profile.trustedAddresses.length + profile.trustedContracts.length;
+    final style = GuardianTextStyles.bodyPrimary.copyWith(
+      color: GuardianColors.success,
+      fontWeight: FontWeight.w700,
+    );
+    return InkWell(
+      borderRadius: BorderRadius.circular(14),
+      onTap: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const TrustedAddressesScreen()),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        child: Row(
+          children: [
+            const Icon(Icons.verified_user_rounded,
+                color: GuardianColors.success, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                t.t('trustedAddressesTitle',
+                    {'default': 'Trusted addresses'}),
+                style: style,
+              ),
+            ),
+            if (count > 0) Text('$count', style: style),
+            const SizedBox(width: 2),
+            const Icon(Icons.chevron_right_rounded,
+                color: GuardianColors.success),
+          ],
+        ),
+      ),
     );
   }
 

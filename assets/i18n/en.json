@@ -1067,7 +1067,7 @@
   "securityAgentAddress": "Agent {addr}",
   "securityEpkPause": "Pause",
   "securityEpkCreate": "Create",
-  "securityTrustedEntities": "Trusted entities",
+  "securityTrustedEntities": "Trusted addresses",
   "securityTrustTypeAddress": "Address",
   "securityTrustTypeContract": "Contract",
   "securityPolicyModeSafe": "Safe mode",
@@ -1520,5 +1520,16 @@
   "delete": "Delete",
   "cancel": "Cancel",
   "save": "Save",
-  "addressBookRecentLabel": "Recent {short}"
+  "addressBookRecentLabel": "Recent {short}",
+  "addressBookTrustAi": "Trust for AI",
+  "addressBookUntrustAi": "Remove from trusted",
+  "addressBookTrustedBadge": "Trusted for AI",
+  "addressBookTrustedDone": "AI can now send to this address",
+  "addressBookUntrustedDone": "AI can no longer send to this address",
+  "trustedAddressesTitle": "Trusted addresses",
+  "trustedAddressesHint": "AI can send only to these addresses. Your own transfers are not limited.",
+  "trustedAddressesEmpty": "No trusted addresses yet",
+  "trustedAddressesAdd": "Add",
+  "trustedAddressesPickTitle": "Choose a contact",
+  "trustedAddressesNoCandidates": "Save the address in the address book first."
 }

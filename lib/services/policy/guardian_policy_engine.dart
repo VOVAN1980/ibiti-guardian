@@ -7,6 +7,7 @@ import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/policy/tx_usd_valuer.dart';
 import 'package:ibiti_guardian/services/swap/swap_provider.dart'
     show SwapSlippagePolicy;
+import 'package:ibiti_guardian/utils/address_key.dart';
 
 /// Severity level of a policy decision.
 /// Maps directly to UI colors: info=green, warning=yellow, danger=red.
@@ -141,7 +142,7 @@ class GuardianPolicyEngine {
     if (staticSim.isCritical) {
       // Phase 5 Check: if address is specifically trusted in the profile, downgrade to Warning
       if (tx.toAddress.isNotEmpty &&
-          profile.trustedAddresses.contains(tx.toAddress.toLowerCase())) {
+          profile.trustedAddresses.contains(AddressKey.of(tx.toAddress))) {
         rules.add('STATIC_CRITICAL_TRUST_DOWNGRADE');
       } else {
         rules.add('STATIC_CRITICAL_BLOCK');
@@ -341,7 +342,7 @@ class GuardianPolicyEngine {
     if (tx.routerAddress != null &&
         tx.routerAddress!.isNotEmpty &&
         !profile.allowUnknownContracts &&
-        !profile.trustedContracts.contains(tx.routerAddress!.toLowerCase())) {
+        !profile.trustedContracts.contains(AddressKey.of(tx.routerAddress!))) {
       rules.add('SWAP_UNKNOWN_ROUTER_WARN');
     }
 

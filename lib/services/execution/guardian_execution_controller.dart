@@ -39,6 +39,7 @@ import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/execution/native_transaction_builder.dart';
 import 'package:ibiti_guardian/services/execution/clients/solana_rpc_client.dart';
 import 'package:ibiti_guardian/services/execution/clients/tron_rpc_client.dart';
+import 'package:ibiti_guardian/utils/address_key.dart';
 
 /// The central "Brain" of the Guardian stack (Phase 6 Orchestration Layer).
 ///
@@ -1199,12 +1200,12 @@ class GuardianExecutionController {
 
   bool _isTrustedAddress(String address, PolicyProfile profile) {
     return profile.trustedAddresses
-        .any((trusted) => trusted.toLowerCase() == address.toLowerCase());
+        .any((trusted) => AddressKey.same(trusted, address));
   }
 
   bool _isTrustedContract(String address, PolicyProfile profile) {
     return profile.trustedContracts
-        .any((trusted) => trusted.toLowerCase() == address.toLowerCase());
+        .any((trusted) => AddressKey.same(trusted, address));
   }
 
   String? _contractTarget(TransactionRequest tx) {

@@ -1575,5 +1575,16 @@
   "delete": "Удалить",
   "cancel": "Отмена",
   "save": "Сохранить",
-  "addressBookRecentLabel": "Недавний {short}"
+  "addressBookRecentLabel": "Недавний {short}",
+  "addressBookTrustAi": "Доверить ИИ",
+  "addressBookUntrustAi": "Убрать из доверенных",
+  "addressBookTrustedBadge": "Доверен ИИ",
+  "addressBookTrustedDone": "Теперь ИИ может переводить на этот адрес",
+  "addressBookUntrustedDone": "ИИ больше не может переводить на этот адрес",
+  "trustedAddressesTitle": "Доверенные адреса",
+  "trustedAddressesHint": "ИИ может переводить только на эти адреса. Ваши ручные переводы не ограничены.",
+  "trustedAddressesEmpty": "Пока нет доверенных адресов",
+  "trustedAddressesAdd": "Добавить",
+  "trustedAddressesPickTitle": "Выберите контакт",
+  "trustedAddressesNoCandidates": "Сначала сохраните адрес в адресной книге."
 }

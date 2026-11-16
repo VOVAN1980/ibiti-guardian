@@ -1520,5 +1520,16 @@
   "delete": "删除",
   "cancel": "取消",
   "save": "保存",
-  "addressBookRecentLabel": "最近 {short}"
+  "addressBookRecentLabel": "最近 {short}",
+  "addressBookTrustAi": "允许 AI 使用",
+  "addressBookUntrustAi": "移出信任列表",
+  "addressBookTrustedBadge": "AI 可用",
+  "addressBookTrustedDone": "AI 现在可以向此地址转账",
+  "addressBookUntrustedDone": "AI 不能再向此地址转账",
+  "trustedAddressesTitle": "信任地址",
+  "trustedAddressesHint": "AI 只能向这些地址转账。您自己的转账不受限制。",
+  "trustedAddressesEmpty": "暂无信任地址",
+  "trustedAddressesAdd": "添加",
+  "trustedAddressesPickTitle": "选择联系人",
+  "trustedAddressesNoCandidates": "请先将地址保存到地址簿。"
 }

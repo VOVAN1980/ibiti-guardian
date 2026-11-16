@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'dart:typed_data';
 
 import 'package:ibiti_guardian/models/asset_amount.dart';
@@ -16,6 +17,7 @@ import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_signer.dart';
 import 'package:ibiti_guardian/services/vault/epk_contract_resolver.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
+import 'package:ibiti_guardian/services/policy/validators/target_selector_guard.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/services/execution/native_transaction_builder.dart';
 import 'package:ibiti_guardian/services/execution/execution_router.dart';
@@ -91,6 +93,22 @@ class GuardianExecutionService {
   VoiceScriptMapper _voice(TransactionRequest tx) =>
       VoiceScriptMapper.forLang(detectLangFromText(tx.sourceIntent.rawInput));
 
+  /// The AI whitelist for Solana and Tron sends, the same rule the EVM
+  /// signer applies (TargetSelectorGuard): while protection is on and the
+  /// profile is STRICT, an AI / market / dApp send may only go to a trusted
+  /// address. The owner's own sends from the wallet window always pass.
+  /// Returns the reason when the send must stop, else null.
+  @visibleForTesting
+  static Future<String?> nonEvmWhitelistBlock(
+    TransactionRequest tx,
+    EpkState state,
+  ) async {
+    if (!state.isActive) return null;
+    final result = await const TargetSelectorGuard().validate(tx, state);
+    if (result.isValid) return null;
+    return result.userMessage ?? 'Blocked by the trusted-address policy.';
+  }
+
   Future<AssistantResponse> _executeSend(
       TransactionRequest tx, ExecutionPath path) async {
     final voice = _voice(tx);
@@ -103,6 +121,17 @@ class GuardianExecutionService {
           'Send failed: missing amount.',
           intent: tx.sourceIntent,
         );
+      }
+
+      // Solana and Tron sends don't go through the EVM signer's validators,
+      // so the AI whitelist (trusted addresses) is checked here instead.
+      if (!tx.isEvmChain) {
+        final blocked = await nonEvmWhitelistBlock(
+          tx,
+          EPKPolicyManager.instance.state,
+        );
+        // Same handling as an EVM signer block: Audit History + voice.
+        if (blocked != null) throw EPKValidationException(blocked);
       }
 
       String? hash;

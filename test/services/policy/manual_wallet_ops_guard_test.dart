@@ -7,6 +7,7 @@ import 'package:ibiti_guardian/services/policy/validators/composite_validator.da
 import 'package:ibiti_guardian/services/policy/validators/spend_limit_validator.dart';
 import 'package:ibiti_guardian/services/policy/validators/target_selector_guard.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// The default profile is STRICT and EPK protection is on by default. The
 /// user's own Send / Swap from the wallet windows must still reach any
@@ -21,11 +22,12 @@ void main() {
     required IntentOrigin origin,
     String symbol = 'USDT',
     double amount = 3,
+    String to = exchangeDeposit,
   }) =>
       TransactionRequest(
         type: type,
         fromAddress: from,
-        toAddress: exchangeDeposit,
+        toAddress: to,
         tokenSymbol: symbol,
         amount: amount,
         chainId: 56,
@@ -82,5 +84,32 @@ void main() {
         tx(type: TransactionType.revoke, origin: IntentOrigin.market),
         const EpkState());
     expect(result.isValid, true);
+  });
+
+  // "Trust for AI" in the address book adds the contact to this whitelist.
+  test('AI send reaches an address the owner trusted, and stops once removed',
+      () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    SharedPreferences.setMockInitialValues({});
+    final store = PolicyProfileStore.instance;
+    // The address book keeps checksummed (mixed-case) addresses; the AI's
+    // transaction may carry the same address in lower case.
+    const contact = '0x195898373cC0c85F7fE7b325C3fE0e1FfF701383';
+    final aiSend = tx(
+        type: TransactionType.send,
+        origin: IntentOrigin.market,
+        to: contact.toLowerCase());
+    Future<bool> passes() async =>
+        (await const TargetSelectorGuard().validate(aiSend, const EpkState()))
+            .isValid;
+
+    expect(await passes(), false);
+
+    await store.addTrustedAddress(contact);
+    expect(await passes(), true);
+
+    await store.removeTrustedAddress(contact);
+    expect(store.current.trustedAddresses, isEmpty);
+    expect(await passes(), false);
   });
 }

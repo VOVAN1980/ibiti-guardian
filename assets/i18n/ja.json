@@ -1520,5 +1520,16 @@
   "delete": "削除",
   "cancel": "キャンセル",
   "save": "保存",
-  "addressBookRecentLabel": "最近 {short}"
+  "addressBookRecentLabel": "最近 {short}",
+  "addressBookTrustAi": "AIに許可",
+  "addressBookUntrustAi": "信頼済みから外す",
+  "addressBookTrustedBadge": "AI 許可済み",
+  "addressBookTrustedDone": "AIがこのアドレスに送金できるようになりました",
+  "addressBookUntrustedDone": "AIはこのアドレスに送金できなくなりました",
+  "trustedAddressesTitle": "信頼済みアドレス",
+  "trustedAddressesHint": "AIはこれらのアドレスにのみ送金できます。ご自身の送金は制限されません。",
+  "trustedAddressesEmpty": "信頼済みアドレスはまだありません",
+  "trustedAddressesAdd": "追加",
+  "trustedAddressesPickTitle": "連絡先を選択",
+  "trustedAddressesNoCandidates": "先にアドレス帳に保存してください。"
 }

@@ -1520,5 +1520,16 @@
   "delete": "Sil",
   "cancel": "İptal",
   "save": "Kaydet",
-  "addressBookRecentLabel": "Son {short}"
+  "addressBookRecentLabel": "Son {short}",
+  "addressBookTrustAi": "Yapay zekâya güven",
+  "addressBookUntrustAi": "Güvenilenlerden çıkar",
+  "addressBookTrustedBadge": "Yapay zekâ için güvenilir",
+  "addressBookTrustedDone": "Yapay zekâ artık bu adrese gönderebilir",
+  "addressBookUntrustedDone": "Yapay zekâ artık bu adrese gönderemez",
+  "trustedAddressesTitle": "Güvenilen adresler",
+  "trustedAddressesHint": "Yapay zekâ yalnızca bu adreslere gönderebilir. Kendi transferleriniz sınırlı değildir.",
+  "trustedAddressesEmpty": "Henüz güvenilen adres yok",
+  "trustedAddressesAdd": "Ekle",
+  "trustedAddressesPickTitle": "Bir kişi seçin",
+  "trustedAddressesNoCandidates": "Önce adresi adres defterine kaydedin."
 }

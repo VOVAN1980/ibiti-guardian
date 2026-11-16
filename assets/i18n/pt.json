@@ -1520,5 +1520,16 @@
   "delete": "Excluir",
   "cancel": "Cancelar",
   "save": "Salvar",
-  "addressBookRecentLabel": "Recente {short}"
+  "addressBookRecentLabel": "Recente {short}",
+  "addressBookTrustAi": "Confiar à IA",
+  "addressBookUntrustAi": "Remover dos confiáveis",
+  "addressBookTrustedBadge": "Confiável para a IA",
+  "addressBookTrustedDone": "Agora a IA pode enviar para este endereço",
+  "addressBookUntrustedDone": "A IA não pode mais enviar para este endereço",
+  "trustedAddressesTitle": "Endereços confiáveis",
+  "trustedAddressesHint": "A IA só pode enviar para estes endereços. Suas próprias transferências não são limitadas.",
+  "trustedAddressesEmpty": "Ainda não há endereços confiáveis",
+  "trustedAddressesAdd": "Adicionar",
+  "trustedAddressesPickTitle": "Escolha um contato",
+  "trustedAddressesNoCandidates": "Salve primeiro o endereço na agenda."
 }

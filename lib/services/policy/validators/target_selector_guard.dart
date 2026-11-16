@@ -6,6 +6,7 @@ import 'package:ibiti_guardian/services/policy/validators/epk_validator_result.d
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/policy/policy_profile_store.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
+import 'package:ibiti_guardian/utils/address_key.dart';
 
 class TargetSelectorGuard extends EPKValidator {
   final DappReceiveEvidence? verifiedReceive;
@@ -23,7 +24,8 @@ class TargetSelectorGuard extends EPKValidator {
     if (verifiedReceive?.matchesContext(tx) ?? false) {
       return EpkValidatorResult.pass();
     }
-    final toAddress = tx.toAddress.toLowerCase();
+    // 0x addresses ignore case; Solana / Tron addresses are exact.
+    final toAddress = AddressKey.of(tx.toAddress);
 
     // The user decides where their own money goes. A send or swap started in
     // the wallet's own Send / Swap window, reviewed and confirmed with the PIN,
@@ -44,7 +46,7 @@ class TargetSelectorGuard extends EPKValidator {
     }
 
     // Self transfers are always allowed
-    if (toAddress == tx.fromAddress.toLowerCase()) {
+    if (toAddress == AddressKey.of(tx.fromAddress)) {
       return EpkValidatorResult.pass();
     }
 
@@ -61,7 +63,9 @@ class TargetSelectorGuard extends EPKValidator {
         return EpkValidatorResult.reject(
           reason: 'STRICT_MODE_UNTRUSTED_TARGET',
           userMessage:
-              'Vault is in STRICT mode. You can only transact with explicitly whitelisted addresses or contracts.',
+              'This address is not in your trusted addresses. The AI may send '
+              'only to trusted addresses: add it in Address book → ⋯ → Trust '
+              'for AI (PIN), or Command Center → Trusted addresses.',
           debugDetails: 'Target $toAddress not found in trusted lists.',
         );
       }

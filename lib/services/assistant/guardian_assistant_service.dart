@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:ibiti_guardian/models/assistant_response.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/models/trading_plan.dart';
@@ -44,6 +45,7 @@ import 'package:ibiti_guardian/services/market/market_multi_action_parser.dart';
 import 'package:ibiti_guardian/services/wallet/market_price_alert_service.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
 import 'package:ibiti_guardian/services/policy/policy_profile_store.dart';
+import 'package:ibiti_guardian/services/policy/trusted_address_directory.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
 import 'package:ibiti_guardian/services/assistant/market_voice_brain.dart';
 
@@ -80,8 +82,21 @@ class GuardianAssistantService {
         (lower.contains('что ты можешь') && lower.contains('режим'));
   }
 
+  @visibleForTesting
+  bool isLimitsStatusQuestionForTest(String input) =>
+      _isLimitsStatusQuestion(input);
+
   bool _isLimitsStatusQuestion(String input) {
     final lower = input.toLowerCase();
+    // "Отзови все разрешения" revokes token approvals; it is not a question
+    // about what the AI is allowed to do.
+    if (lower.contains('отзов') ||
+        lower.contains('отозв') ||
+        lower.contains('revoke') ||
+        lower.contains('паник') ||
+        lower.contains('panic')) {
+      return false;
+    }
     if (lower.contains('отправ') ||
         lower.contains('переведи') ||
         lower.contains('купи') ||
@@ -100,6 +115,94 @@ class GuardianAssistantService {
         lower.contains('what are your limits') ||
         lower.contains('allowed actions') ||
         lower.contains('разрешен');
+  }
+
+  // Words about changing the list ("добавь", "удали", "сделай доверенным").
+  // They only add the note that the owner changes it, with the PIN — the
+  // list itself is always shown, so a question never gets a bare refusal.
+  static final _trustChangeWords = RegExp(
+    '(^|[^а-яёіїєґ])(добав|внес|внест|занес|занест|убер|убра|удал|исключ|'
+    'очист|измен|постав|сделай|сделать|запрет|доверь|доверить|разреши|'
+    'додай|додати|видали|видалити|прибер|прибрати)|'
+    r'(^|[^a-z])(add|remove|delete|clear|put|make|allow)([^a-z]|$)|'
+    r'whitelist\s+(0x|this|that|it\b|him\b|her\b)|trust\s+(0x|this|that)',
+  );
+
+  /// Trusted addresses (the AI whitelist): answers what is on it, opens the
+  /// screen when asked to, and never changes it. Only the owner adds or
+  /// removes entries, with the PIN.
+  AssistantResponse? _trustedAddressesFastPath(
+    String input,
+    String lang, {
+    required bool voiceConversationOnly,
+  }) {
+    final lower = input.toLowerCase();
+    if (!UICommandResolver.mentionsTrustedList(
+      lower,
+      contactLabels: AddressBookService.instance.entries.map((e) => e.label),
+    )) {
+      return null;
+    }
+    // A limits question keeps the full limits answer.
+    if (lower.contains('лимит') || lower.contains('limit')) return null;
+    // "хочу отправить 20 USDT на доверенный адрес MEXC" is a transfer.
+    if (IntentParser.parse(input).isExecutionIntent) return null;
+    final isRu = lang.startsWith('ru') || lang.startsWith('uk');
+
+    final items = TrustedAddressDirectory.current();
+    final names = items.map((i) => i.displayName).join(', ');
+    final spokenNames = items
+        .map((i) => i.label ?? (isRu ? 'адрес без имени' : 'unnamed address'))
+        .join(', ');
+    String text;
+    String speech;
+    if (items.isEmpty) {
+      text = isRu
+          ? 'Доверенных адресов пока нет. Это адреса, на которые я могу '
+              'переводить сама; ваши ручные переводы они не ограничивают. '
+              'Добавить: адресная книга → «⋯» → «Доверить ИИ».'
+          : 'No trusted addresses yet. These are the addresses I may send to '
+              'myself; your own transfers are not limited. To add one: '
+              'Address book → ⋯ → Trust for AI.';
+      speech = text;
+    } else {
+      text = isRu
+          ? 'Доверенные адреса (${items.length}): $names. Только на них я '
+              'могу переводить сама; ваши ручные переводы не ограничены.'
+          : 'Trusted addresses (${items.length}): $names. I may send only '
+              'to these; your own transfers are not limited.';
+      speech = isRu
+          ? 'Доверенных адресов: ${items.length}. $spokenNames.'
+          : 'Trusted addresses: ${items.length}. $spokenNames.';
+    }
+
+    if (_trustChangeWords.hasMatch(lower)) {
+      final note = isRu
+          ? 'Добавлять и убирать доверенные адреса можете только вы, с '
+              'ПИН-кодом: адресная книга → «⋯» → «Доверить ИИ» или Командный '
+              'центр → «Доверенные адреса». Сама я этот список не меняю. '
+          : 'Only you add or remove trusted addresses, with your PIN: '
+              'Address book → ⋯ → Trust for AI, or Command Center → Trusted '
+              "addresses. I don't change this list myself. ";
+      text = '$note$text';
+      speech = '$note$speech';
+    }
+
+    var commands = const <UICommand>[];
+    if (!voiceConversationOnly && UICommandResolver.asksToOpenWindow(lower)) {
+      commands = UICommandResolver.resolveAndDispatch(
+        intent: null,
+        commands: const [
+          UICommand(type: UICommandType.openModal, target: 'trusted_addresses'),
+        ],
+      );
+    }
+    if (commands.isNotEmpty) {
+      final opening = isRu ? 'Открываю доверенные адреса. ' : 'Opening trusted addresses. ';
+      return AssistantResponse.info('$opening$text',
+          speechText: '$opening$speech', commands: commands);
+    }
+    return AssistantResponse.info(text, speechText: speech);
   }
 
   AssistantResponse _modeContractResponse(String languageCode) {
@@ -2556,6 +2659,14 @@ class GuardianAssistantService {
     if (_isModeStatusQuestion(expanded)) {
       return _modeContractResponse(detectedLang);
     }
+
+    // Before the limits answer: "разрешённые адреса" contains "разрешен".
+    final trustedAnswer = _trustedAddressesFastPath(
+      expanded,
+      detectedLang,
+      voiceConversationOnly: voiceConversationOnly,
+    );
+    if (trustedAnswer != null) return trustedAnswer;
 
     if (_isLimitsStatusQuestion(expanded)) {
       return _limitsStatusResponse(detectedLang);

@@ -1520,5 +1520,16 @@
   "delete": "Xóa",
   "cancel": "Hủy",
   "save": "Lưu",
-  "addressBookRecentLabel": "Gần đây {short}"
+  "addressBookRecentLabel": "Gần đây {short}",
+  "addressBookTrustAi": "Tin cậy cho AI",
+  "addressBookUntrustAi": "Bỏ khỏi tin cậy",
+  "addressBookTrustedBadge": "Tin cậy cho AI",
+  "addressBookTrustedDone": "AI giờ có thể gửi đến địa chỉ này",
+  "addressBookUntrustedDone": "AI không còn gửi được đến địa chỉ này",
+  "trustedAddressesTitle": "Địa chỉ tin cậy",
+  "trustedAddressesHint": "AI chỉ có thể gửi đến các địa chỉ này. Giao dịch của bạn không bị giới hạn.",
+  "trustedAddressesEmpty": "Chưa có địa chỉ tin cậy",
+  "trustedAddressesAdd": "Thêm",
+  "trustedAddressesPickTitle": "Chọn liên hệ",
+  "trustedAddressesNoCandidates": "Hãy lưu địa chỉ vào sổ địa chỉ trước."
 }

@@ -1,12 +1,35 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:ibiti_guardian/screens/security/ai_trust_actions.dart';
+import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
+import 'package:ibiti_guardian/services/policy/policy_profile_store.dart';
 import 'package:ibiti_guardian/services/wallet/address_book_service.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
+import 'package:ibiti_guardian/utils/address_key.dart';
 
-class WalletAddressBookScreen extends StatelessWidget {
+class WalletAddressBookScreen extends StatefulWidget {
   const WalletAddressBookScreen({super.key});
+
+  @override
+  State<WalletAddressBookScreen> createState() =>
+      _WalletAddressBookScreenState();
+}
+
+class _WalletAddressBookScreenState extends State<WalletAddressBookScreen> {
+  @override
+  void initState() {
+    super.initState();
+    // Lets the assistant know the owner is looking at the address book.
+    ScreenContextService.instance.setSubScreen('address_book');
+  }
+
+  @override
+  void dispose() {
+    ScreenContextService.instance.clearSubScreen('address_book');
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +53,10 @@ class WalletAddressBookScreen extends StatelessWidget {
             Text(t.t('walletSettingsAddAddress', {'default': 'Add address'})),
       ),
       body: ListenableBuilder(
-        listenable: AddressBookService.instance,
+        // The trusted-for-AI marks come from the policy profile, so the list
+        // also rebuilds when an address is trusted or untrusted.
+        listenable: Listenable.merge(
+            [AddressBookService.instance, PolicyProfileStore.instance]),
         builder: (context, _) {
           final entries = AddressBookService.instance.entries;
           if (entries.isEmpty) {
@@ -119,6 +145,8 @@ class _AddressCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final canTrust = AiTrustActions.canTrust(entry.address);
+    final trusted = canTrust && AiTrustActions.isTrusted(entry.address);
     final short = entry.address.length > 18
         ? '${entry.address.substring(0, 10)}...${entry.address.substring(entry.address.length - 6)}'
         : entry.address;
@@ -138,12 +166,16 @@ class _AddressCard extends StatelessWidget {
                 width: 42,
                 height: 42,
                 decoration: BoxDecoration(
-                  color: GuardianColors.surfaceElevated,
+                  color: trusted
+                      ? GuardianColors.success.withOpacity(0.16)
+                      : GuardianColors.surfaceElevated,
                   borderRadius: BorderRadius.circular(16),
                 ),
-                child: const Icon(
-                  Icons.person_outline_rounded,
-                  color: Colors.white,
+                child: Icon(
+                  trusted
+                      ? Icons.verified_user_rounded
+                      : Icons.person_outline_rounded,
+                  color: trusted ? GuardianColors.success : Colors.white,
                   size: 22,
                 ),
               ),
@@ -162,6 +194,17 @@ class _AddressCard extends StatelessWidget {
                       short,
                       style: GuardianTextStyles.caption,
                     ),
+                    if (trusted) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        t.t('addressBookTrustedBadge',
+                            {'default': 'Trusted for AI'}),
+                        style: GuardianTextStyles.caption.copyWith(
+                          color: GuardianColors.success,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -190,7 +233,20 @@ class _AddressCard extends StatelessWidget {
                       t: t,
                       existing: entry,
                     );
+                  } else if (value == 'trust') {
+                    await AiTrustActions.trust(context,
+                        label: entry.label, address: entry.address);
+                  } else if (value == 'untrust') {
+                    await AiTrustActions.untrust(context,
+                        label: entry.label, address: entry.address);
                   } else if (value == 'delete') {
+                    // A deleted contact can no longer be seen or untrusted
+                    // here, so it must not stay on the AI whitelist either.
+                    await AiTrustActions.untrust(context,
+                        label: entry.label,
+                        address: entry.address,
+                        silent: true,
+                        reason: ' (contact deleted)');
                     await AddressBookService.instance.remove(entry.address);
                   }
                 },
@@ -207,6 +263,17 @@ class _AddressCard extends StatelessWidget {
                       t.t('edit', {'default': 'Edit'}),
                     ),
                   ),
+                  if (canTrust)
+                    PopupMenuItem(
+                      value: trusted ? 'untrust' : 'trust',
+                      child: Text(
+                        trusted
+                            ? t.t('addressBookUntrustAi',
+                                {'default': 'Remove from trusted'})
+                            : t.t('addressBookTrustAi',
+                                {'default': 'Trust for AI'}),
+                      ),
+                    ),
                   PopupMenuItem(
                     value: 'delete',
                     child: Text(
@@ -260,7 +327,9 @@ Future<void> _showAddressDialog(
   final addrCtrl = TextEditingController(text: existing?.address ?? '');
   await showDialog(
     context: context,
-    builder: (_) => AlertDialog(
+    // Close with the dialog's own context: the card that opened it can be
+    // rebuilt or removed while the change is being saved.
+    builder: (dialogContext) => AlertDialog(
       backgroundColor: GuardianColors.surface,
       title: Text(
         existing == null
@@ -290,7 +359,7 @@ Future<void> _showAddressDialog(
       ),
       actions: [
         TextButton(
-          onPressed: () => Navigator.pop(context),
+          onPressed: () => Navigator.pop(dialogContext),
           child: Text(t.t('cancel', {'default': 'Cancel'})),
         ),
         ElevatedButton(
@@ -299,17 +368,24 @@ Future<void> _showAddressDialog(
             final address = addrCtrl.text.trim();
             if (label.isEmpty || address.isEmpty) return;
             if (existing != null &&
-                existing.address.toLowerCase() == address.toLowerCase()) {
+                AddressKey.same(existing.address, address)) {
               // Renaming: change the name in place. Adding again used to
               // leave the old "Recent 0x…" entry next to the renamed copy.
               await AddressBookService.instance.update(address, label);
             } else {
               if (existing != null) {
+                // Trust belongs to the old address; a new address must be
+                // trusted again with the PIN.
+                await AiTrustActions.untrust(dialogContext,
+                    label: existing.label,
+                    address: existing.address,
+                    silent: true,
+                    reason: ' (address changed)');
                 await AddressBookService.instance.remove(existing.address);
               }
               await AddressBookService.instance.add(label, address);
             }
-            if (context.mounted) Navigator.pop(context);
+            if (dialogContext.mounted) Navigator.pop(dialogContext);
           },
           child: Text(t.t('save', {'default': 'Save'})),
         ),

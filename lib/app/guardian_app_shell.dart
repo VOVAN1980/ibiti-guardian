@@ -5,6 +5,7 @@ import 'package:ibiti_guardian/screens/assistant/assistant_home_screen.dart';
 import 'package:ibiti_guardian/screens/assistant/components/assistant_chat_screen.dart';
 import 'package:ibiti_guardian/screens/security/guardian_control_screen.dart';
 import 'package:ibiti_guardian/screens/security/security_center_screen.dart';
+import 'package:ibiti_guardian/screens/security/trusted_addresses_screen.dart';
 import 'package:ibiti_guardian/screens/security/ai_control_screen.dart'
     show AIControlScreen;
 import 'package:ibiti_guardian/screens/settings/settings_screen.dart';
@@ -380,6 +381,20 @@ class _GuardianAppShellState extends State<GuardianAppShell>
             Navigator.of(context, rootNavigator: true).push(
               MaterialPageRoute(
                 builder: (_) => const WalletAddressBookScreen(),
+              ),
+            );
+          }
+        });
+
+      case 'trusted_addresses':
+        // Asked again while it is open: it is already on screen.
+        if (TrustedAddressesScreen.openCount > 0) break;
+        if (_currentIndex != 2) setState(() => _currentIndex = 2);
+        Future.delayed(const Duration(milliseconds: 120), () {
+          if (mounted && TrustedAddressesScreen.openCount == 0) {
+            Navigator.of(context, rootNavigator: true).push(
+              MaterialPageRoute(
+                builder: (_) => const TrustedAddressesScreen(),
               ),
             );
           }
