@@ -16,14 +16,13 @@ IBITI Guardian is built with privacy as a core engineering specification. IBITI 
 * **No analytics**: There are no marketing trackers, analytics cookies or fingerprinting SDKs in the app.
 
 ## 3. Third-Party Services
-* **OpenAI**: Speech recognition (Whisper), voice synthesis and the AI assistant. When you talk to the assistant, your message is sent together with wallet context:
+* **OpenAI**: Speech recognition (gpt-4o-mini-transcribe), voice synthesis (gpt-4o-mini-tts, or tts-1 for the stable voice) and the AI assistant. When you talk to the assistant, your message is sent together with wallet context:
   * shortened addresses (for example `0x7376…9015`) and the active network;
   * asset balances and their USD value, and the status of your latest transaction;
   * your AI settings and limits, and your saved assistant preferences and voice macros.
 
   When the assistant needs it, it can also request the full wallet address, your address book (contact names and addresses), your transaction history and the AI action log. Exchange API keys, your PIN and private keys are never sent.
 * **Web search and page reading**: If the assistant searches the web, the query goes to DuckDuckGo. If it reads a web page, the page address goes to r.jina.ai.
-* **Market analysis (IBITI/Jarvis)**: Market data and your market questions may be sent to the AI providers configured for analysis (Groq, DeepSeek, Anthropic, Mistral, Cerebras, OpenRouter, Google Gemini).
 * **Privy**: Sign-in and embedded-wallet signing.
 * **Moralis, Ankr and RPC nodes**: Balances, token metadata and transaction simulation for your wallet address.
 * **Swap services (0x, Jupiter, SunSwap)**: Receive your wallet address and the swap parameters to build a quote.

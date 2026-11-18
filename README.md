@@ -24,18 +24,18 @@
 
 ---
 
-**IBITI Guardian** is a secure, non-custodial crypto wallet and CEX controller equipped with a real-time, voice-controlled AI Agent (Jarvis / Guardian AI). 
+**IBITI Guardian** is a secure, non-custodial crypto wallet and CEX controller equipped with a real-time, voice-controlled AI Agent (Guardian AI). 
 
-Designed to combine hands-free voice execution with bank-grade security, Guardian protects Web3 and CEX users through biometric verification, sandbox transaction execution, and strict heuristic policies. It allows users to trade, swap, and transfer crypto purely via voice commands under the safety of a local security shield.
+Designed to combine push-to-talk voice execution with bank-grade security, Guardian protects Web3 and CEX users through biometric verification, sandbox transaction execution, and strict heuristic policies. It allows users to trade, swap, and transfer crypto purely via voice commands under the safety of a local security shield.
 
 ---
 
 ## 🎙️ Core Pillars
 
-### 1. Guardian Voice AI (Jarvis)
-Hands-free trade execution and market intelligence powered by a customized speech processing pipeline:
-- **Speech-to-Text (STT)**: Powered by Whisper, translating raw vocal intents into structured crypto trade orders.
-- **Text-to-Speech (TTS)**: Built with OpenAI's model family (GPT-4o / GPT-4o-mini-tts / TTS-1) and optimized using custom pronunciation guidelines for precise crypto speech (e.g., *«Ибити»*, *«Ю-эс-ди-ти»*, *«ор-дер»*).
+### 1. Guardian Voice AI
+Push-to-talk trade execution and market intelligence powered by a customized speech processing pipeline:
+- **Speech-to-Text (STT)**: Powered by OpenAI speech-to-text (`gpt-4o-mini-transcribe`), translating raw vocal intents into structured crypto trade orders.
+- **Text-to-Speech (TTS)**: Built with OpenAI's `gpt-4o-mini-tts`, with TTS-1 as the stable-voice option, and optimized using custom pronunciation guidelines for precise crypto speech (e.g., *«Ибити»*, *«Ю-эс-ди-ти»*, *«ор-дер»*).
 - **Conversational Feedback**: Concise voice confirmations (e.g., *«Ордер исполнен, удачных торгов.»*) designed to keep speech short, clean, and professional.
 
 ### 2. AI Autonomy & Control Modes
@@ -87,7 +87,7 @@ The following features are architecturally designed and partially implemented, b
 ```mermaid
 graph TD
     User([User Voice/UI]) -->|Voice/Text| VoiceTurnController[Voice & Input Controller]
-    VoiceTurnController -->|STT Whisper| AssistantService[Guardian Assistant AI]
+    VoiceTurnController -->|STT| AssistantService[Guardian Assistant AI]
     AssistantService -->|Intent Parsing| PolicyEngine[Heuristic Policy Engine]
     PolicyEngine -->|Biometric PIN Check| SandboxGuard[SandboxGuard State Simulator]
     SandboxGuard -->|Confirm/Allow| ExecService[Execution Service]
@@ -109,7 +109,7 @@ graph TD
 | **Authentication & Web3** | Privy Flutter SDK (`privy_flutter`) |
 | **Database & Cache** | SQLite (`sqflite`) & SharedPreferences |
 | **Vault Encryption** | Flutter Secure Storage (`flutter_secure_storage`) |
-| **AI Models** | OpenAI GPT-4o / GPT-4o-mini-tts |
+| **AI Models** | OpenAI GPT-4o mini (chat) · gpt-4o-mini-transcribe (STT) · gpt-4o-mini-tts / TTS-1 (TTS) |
 | **Voice Processing** | Record (Audio Recording) & Audioplayers (Audio Output) |
 | **Local Security** | Local Auth (`local_auth`) for biometrics |
 

@@ -9,7 +9,7 @@ This document details the modular technical architecture of **IBITI Guardian**. 
 ```mermaid
 graph TD
     User([User Voice/UI]) -->|Voice/Text| VoiceTurnController[Voice & Input Controller]
-    VoiceTurnController -->|STT Whisper| AssistantService[Guardian Assistant AI]
+    VoiceTurnController -->|STT| AssistantService[Guardian Assistant AI]
     AssistantService -->|Intent Parsing| PolicyEngine[Heuristic Policy Engine]
     PolicyEngine -->|Biometric PIN Check| SandboxGuard[SandboxGuard State Simulator]
     SandboxGuard -->|Confirm/Allow| ExecService[Execution Service]
@@ -27,8 +27,8 @@ graph TD
 
 ### 1. Voice & Intent Resolution Pipeline
 * **VoiceTurnController**: Manages speech recording sessions and coordinates flow between audio devices, Speech-To-Text, and the LLM engine.
-* **SttService (Whisper)**: Transcribes the raw vocal audio input locally or via transient HTTPS calls to Whisper models.
-* **GuardianAssistantService (Jarvis)**: Decodes the natural language transcription into a structured JSON trade payload (e.g., action, amount, symbol, target platform).
+* **TranscriptionService**: Sends the recorded audio over HTTPS to OpenAI speech-to-text (gpt-4o-mini-transcribe).
+* **GuardianAssistantService (Guardian AI)**: Decodes the natural language transcription into a structured JSON trade payload (e.g., action, amount, symbol, target platform).
 * **TtsService (OpenAI / GPT-4o-mini-tts)**: Synthesizes responses using pronunciation-optimized prompts to prevent syllable skipping, foreign accents, or spelling out long IDs.
 
 ### 2. Guard & Security Layer
@@ -47,8 +47,8 @@ graph TD
 ## 🔄 Sequence: Voice Command to Order Execution
 
 1. **Vocal Input**: User says *«Купи SOL на 5 долларов через MEXC»* (Buy SOL for 5 dollars on MEXC).
-2. **Transcription**: Whisper converts the audio stream to text.
-3. **Intent Parsing**: Jarvis AI interprets this as a `BUY` order of `SOL` worth `5 USD` on `MEXC`.
+2. **Transcription**: OpenAI speech-to-text converts the audio stream to text.
+3. **Intent Parsing**: Guardian AI interprets this as a `BUY` order of `SOL` worth `5 USD` on `MEXC`.
 4. **Policy Check**: The Policy Engine verifies:
    * Is `MEXC` an allowed exchange source? (Yes)
    * Is the order size ($5) above the minimum limit ($5)? (Yes)
