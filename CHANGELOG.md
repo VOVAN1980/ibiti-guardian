@@ -24,7 +24,7 @@ All notable changes to this project will be documented in this file.
 
 ---
 
-## [1.0.0-hackathon] - 2026-06-17
+## [0.1.0] - 2026-06-17
 
 ### Added
 - **Jarvis Voice AI**: Added full voice recognition (STT) and voice synthesis (TTS) supporting natural voice commands.

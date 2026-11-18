@@ -16,7 +16,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-1.0.0-informational?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.1.0-informational?style=flat-square" alt="Version">
   <img src="https://img.shields.io/badge/flutter-%3E%3D_3.3.4-02569B?style=flat-square&logo=flutter" alt="Flutter">
   <a href="LICENSING.md"><img src="https://img.shields.io/badge/license-source--available-orange?style=flat-square" alt="License: IBITI Labs Guardian License 1.0"></a>
   <img src="https://img.shields.io/badge/platform-Android_|_iOS-3DDC84?style=flat-square&logo=android" alt="Platforms">
