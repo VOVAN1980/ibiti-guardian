@@ -12,6 +12,13 @@ class UpdateService {
 
   static const _log = GuardianLogger('UpdateService');
 
+  /// Off until the app is published. version.json and the store listing below
+  /// don't exist yet (both answer 404), so every check would be a wasted
+  /// request. To turn it on: publish version.json, point [appId] (the Android
+  /// applicationId is com.ibiti.guardian), [updateUrl], [defaultAppStoreUrl]
+  /// and [_trustedHosts] at the published app, then set this to true.
+  static const bool enabled = false;
+
   static const String appId = 'app.aimoney.guardian';
   static const String updateUrl =
       'https://vovan1980.github.io/aimoney_guardian/version.json';
@@ -38,6 +45,7 @@ class UpdateService {
   }
 
   Future<UpdateCheckResult> checkForUpdates({bool isAutoCheck = false}) async {
+    if (!enabled) return UpdateCheckResult(status: UpdateStatus.upToDate);
     try {
       if (isAutoCheck && !await _shouldCheckNow()) {
         return UpdateCheckResult(status: UpdateStatus.upToDate);

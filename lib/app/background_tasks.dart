@@ -17,7 +17,8 @@ void callbackDispatcher() {
   });
 }
 
-/// Initializes Workmanager and registers the daily update check.
+/// Initializes Workmanager and registers the daily update check (only while
+/// UpdateService.enabled is true; it is off until the app is published).
 /// BootScreen runs it first among the deferred services (MonitoringService
 /// registers its task after it). It used to run at launch, where its work on
 /// the Android main thread held up the first frames.
@@ -31,6 +32,12 @@ Future<void> setupBackgroundTasks() async {
     callbackDispatcher,
     isInDebugMode: kDebugMode,
   );
+  // The update check is off (UpdateService.enabled): remove the daily task
+  // that older builds registered, and don't register it again.
+  if (!UpdateService.enabled) {
+    await Workmanager().cancelByUniqueName("1");
+    return;
+  }
   await Workmanager().registerPeriodicTask(
     "1",
     "app_update_check",
