@@ -71,19 +71,6 @@ class SettingsService extends ChangeNotifier {
     await save();
   }
 
-  Future<void> updateMonitoringSettings({
-    bool? autoMonitoringEnabled,
-    int? monitoringIntervalMinutes,
-    bool? multiWalletMonitoringEnabled,
-  }) async {
-    _settings = _settings.copyWith(
-      autoMonitoringEnabled: autoMonitoringEnabled,
-      monitoringIntervalMinutes: monitoringIntervalMinutes,
-      multiWalletMonitoringEnabled: multiWalletMonitoringEnabled,
-    );
-    await save();
-  }
-
   Future<void> updateQuietMode({
     bool? enabled,
     String? start,

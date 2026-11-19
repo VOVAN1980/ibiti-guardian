@@ -12,6 +12,8 @@ import 'package:ibiti_guardian/services/audio_manager.dart';
 import 'package:ibiti_guardian/models/notification_settings.dart';
 import 'package:ibiti_guardian/models/sound_settings.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
+import 'package:ibiti_guardian/services/update_service.dart';
+import 'package:ibiti_guardian/services/alerts/notification_service.dart';
 import 'package:ibiti_guardian/screens/vault/vault_unlock_screen.dart';
 import 'package:ibiti_guardian/widgets/ai_form_widget.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
@@ -128,12 +130,6 @@ class _SettingsBody extends StatelessWidget {
           subtitle:
               'Управление доступом к Vault', // Fallback string, we'll localize later
           destination: const _SecurityVaultScreen(),
-        ),
-        _NavTile(
-          icon: Icons.security_outlined,
-          title: t.t('settingsMonitoring'),
-          subtitle: t.t('settingsMonitoringSub'),
-          destination: const _MonitoringScreen(),
         ),
         _NavTile(
           icon: Icons.update_outlined,
@@ -476,56 +472,6 @@ class _NotificationsScreenState extends State<_NotificationsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _SectionHeader(
-                label: LocalizationProvider.of(context)
-                    .t('settingsSectionSecurityAlerts')),
-            _ToggleRow(
-              title: LocalizationProvider.of(context)
-                  .t('settingsNotificationsCritical'),
-              subtitle: LocalizationProvider.of(context)
-                  .t('settingsNotificationsCriticalSub'),
-              value: _ns.criticalThreatAlerts,
-              onChanged: (v) => _update(_ns.copyWith(criticalThreatAlerts: v)),
-            ),
-            _ToggleRow(
-              title: LocalizationProvider.of(context)
-                  .t('settingsNotificationsHighRisk'),
-              subtitle: LocalizationProvider.of(context)
-                  .t('settingsNotificationsHighRiskSub'),
-              value: _ns.highRiskApprovalAlerts,
-              onChanged: (v) =>
-                  _update(_ns.copyWith(highRiskApprovalAlerts: v)),
-            ),
-            _ToggleRow(
-              title: LocalizationProvider.of(context)
-                  .t('settingsNotificationsUnlimited'),
-              subtitle: LocalizationProvider.of(context)
-                  .t('settingsNotificationsUnlimitedSub'),
-              value: _ns.unlimitedApprovalAlerts,
-              onChanged: (v) =>
-                  _update(_ns.copyWith(unlimitedApprovalAlerts: v)),
-            ),
-            _ToggleRow(
-              title: LocalizationProvider.of(context)
-                  .t('settingsNotificationsThreatDb'),
-              subtitle: LocalizationProvider.of(context)
-                  .t('settingsNotificationsThreatDbSub'),
-              value: _ns.threatDatabaseAlerts,
-              onChanged: (v) => _update(_ns.copyWith(threatDatabaseAlerts: v)),
-            ),
-            const SizedBox(height: 20),
-            _SectionHeader(
-                label: LocalizationProvider.of(context)
-                    .t('settingsSectionMonitoring')),
-            _ToggleRow(
-              title: LocalizationProvider.of(context)
-                  .t('settingsNotificationsMonitoring'),
-              subtitle: LocalizationProvider.of(context)
-                  .t('settingsNotificationsMonitoringHealthSub'),
-              value: _ns.monitoringHealthAlerts,
-              onChanged: (v) =>
-                  _update(_ns.copyWith(monitoringHealthAlerts: v)),
-            ),
             _ToggleRow(
               title: LocalizationProvider.of(context)
                   .t('settingsNotificationsRevoke'),
@@ -534,16 +480,15 @@ class _NotificationsScreenState extends State<_NotificationsScreen> {
               value: _ns.revokeResultAlerts,
               onChanged: (v) => _update(_ns.copyWith(revokeResultAlerts: v)),
             ),
-            const SizedBox(height: 20),
-            _SectionHeader(
-                label: LocalizationProvider.of(context)
-                    .t('settingsSectionAccount')),
-            _ToggleRow(
-              title: LocalizationProvider.of(context).t('settingsSubscription'),
-              subtitle: LocalizationProvider.of(context)
-                  .t('settingsNotificationsSubscriptionSub'),
-              value: _ns.subscriptionReminders,
-              onChanged: (v) => _update(_ns.copyWith(subscriptionReminders: v)),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                LocalizationProvider.of(context)
+                    .t('settingsNotificationsVibrationHint'),
+                style: GuardianTextStyles.caption
+                    .copyWith(color: GuardianColors.textTertiary),
+              ),
             ),
           ],
         ),
@@ -577,6 +522,7 @@ class _SoundsScreenState extends State<_SoundsScreen> {
   Future<void> _update(SoundSettings updated) async {
     setState(() => _ss = updated);
     await SettingsService.instance.updateSoundSettings(updated);
+    await NotificationService.instance.syncChannelsWithSettings();
   }
 
   @override
@@ -594,6 +540,43 @@ class _SoundsScreenState extends State<_SoundsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            _SectionHeader(label: t.t('settingsVibrationSection')),
+            _ToggleRow(
+              title: t.t('settingsVibrationSingle'),
+              subtitle: t.t('settingsVibrationSingleSub'),
+              value: _ss.singleVibrationEnabled,
+              onChanged: (v) => _update(_ss.copyWith(singleVibrationEnabled: v)),
+            ),
+            _ToggleRow(
+              title: t.t('settingsVibrationDouble'),
+              subtitle: t.t('settingsVibrationDoubleSub'),
+              value: _ss.doubleVibrationEnabled,
+              onChanged: (v) => _update(_ss.copyWith(doubleVibrationEnabled: v)),
+            ),
+            const SizedBox(height: 20),
+            _SectionHeader(label: t.t('settingsTopUpSection')),
+            _ToggleRow(
+              title: t.t('settingsTopUpSound'),
+              subtitle: t.t('settingsTopUpSoundSub'),
+              value: _ss.topUpSoundEnabled,
+              onChanged: (v) {
+                AudioManager.instance.stopAll();
+                _update(_ss.copyWith(topUpSoundEnabled: v));
+              },
+            ),
+            if (_ss.topUpSoundEnabled) ...[
+              const SizedBox(height: 12),
+              _SoundPicker(
+                label: t.t('settingsTopUpSoundPick'),
+                options: SoundSettings.topUpSounds,
+                selected: _ss.selectedTopUpSoundId,
+                onSelect: (id) async {
+                  await AudioManager.instance.previewTopUpSound(id);
+                  _update(_ss.copyWith(selectedTopUpSoundId: id));
+                },
+              ),
+            ],
+            const SizedBox(height: 20),
             _SectionHeader(label: t.t('settingsSoundSectionMain')),
             _ToggleRow(
               title: t.t('settingsSoundEffects'),
@@ -604,38 +587,6 @@ class _SoundsScreenState extends State<_SoundsScreen> {
                 _update(_ss.copyWith(soundEnabled: v));
               },
             ),
-            _ToggleRow(
-              title: t.t('settingsVibration'),
-              subtitle: t.t('settingsVibrationSub'),
-              value: _ss.vibrationEnabled,
-              onChanged: (v) {
-                AudioManager.instance.stopAll();
-                _update(_ss.copyWith(vibrationEnabled: v));
-              },
-            ),
-            const SizedBox(height: 20),
-            _SectionHeader(label: 'Пополнение кошелька'),
-            _ToggleRow(
-              title: 'Звук пополнения',
-              subtitle: 'Приятный звук монет при получении денег',
-              value: _ss.topUpSoundEnabled,
-              onChanged: (v) {
-                AudioManager.instance.stopAll();
-                _update(_ss.copyWith(topUpSoundEnabled: v));
-              },
-            ),
-            if (_ss.topUpSoundEnabled) ...[
-              const SizedBox(height: 12),
-              _SoundPicker(
-                label: 'Звук пополнения',
-                options: SoundSettings.topUpSounds,
-                selected: _ss.selectedTopUpSoundId,
-                onSelect: (id) async {
-                  await AudioManager.instance.previewTopUpSound(id);
-                  _update(_ss.copyWith(selectedTopUpSoundId: id));
-                },
-              ),
-            ],
           ],
         ),
       ),
@@ -726,122 +677,6 @@ class _SoundPicker extends StatelessWidget {
             }).toList(),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class _MonitoringScreen extends StatefulWidget {
-  const _MonitoringScreen();
-
-  @override
-  State<_MonitoringScreen> createState() => _MonitoringScreenState();
-}
-
-class _MonitoringScreenState extends State<_MonitoringScreen> {
-  late bool _autoMonitoring;
-  late int _interval;
-  late bool _multiWallet;
-
-  @override
-  void initState() {
-    super.initState();
-    final s = SettingsService.instance.settings;
-    _autoMonitoring = s.autoMonitoringEnabled;
-    _interval = s.monitoringIntervalMinutes;
-    _multiWallet = s.multiWalletMonitoringEnabled;
-  }
-
-  Future<void> _save() async {
-    await SettingsService.instance.updateMonitoringSettings(
-      autoMonitoringEnabled: _autoMonitoring,
-      monitoringIntervalMinutes: _interval,
-      multiWalletMonitoringEnabled: _multiWallet,
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final t = LocalizationProvider.of(context);
-    return _SettingsScaffold(
-      title: t.t('settingsMonitoring'),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.only(
-          left: 16,
-          right: 16,
-          top: 16,
-          bottom: MediaQuery.of(context).padding.bottom + 16,
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _SectionHeader(label: t.t('settingsMonitoringHeader')),
-            _ToggleRow(
-              title: t.t('settingsSecurityAutoMonitoring'),
-              subtitle: t.t('settingsMonitoringAutoSub'),
-              value: _autoMonitoring,
-              onChanged: (v) {
-                setState(() => _autoMonitoring = v);
-                _save();
-              },
-            ),
-            _ToggleRow(
-              title: t.t('settingsSecurityMultiWallet'),
-              subtitle: t.t('settingsMonitoringMultiSub'),
-              value: _multiWallet,
-              onChanged: (v) {
-                setState(() => _multiWallet = v);
-                _save();
-              },
-            ),
-            const SizedBox(height: 20),
-            _SectionHeader(label: t.t('settingsMonitoringIntervalHeader')),
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: GuardianColors.surface,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: GuardianColors.glassBorder),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _interval == 1
-                        ? t.t('settingsMonitoringEverySingular',
-                            {'minutes': _interval})
-                        : t.t(
-                            'settingsMonitoringEvery', {'minutes': _interval}),
-                    style: GuardianTextStyles.bodyPrimary
-                        .copyWith(color: GuardianColors.accent),
-                  ),
-                  const SizedBox(height: 8),
-                  Slider(
-                    value: _interval.toDouble(),
-                    min: 5,
-                    max: 60,
-                    divisions: 11,
-                    activeColor: GuardianColors.accent,
-                    inactiveColor: GuardianColors.glassBorder,
-                    onChanged: (v) => setState(() => _interval = v.round()),
-                    onChangeEnd: (_) => _save(),
-                  ),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text('5 min',
-                          style: GuardianTextStyles.caption
-                              .copyWith(color: GuardianColors.textTertiary)),
-                      Text('60 min',
-                          style: GuardianTextStyles.caption
-                              .copyWith(color: GuardianColors.textTertiary)),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -1192,27 +1027,66 @@ class _UpdatesScreen extends StatefulWidget {
   State<_UpdatesScreen> createState() => _UpdatesScreenState();
 }
 
+/// Real check through [UpdateService]. While the check is off (the app is not
+/// published yet) the button is greyed out and the screen says so.
 class _UpdatesScreenState extends State<_UpdatesScreen> {
   bool _checking = false;
-  String _status = 'Tap below to check for updates.';
+  UpdateCheckResult? _result;
+  String _version = '';
+
+  @override
+  void initState() {
+    super.initState();
+    PackageInfo.fromPlatform().then((info) {
+      if (mounted) {
+        setState(() => _version = '${info.version} (${info.buildNumber})');
+      }
+    });
+  }
 
   Future<void> _checkNow() async {
     setState(() {
       _checking = true;
-      _status = 'Checking...';
+      _result = null;
     });
-    await Future.delayed(const Duration(seconds: 2));
+    final result = await UpdateService.instance.checkForUpdates();
     if (mounted) {
       setState(() {
         _checking = false;
-        _status = 'You are running the latest version.';
+        _result = result;
       });
+    }
+  }
+
+  String _statusText(LocalizationService t) {
+    if (!UpdateService.enabled) return t.t('settingsUpdateNotYet');
+    if (_checking) return t.t('settingsUpdateChecking');
+    switch (_result?.status) {
+      case UpdateStatus.upToDate:
+        return t.t('settingsUpdateLatestMsg');
+      case UpdateStatus.updateAvailable:
+        return t.t(
+            'settingsUpdateNewMsg', {'version': _result!.remoteVersion ?? ''});
+      case UpdateStatus.error:
+        return t.t('settingsUpdateError');
+      case null:
+        return t.t('settingsUpdateCheckSub');
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final t = LocalizationProvider.of(context);
+    final updateAvailable = _result?.status == UpdateStatus.updateAvailable;
+    final VoidCallback? onPressed;
+    if (!UpdateService.enabled || _checking) {
+      onPressed = null;
+    } else if (updateAvailable) {
+      onPressed = () =>
+          UpdateService.instance.launchStore(customUrl: _result!.updateUrl);
+    } else {
+      onPressed = _checkNow;
+    }
     return _SettingsScaffold(
       title: t.t('settingsUpdateTitle'),
       body: Padding(
@@ -1233,14 +1107,16 @@ class _UpdatesScreenState extends State<_UpdatesScreen> {
                   size: 40, color: GuardianColors.accent),
             ),
             const SizedBox(height: 20),
+            if (_version.isNotEmpty) ...[
+              Text(
+                t.t('settingsAboutVersion', {'version': _version}),
+                style: GuardianTextStyles.caption
+                    .copyWith(color: GuardianColors.textTertiary),
+              ),
+              const SizedBox(height: 8),
+            ],
             Text(
-              _status == 'Tap below to check for updates.'
-                  ? t.t('settingsUpdateCheckSub')
-                  : (_status == 'Checking...'
-                      ? t.t('dashboardStatusInitializing')
-                      : (_status == 'You are running the latest version.'
-                          ? t.t('settingsUpdateLatestMsg')
-                          : _status)),
+              _statusText(t),
               textAlign: TextAlign.center,
               style: GuardianTextStyles.bodyPrimary,
             ),
@@ -1248,10 +1124,12 @@ class _UpdatesScreenState extends State<_UpdatesScreen> {
             SizedBox(
               width: double.infinity,
               child: ElevatedButton(
-                onPressed: _checking ? null : _checkNow,
+                onPressed: onPressed,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: GuardianColors.accent,
                   foregroundColor: Colors.white,
+                  disabledBackgroundColor: GuardianColors.surfaceElevated,
+                  disabledForegroundColor: GuardianColors.textTertiary,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(14)),
@@ -1265,7 +1143,10 @@ class _UpdatesScreenState extends State<_UpdatesScreen> {
                           color: Colors.white,
                         ),
                       )
-                    : Text(t.t('settingsUpdateCheckBtn'),
+                    : Text(
+                        t.t(updateAvailable
+                            ? 'settingsUpdateGetBtn'
+                            : 'settingsUpdateCheckBtn'),
                         style: GuardianTextStyles.button),
               ),
             ),
@@ -1283,7 +1164,17 @@ class _AboutScreen extends StatefulWidget {
   State<_AboutScreen> createState() => _AboutScreenState();
 }
 
+/// Short, like the big apps: logo, version, one line about the app, then
+/// help, legal pages, website and open-source licences.
 class _AboutScreenState extends State<_AboutScreen> {
+  static const String _supportEmail = 'info@ibiticoin.com';
+  static const String _privacyUrl =
+      'https://github.com/VOVAN1980/ibiti-guardian/blob/main/PRIVACY.md';
+  static const String _termsUrl =
+      'https://github.com/VOVAN1980/ibiti-guardian/blob/main/DISCLAIMER.md';
+  static const String _websiteUrl =
+      'https://vovan1980.github.io/ibiti-guardian/';
+
   String _version = '—';
   String _buildNumber = '—';
 
@@ -1303,11 +1194,25 @@ class _AboutScreenState extends State<_AboutScreen> {
     }
   }
 
-  Future<void> _launch(String url) async {
-    final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+  /// Opens a link or the mail app. launchUrl directly: canLaunchUrl answers
+  /// false on Android 11+ unless the manifest lists the scheme in <queries>.
+  Future<bool> _launch(String url) async {
+    try {
+      return await launchUrl(Uri.parse(url),
+          mode: LaunchMode.externalApplication);
+    } catch (e) {
+      return false;
     }
+  }
+
+  /// No mail app: copy the address so the user can still write to us.
+  Future<void> _writeToSupport() async {
+    if (await _launch('mailto:$_supportEmail')) return;
+    await Clipboard.setData(const ClipboardData(text: _supportEmail));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('$_supportEmail  ✓')),
+    );
   }
 
   @override
@@ -1371,17 +1276,16 @@ class _AboutScreenState extends State<_AboutScreen> {
               style: GuardianTextStyles.caption
                   .copyWith(color: GuardianColors.textTertiary),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             Text(
               t.t('settingsAboutContent'),
               textAlign: TextAlign.center,
               style: GuardianTextStyles.bodySecondary.copyWith(
                 color: GuardianColors.textTertiary,
-                height: 1.6,
+                height: 1.5,
               ),
             ),
-            const SizedBox(height: 36),
-            // Info tiles
+            const SizedBox(height: 32),
             Container(
               decoration: BoxDecoration(
                 color: GuardianColors.surface,
@@ -1391,38 +1295,46 @@ class _AboutScreenState extends State<_AboutScreen> {
               child: Column(
                 children: [
                   _AboutTile(
+                    title: t.t('settingsAboutSupport'),
+                    subtitle: _supportEmail,
+                    icon: Icons.help_outline_rounded,
+                    onTap: _writeToSupport,
+                  ),
+                  _Divider(),
+                  _AboutTile(
                     title: t.t('settingsAboutPrivacy'),
                     icon: Icons.privacy_tip_outlined,
-                    onTap: () => _launch(
-                        'https://github.com/VOVAN1980/ibiti-guardian/blob/main/PRIVACY.md'),
+                    onTap: () => _launch(_privacyUrl),
                   ),
                   _Divider(),
                   _AboutTile(
-                    title: LocalizationService.instance.t('settingsAboutTerms'),
+                    title: t.t('settingsAboutTerms'),
                     icon: Icons.gavel_outlined,
-                    onTap: () => _launch(
-                        'https://github.com/VOVAN1980/ibiti-guardian/blob/main/LICENSING.md'),
+                    onTap: () => _launch(_termsUrl),
                   ),
                   _Divider(),
                   _AboutTile(
-                    title:
-                        LocalizationService.instance.t('settingsAboutSupport'),
-                    icon: Icons.support_agent_outlined,
-                    onTap: () => _launch('mailto:support@aimoneyguardian.app'),
+                    title: t.t('settingsAboutWebsite'),
+                    icon: Icons.language,
+                    onTap: () => _launch(_websiteUrl),
                   ),
                   _Divider(),
                   _AboutTile(
-                    title: LocalizationService.instance.t('settingsAboutRate'),
-                    icon: Icons.star_outline_rounded,
-                    onTap: () =>
-                        _launch('https://github.com/VOVAN1980/ibiti-guardian'),
+                    title: t.t('settingsAboutLicenses'),
+                    icon: Icons.description_outlined,
+                    external: false,
+                    onTap: () => showLicensePage(
+                      context: context,
+                      applicationName: t.t('settingsAboutBrand'),
+                      applicationVersion: '$_version ($_buildNumber)',
+                    ),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: 40),
             Text(
-              '© 2025 IBITI Guardian. All rights reserved.',
+              '© 2026 IBITI Labs',
               textAlign: TextAlign.center,
               style: GuardianTextStyles.caption
                   .copyWith(color: GuardianColors.textTertiary),
@@ -1443,12 +1355,18 @@ class _Divider extends StatelessWidget {
 
 class _AboutTile extends StatelessWidget {
   final String title;
+  final String? subtitle;
   final IconData icon;
   final VoidCallback onTap;
+
+  /// Opens outside the app (browser or mail): shows the "open" arrow.
+  final bool external;
   const _AboutTile({
     required this.title,
+    this.subtitle,
     required this.icon,
     required this.onTap,
+    this.external = true,
   });
 
   @override
@@ -1457,7 +1375,12 @@ class _AboutTile extends StatelessWidget {
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       leading: Icon(icon, color: GuardianColors.accent, size: 22),
       title: Text(title, style: GuardianTextStyles.bodyPrimary),
-      trailing: const Icon(Icons.open_in_new,
+      subtitle: subtitle == null
+          ? null
+          : Text(subtitle!,
+              style: GuardianTextStyles.caption
+                  .copyWith(color: GuardianColors.textTertiary)),
+      trailing: Icon(external ? Icons.open_in_new : Icons.chevron_right,
           size: 16, color: GuardianColors.textTertiary),
       onTap: onTap,
     );

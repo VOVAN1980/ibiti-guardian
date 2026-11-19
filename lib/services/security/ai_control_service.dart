@@ -6,7 +6,6 @@ import 'package:ibiti_guardian/models/autonomy_mandate.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/market/automation_engine.dart'
     as market_auto;
-import 'package:ibiti_guardian/services/security/monitoring_service.dart';
 import 'dart:convert';
 
 enum AiMode { manual, guarded, fullAutonomy }
@@ -462,9 +461,7 @@ class AiControlService extends ChangeNotifier {
     // ── Cascade: stop all autonomous subsystems ─────────────────────────────
     try {
       market_auto.AutomationEngine.instance.stop();
-      MonitoringService.instance.stop();
-      _log.i('Emergency stop activated — AI manual, automation stopped, '
-          'background monitoring cancelled');
+      _log.i('Emergency stop activated — AI manual, automation stopped');
     } catch (e) {
       _log.e('Emergency stop cascade error', e);
     }

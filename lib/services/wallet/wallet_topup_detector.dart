@@ -280,21 +280,26 @@ class WalletTopUpDetector with WidgetsBindingObserver {
 
     final ss = SettingsService.instance.settings.soundSettings;
 
-    // Play top-up sound
-    if (ss.topUpSoundEnabled) {
-      _log.d('🎵 Playing top-up sound');
-      AudioManager.instance.playTopUp();
-    }
+    // One chime, not two: while the app is open it plays the coin sound
+    // itself and the notification stays silent. If the app could not play it
+    // (closed, or the voice is speaking), the notification plays it.
+    final appOpen =
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    final Future<bool> playedInApp = appOpen && ss.topUpSoundEnabled
+        ? AudioManager.instance.playTopUp()
+        : Future.value(false);
 
     // Always show notification (works in background too)
     final body = _buildBody(increases);
     _log.d('📲 Triggering notification: $body | ${summary.networkName}');
-    NotificationService.instance
-        .showTopUpNotification(
-          title: 'Пополнение кошелька',
-          body: body,
-          chainLabel: summary.networkName,
-        )
+    playedInApp
+        .catchError((Object _) => false)
+        .then((played) => NotificationService.instance.showTopUpNotification(
+              title: 'Пополнение кошелька',
+              body: body,
+              chainLabel: summary.networkName,
+              withSound: !played,
+            ))
         .catchError((Object e) => _log.e('Top-up notification failed', e));
   }
 

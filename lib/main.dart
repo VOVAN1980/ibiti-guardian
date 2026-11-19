@@ -54,8 +54,8 @@ Future<void> _main() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
-  // Workmanager (background update check) is set up by BootScreen after
-  // the intro; see setupBackgroundTasks().
+  // Workmanager only removes old background tasks; BootScreen does it after
+  // the intro, see setupBackgroundTasks().
   FlutterError.onError = (details) {
     FlutterError.presentError(details);
     const log = GuardianLogger('Guardian');

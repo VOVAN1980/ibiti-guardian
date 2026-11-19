@@ -1,5 +1,6 @@
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 import 'package:timezone/timezone.dart' as tz;
@@ -9,7 +10,7 @@ import 'package:ibiti_guardian/app/guardian_app_shell.dart';
 import 'package:ibiti_guardian/screens/market_command/market_token_detail_screen.dart';
 import 'package:ibiti_guardian/services/market/market_data_service.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
-import 'package:ibiti_guardian/services/localization_service.dart';
+import 'package:ibiti_guardian/models/sound_settings.dart';
 
 class NotificationService {
   static final NotificationService instance = NotificationService._();
@@ -44,8 +45,10 @@ class NotificationService {
       onDidReceiveNotificationResponse: _onTap,
     );
 
-    // Remove the channels of older builds. They played alarm and siren sounds
-    // that are no longer in the app; alerts now just vibrate.
+    // Remove the channels of older builds: DrainShield's alarm, siren,
+    // subscription and update channels, and the channels made before the
+    // single/double vibration settings (Android fixes a channel's sound and
+    // vibration when it is created).
     final android = _notifications.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
     if (android != null) {
@@ -58,6 +61,7 @@ class NotificationService {
         }
       }
     }
+    await syncChannelsWithSettings();
 
     // Request notification permission (required on Android 13+ / SDK 33).
     // On older Android, notifications are allowed by default.
@@ -125,14 +129,6 @@ class NotificationService {
           _goHome(state);
         }
         break;
-      case 'security_alert':
-        _log.d('Security alert tap — routing to Guardian Security tab');
-        _goHome(state);
-        break;
-      case 'subscription_expiry':
-        _log.d('Subscription alert tap — routing home');
-        _goHome(state);
-        break;
       default:
         _goHome(state);
     }
@@ -195,19 +191,84 @@ class NotificationService {
     'warning_v2_standard',
     'warning_v2_cyber',
     'warning_v2_minimal',
+    'app_updates_v2',
+    'app_updates_v2_novib',
+    'critical_v3',
+    'critical_v3_novib',
+    'general_info',
+    'subscription_alerts',
+    'price_alerts_v3',
+    'price_alerts_v3_novib',
+    'warning_v3',
+    'warning_v3_novib',
+    'api_key_reminders',
+    'wallet_topup_coins_1',
+    'wallet_topup_coins_2',
+    'wallet_topup_coins_3',
   ];
 
-  /// Alerts have no sound of their own: they vibrate like an ordinary
-  /// notification. Android fixes a channel's vibration when the channel is
-  /// first created, so "vibration off" uses its own channel.
-  static String _alertChannel(String base, bool vibrate) =>
-      vibrate ? base : '${base}_novib';
+  /// One short vibration: ordinary notifications (prices, reminders,
+  /// revoke results).
+  static final Int64List _singleBuzz = Int64List.fromList([0, 250]);
+
+  /// Two short vibrations: a wallet top-up.
+  static final Int64List _doubleBuzz = Int64List.fromList([0, 200, 150, 200]);
+
+  /// Ordinary notifications have no sound of their own; they vibrate once
+  /// when "Single vibration" is on. Android fixes a channel's vibration when
+  /// the channel is first created, so each setting has its own channel.
+  static bool get _singleOn =>
+      SettingsService.instance.settings.soundSettings.singleVibrationEnabled;
+  static String _ordinaryChannel(String base) =>
+      _singleOn ? '${base}_single' : '${base}_novib';
+
+  static const List<String> _ordinaryBases = [
+    'price_alerts_v4',
+    'warning_v4',
+    'api_key_reminders_v2',
+  ];
+
+  /// Top-up channel for the current settings: with the chosen coin sound, or
+  /// silent (the app is open and plays the coins itself).
+  static String _topUpChannel({required bool withSound}) {
+    final s = SettingsService.instance.settings.soundSettings;
+    final sound = withSound && s.topUpSoundEnabled;
+    return 'wallet_topup_v4_${sound ? s.selectedTopUpSoundId : 'silent'}_'
+        '${s.doubleVibrationEnabled ? 'double' : 'novib'}';
+  }
+
+  /// Removes the channels of settings that are no longer chosen, so Android's
+  /// notification settings show each kind once. Called at start-up and when
+  /// the sound and vibration settings change. The channels of the current
+  /// settings stay, so notifications already shown are kept.
+  Future<void> syncChannelsWithSettings() async {
+    final android = _notifications.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    if (android == null) return;
+    final keep = {
+      for (final base in _ordinaryBases) _ordinaryChannel(base),
+      _topUpChannel(withSound: true),
+      _topUpChannel(withSound: false),
+    };
+    final all = <String>[
+      for (final base in _ordinaryBases) ...['${base}_single', '${base}_novib'],
+      for (final sound in [...SoundSettings.topUpSounds, 'silent'])
+        for (final vib in ['double', 'novib']) 'wallet_topup_v4_${sound}_$vib',
+    ];
+    for (final id in all.where((id) => !keep.contains(id))) {
+      try {
+        await android.deleteNotificationChannel(channelId: id);
+      } catch (e) {
+        _log.d('Channel delete $id: $e');
+      }
+    }
+  }
 
   // ── Price alert notification ID counter (unique per alert) ──────────────
   int _priceAlertIdCounter = 500;
 
   /// Show a price alert as a normal, tappable notification.
-  /// No sound; vibrates when vibration is on in the app's settings.
+  /// No sound; one vibration when "Single vibration" is on.
   Future<void> showPriceAlert({
     required String title,
     required String body,
@@ -232,19 +293,19 @@ class NotificationService {
     }
 
     final id = _priceAlertIdCounter++;
-    final vibrate =
-        SettingsService.instance.settings.soundSettings.vibrationEnabled;
+    final vibrate = _singleOn;
 
     try {
       final AndroidNotificationDetails androidDetails =
           AndroidNotificationDetails(
-        _alertChannel('price_alerts_v3', vibrate),
+        _ordinaryChannel('price_alerts_v4'),
         'Price Alerts',
         channelDescription: 'Market price target notifications',
         importance: Importance.high,
         priority: Priority.high,
         playSound: false,
         enableVibration: vibrate,
+        vibrationPattern: vibrate ? _singleBuzz : null,
         autoCancel: true,
       );
 
@@ -268,84 +329,6 @@ class NotificationService {
     } catch (e) {
       _log.e('Price alert notification failed', e);
     }
-  }
-
-  Future<void> showUpdateNotification(String version) async {
-    if (_isQuietMode()) return;
-
-    final String title = LocalizationService.instance.t('settingsUpdateTitle');
-    final String body = LocalizationService.instance
-        .t('settingsUpdateNewMsg', {'version': version});
-
-    final vibrate =
-        SettingsService.instance.settings.soundSettings.vibrationEnabled;
-
-    final AndroidNotificationDetails androidDetails =
-        AndroidNotificationDetails(
-      _alertChannel('app_updates_v2', vibrate),
-      'Software Updates',
-      channelDescription: 'Notifications for new app versions',
-      importance: Importance.max,
-      priority: Priority.high,
-      playSound: false,
-      enableVibration: vibrate,
-    );
-
-    final NotificationDetails platformDetails = NotificationDetails(
-      android: androidDetails,
-      iOS: const DarwinNotificationDetails(
-        presentSound: false,
-        presentAlert: true,
-      ),
-    );
-
-    await _notifications.show(
-      id: 999, // Unique ID for update notifications
-      title: title,
-      body: body,
-      notificationDetails: platformDetails,
-      payload: json.encode({'type': 'app_update', 'version': version}),
-    );
-  }
-
-  Future<void> showCriticalAlert(String title, String body,
-      {Map<String, dynamic>? payload}) async {
-    if (_isQuietMode()) {
-      _log.d('Muted by Quiet Mode: $title');
-      return;
-    }
-
-    final vibrate =
-        SettingsService.instance.settings.soundSettings.vibrationEnabled;
-
-    final AndroidNotificationDetails androidDetails =
-        AndroidNotificationDetails(
-      _alertChannel('critical_v3', vibrate),
-      'Critical Threats',
-      channelDescription: 'Alerts about critical threats',
-      importance: Importance.max,
-      priority: Priority.high,
-      enableVibration: vibrate,
-      playSound: false,
-      color: const Color(0xFFFF4B4B),
-    );
-
-    final NotificationDetails platformDetails = NotificationDetails(
-      android: androidDetails,
-      iOS: const DarwinNotificationDetails(
-        presentSound: false,
-        presentAlert: true,
-        presentBadge: true,
-      ),
-    );
-
-    await _notifications.show(
-      id: 0,
-      title: title,
-      body: body,
-      notificationDetails: platformDetails,
-      payload: payload != null ? json.encode(payload) : null,
-    );
   }
 
   bool _isQuietMode() {
@@ -385,17 +368,17 @@ class NotificationService {
       {Map<String, dynamic>? payload}) async {
     if (_isQuietMode()) return;
 
-    final vibrate =
-        SettingsService.instance.settings.soundSettings.vibrationEnabled;
+    final vibrate = _singleOn;
 
     final AndroidNotificationDetails androidDetails =
         AndroidNotificationDetails(
-      _alertChannel('warning_v3', vibrate),
-      'Security Warnings',
-      channelDescription: 'Alerts for high-risk approvals',
+      _ordinaryChannel('warning_v4'),
+      'Security',
+      channelDescription: 'Results of permission revokes',
       importance: Importance.high,
       priority: Priority.high,
       enableVibration: vibrate,
+      vibrationPattern: vibrate ? _singleBuzz : null,
       playSound: false,
     );
 
@@ -416,32 +399,6 @@ class NotificationService {
     );
   }
 
-  Future<void> showInfoAlert(String title, String body,
-      {Map<String, dynamic>? payload}) async {
-    if (_isQuietMode()) return;
-    const AndroidNotificationDetails androidDetails =
-        AndroidNotificationDetails(
-      'general_info',
-      'General Information',
-      channelDescription: 'Status updates and scan results',
-      importance: Importance.low,
-      priority: Priority.low,
-    );
-
-    const NotificationDetails platformDetails = NotificationDetails(
-      android: androidDetails,
-      iOS: DarwinNotificationDetails(),
-    );
-
-    await _notifications.show(
-      id: 2,
-      title: title,
-      body: body,
-      notificationDetails: platformDetails,
-      payload: payload != null ? json.encode(payload) : null,
-    );
-  }
-
   /// One-off reminder at [when], replacing any earlier one with [id].
   /// Inexact (Android may shift it a little), so no exact-alarm permission
   /// is needed. Past times are skipped.
@@ -454,15 +411,19 @@ class NotificationService {
     try {
       await _notifications.cancel(id: id);
       if (!when.isAfter(DateTime.now())) return;
-      const details = NotificationDetails(
+      final vibrate = _singleOn;
+      final details = NotificationDetails(
         android: AndroidNotificationDetails(
-          'api_key_reminders',
+          _ordinaryChannel('api_key_reminders_v2'),
           'API key reminders',
           channelDescription: 'Reminders to renew exchange API keys',
           importance: Importance.high,
           priority: Priority.high,
+          playSound: false,
+          enableVibration: vibrate,
+          vibrationPattern: vibrate ? _singleBuzz : null,
         ),
-        iOS: DarwinNotificationDetails(),
+        iOS: const DarwinNotificationDetails(),
       );
       await _notifications.zonedSchedule(
         id: id,
@@ -483,94 +444,29 @@ class NotificationService {
     } catch (_) {}
   }
 
-  Future<void> scheduleSubscriptionExpiry(DateTime expiryDate) async {
-    // Cancel any previous expiry notifications to avoid duplicates
-    // We'll use specific IDs for expiry: 107 (7 days), 103 (3 days), 101 (1 day)
-    await _notifications.cancel(id: 107);
-    await _notifications.cancel(id: 103);
-    await _notifications.cancel(id: 101);
-
-    final now = DateTime.now();
-
-    void scheduleAt(int daysBefore, int id) async {
-      final scheduledDate = expiryDate.subtract(Duration(days: daysBefore));
-      // Set to 10:00 AM on that day
-      final finalScheduled = DateTime(
-        scheduledDate.year,
-        scheduledDate.month,
-        scheduledDate.day,
-        10,
-        0,
-      );
-
-      if (finalScheduled.isAfter(now)) {
-        const AndroidNotificationDetails androidDetails =
-            AndroidNotificationDetails(
-          'subscription_alerts',
-          'Subscription Alerts',
-          channelDescription: 'Reminders for subscription renewal',
-          importance: Importance.high,
-          priority: Priority.high,
-        );
-
-        const NotificationDetails platformDetails = NotificationDetails(
-          android: androidDetails,
-          iOS: DarwinNotificationDetails(),
-        );
-
-        final daysLeft = daysBefore == 0 ? "today" : "in $daysBefore days";
-        final body = daysBefore == 0
-            ? "Your PRO subscription expires today! Renew now to keep your wallets protected."
-            : "Your PRO subscription will expire $daysLeft. Don't forget to renew!";
-
-        await _notifications.zonedSchedule(
-          id: id,
-          title: 'Subscription Reminder',
-          body: body,
-          scheduledDate: tz.TZDateTime.from(finalScheduled, tz.local),
-          notificationDetails: platformDetails,
-          androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
-        );
-      }
-    }
-
-    scheduleAt(7, 107);
-    scheduleAt(3, 103);
-    scheduleAt(1, 101);
-  }
-
-  Future<void> cancelAll() async {
-    await _notifications.cancelAll();
-  }
-
   // ── Wallet top-up notification ─────────────────────────────────────────────
 
   static int _topUpIdCounter = 5000;
-  String? _lastTopUpSoundId;
 
-  /// Show a notification when wallet balance increases.
+  /// Show a notification when the wallet balance increases: the coin sound
+  /// when "Coin sound" is on, two vibrations when "Double vibration" is on.
+  /// [withSound] is false while the app is open, because the app plays the
+  /// coin sound itself then (one chime, not two).
   Future<void> showTopUpNotification({
     required String title,
     required String body,
     required String chainLabel,
+    bool withSound = true,
   }) async {
     final id = _topUpIdCounter++;
     final soundSettings = SettingsService.instance.settings.soundSettings;
-    if (!soundSettings.topUpSoundEnabled) return;
-
     final soundId = soundSettings.selectedTopUpSoundId;
-    final channelId = 'wallet_topup_$soundId';
+    final sound = withSound && soundSettings.topUpSoundEnabled;
+    final vibrate = soundSettings.doubleVibrationEnabled;
 
-    // Delete old channel if sound changed (Android caches channel sound)
-    if (_lastTopUpSoundId != null && _lastTopUpSoundId != soundId) {
-      final android = _notifications.resolvePlatformSpecificImplementation<
-          AndroidFlutterLocalNotificationsPlugin>();
-      try {
-        await android?.deleteNotificationChannel(
-            channelId: 'wallet_topup_$_lastTopUpSoundId');
-      } catch (_) {}
-    }
-    _lastTopUpSoundId = soundId;
+    // Android fixes a channel's sound and vibration when it is created, so
+    // every combination has its own channel (see syncChannelsWithSettings).
+    final channelId = _topUpChannel(withSound: withSound);
 
     final androidDetails = AndroidNotificationDetails(
       channelId,
@@ -578,21 +474,20 @@ class NotificationService {
       channelDescription: 'Уведомления о пополнении кошелька',
       importance: Importance.high,
       priority: Priority.high,
-      playSound: soundSettings.soundEnabled,
-      sound: soundSettings.soundEnabled
-          ? RawResourceAndroidNotificationSound(soundId)
-          : null,
-      enableVibration: soundSettings.vibrationEnabled,
+      playSound: sound,
+      sound: sound ? RawResourceAndroidNotificationSound(soundId) : null,
+      enableVibration: vibrate,
+      vibrationPattern: vibrate ? _doubleBuzz : null,
       autoCancel: true,
       icon: '@mipmap/ic_launcher',
     );
 
     final platformDetails = NotificationDetails(
       android: androidDetails,
-      iOS: const DarwinNotificationDetails(
+      iOS: DarwinNotificationDetails(
         presentAlert: true,
         presentBadge: true,
-        presentSound: true,
+        presentSound: sound,
       ),
     );
 

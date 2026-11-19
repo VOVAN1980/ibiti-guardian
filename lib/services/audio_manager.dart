@@ -97,11 +97,14 @@ class AudioManager {
 
   // ── Top-up sound (priority: low) ────────────────────────────────────────────
 
-  /// Play the wallet top-up coin sound. Low priority — doesn't interrupt anything.
-  Future<void> playTopUp() async {
-    if (!_acquire(AudioPriority.low)) return;
+  /// Play the wallet top-up coin sound. Low priority — doesn't interrupt
+  /// anything. Returns whether it started (false while the voice is speaking
+  /// or when the coin sound is off), so the caller can let the notification
+  /// play it instead.
+  Future<bool> playTopUp() async {
+    if (!_acquire(AudioPriority.low)) return false;
     try {
-      await _sound.playTopUp();
+      return await _sound.playTopUp();
     } finally {
       _release(AudioPriority.low);
     }

@@ -1,7 +1,6 @@
 import 'package:ibiti_guardian/models/approval.dart';
 import 'package:ibiti_guardian/models/risk_assessment.dart';
 import 'package:ibiti_guardian/services/threat_intelligence_service.dart';
-import 'package:ibiti_guardian/services/security/monitoring_state_service.dart';
 
 class RiskEngine {
   static final BigInt maxUint256 = BigInt.parse(
@@ -46,7 +45,9 @@ class RiskEngine {
       threatReasonKey: threat?.reasonKey,
       threatWeight: threat?.baseRiskWeight ?? 0,
       touchesValuableToken: _isValuableToken(a.chainId, a.token),
-      spenderRepeatedAcrossWallet: _isSpenderRepeated(a.spenderAddress),
+      // Came from DrainShield's background monitoring, which Guardian
+      // does not have.
+      spenderRepeatedAcrossWallet: false,
       // The following signals are currently defaults as the data isn't available yet
       isProxyContract: a.isProxyContract,
       isUpgradeable: a.isUpgradeable,
@@ -92,12 +93,6 @@ class RiskEngine {
       ].contains(addr);
     }
     return false;
-  }
-
-  static bool _isSpenderRepeated(String spenderAddress) {
-    final addr = spenderAddress.toLowerCase();
-    return MonitoringStateService.instance
-        .isSpenderRepeatedInOtherWallets(addr);
   }
 
   /// Computes granular assessment for a single approval based on signals

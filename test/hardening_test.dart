@@ -7,7 +7,6 @@ import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
 import 'package:ibiti_guardian/models/assistant_directive.dart';
-import 'package:ibiti_guardian/services/pro/pro_service.dart';
 
 /// Helper to create a minimal IntentData for test transactions.
 IntentData _stubIntent([String raw = 'test']) =>
@@ -336,26 +335,6 @@ void main() {
       expect(bus.latestFieldValue('amount'), isNull);
       expect(bus.latestPayload('config'), isNull);
       expect(bus.consumePendingAction('confirm'), isFalse);
-    });
-  });
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // G4: Review mode flag sanity
-  // ═══════════════════════════════════════════════════════════════════════════
-  group('Review mode flag', () {
-    test('isReviewBuild defaults to false in normal builds', () {
-      // bool.fromEnvironment('REVIEW_BUILD') is false unless
-      // --dart-define=REVIEW_BUILD=true is passed at build time.
-      expect(ProService.isReviewBuild, isFalse);
-    });
-
-    test('isProActive returns false for fresh instance without review flag',
-        () {
-      // In a normal build (isReviewBuild == false), a fresh ProService
-      // starts with ProStatus.free() → isProActive() must be false.
-      final pro = ProService.instance;
-      // Since isReviewBuild is false in test, and no subscription loaded:
-      expect(pro.isProActive(), isFalse);
     });
   });
 }

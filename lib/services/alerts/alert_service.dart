@@ -3,6 +3,10 @@ import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/services/alerts/notification_service.dart';
 import 'package:ibiti_guardian/models/security_event.dart';
 
+/// Turns security events into notifications.
+///
+/// Guardian sends one kind: the result of a permission revoke (Safe Scan and
+/// Panic). DrainShield's threat, monitoring and subscription alerts are gone.
 class AlertService {
   static final AlertService instance = AlertService._();
   AlertService._();
@@ -22,81 +26,19 @@ class AlertService {
   }
 
   void _onSecurityEvent(SecurityEvent event) {
-    final settings = SettingsService.instance.settings;
-    final notifications = settings.notificationSettings;
+    if (event.type != SecurityEventType.revokeCompleted) return;
+    final notifications = SettingsService.instance.settings.notificationSettings;
+    if (!notifications.revokeResultAlerts) return;
 
-    // 1. Determine if notification should be shown
-    bool shouldNotify = false;
-    bool isCritical = false;
-
-    // Severity check (Priority to severity field)
-    if (event.severity == 'critical') isCritical = true;
-
-    switch (event.type) {
-      case SecurityEventType.highRiskApproval:
-        shouldNotify = notifications.highRiskApprovalAlerts;
-        break;
-      case SecurityEventType.unlimitedApproval:
-        shouldNotify = notifications.unlimitedApprovalAlerts;
-        break;
-      case SecurityEventType.panicTriggered:
-        shouldNotify = notifications.panicAlerts;
-        isCritical = true;
-        break;
-      case SecurityEventType.revokeCompleted:
-        shouldNotify = notifications.revokeResultAlerts;
-        break;
-      case SecurityEventType.threatDbHit:
-        shouldNotify = notifications.threatDatabaseAlerts;
-        isCritical = true;
-        break;
-      case SecurityEventType.monitoringCheckFailed:
-        shouldNotify = notifications.monitoringHealthAlerts;
-        break;
-      case SecurityEventType.subscriptionExpiring:
-        shouldNotify = notifications.subscriptionReminders;
-        break;
-      default:
-        break;
-    }
-
-    if (shouldNotify) {
-      final payload = {
-        'type': _mapEventTypeToPayloadType(event.type),
+    NotificationService.instance.showWarningAlert(
+      event.title,
+      event.message,
+      payload: {
+        'type': 'revoke_event',
         'walletAddress': event.walletAddress,
         'metadata': event.metadata,
-      };
-
-      if (isCritical) {
-        NotificationService.instance.showCriticalAlert(
-          event.title,
-          event.message,
-          payload: payload,
-        );
-      } else {
-        NotificationService.instance.showWarningAlert(
-          event.title,
-          event.message,
-          payload: payload,
-        );
-      }
-    }
-  }
-
-  String _mapEventTypeToPayloadType(SecurityEventType type) {
-    switch (type) {
-      case SecurityEventType.highRiskApproval:
-      case SecurityEventType.unlimitedApproval:
-      case SecurityEventType.threatDbHit:
-        return 'security_alert';
-      case SecurityEventType.panicTriggered:
-      case SecurityEventType.revokeCompleted:
-        return 'revoke_event';
-      case SecurityEventType.subscriptionExpiring:
-        return 'subscription_expiry';
-      default:
-        return 'general';
-    }
+      },
+    );
   }
 
   void dispose() {

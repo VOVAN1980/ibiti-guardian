@@ -8,9 +8,6 @@ class AppSettings {
   final bool hasRequestedPush;
   final NotificationSettings notificationSettings;
   final SoundSettings soundSettings;
-  final bool autoMonitoringEnabled;
-  final int monitoringIntervalMinutes;
-  final bool multiWalletMonitoringEnabled;
   final bool quietModeEnabled;
   final String quietModeStart; // HH:mm
   final String quietModeEnd; // HH:mm
@@ -28,9 +25,6 @@ class AppSettings {
     this.hasRequestedPush = false,
     NotificationSettings? notificationSettings,
     SoundSettings? soundSettings,
-    this.autoMonitoringEnabled = false,
-    this.monitoringIntervalMinutes = 60,
-    this.multiWalletMonitoringEnabled = false,
     this.quietModeEnabled = false,
     this.quietModeStart = "22:00",
     this.quietModeEnd = "08:00",
@@ -50,9 +44,6 @@ class AppSettings {
     bool? hasRequestedPush,
     NotificationSettings? notificationSettings,
     SoundSettings? soundSettings,
-    bool? autoMonitoringEnabled,
-    int? monitoringIntervalMinutes,
-    bool? multiWalletMonitoringEnabled,
     bool? quietModeEnabled,
     String? quietModeStart,
     String? quietModeEnd,
@@ -70,12 +61,6 @@ class AppSettings {
       hasRequestedPush: hasRequestedPush ?? this.hasRequestedPush,
       notificationSettings: notificationSettings ?? this.notificationSettings,
       soundSettings: soundSettings ?? this.soundSettings,
-      autoMonitoringEnabled:
-          autoMonitoringEnabled ?? this.autoMonitoringEnabled,
-      monitoringIntervalMinutes:
-          monitoringIntervalMinutes ?? this.monitoringIntervalMinutes,
-      multiWalletMonitoringEnabled:
-          multiWalletMonitoringEnabled ?? this.multiWalletMonitoringEnabled,
       quietModeEnabled: quietModeEnabled ?? this.quietModeEnabled,
       quietModeStart: quietModeStart ?? this.quietModeStart,
       quietModeEnd: quietModeEnd ?? this.quietModeEnd,
@@ -96,9 +81,6 @@ class AppSettings {
         'hasRequestedPush': hasRequestedPush,
         'notificationSettings': notificationSettings.toJson(),
         'soundSettings': soundSettings.toJson(),
-        'autoMonitoringEnabled': autoMonitoringEnabled,
-        'monitoringIntervalMinutes': monitoringIntervalMinutes,
-        'multiWalletMonitoringEnabled': multiWalletMonitoringEnabled,
         'quietModeEnabled': quietModeEnabled,
         'quietModeStart': quietModeStart,
         'quietModeEnd': quietModeEnd,
@@ -121,10 +103,6 @@ class AppSettings {
         soundSettings: json['soundSettings'] != null
           ? SoundSettings.fromJson(json['soundSettings'])
           : null,
-        autoMonitoringEnabled: json['autoMonitoringEnabled'] ?? false,
-        monitoringIntervalMinutes: json['monitoringIntervalMinutes'] ?? 60,
-        multiWalletMonitoringEnabled:
-            json['multiWalletMonitoringEnabled'] ?? false,
         quietModeEnabled: json['quietModeEnabled'] ?? false,
         quietModeStart: json['quietModeStart'] ?? "22:00",
         quietModeEnd: json['quietModeEnd'] ?? "08:00",

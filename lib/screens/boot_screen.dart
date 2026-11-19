@@ -6,17 +6,12 @@ import "package:ibiti_guardian/app/background_tasks.dart";
 import "package:ibiti_guardian/app/startup_services.dart";
 import "package:ibiti_guardian/utils/guardian_logger.dart";
 import "package:ibiti_guardian/app/guardian_app_shell.dart";
-import "package:ibiti_guardian/services/pro/pro_service.dart";
 import "package:ibiti_guardian/services/settings/settings_service.dart";
-// Removed wallet registry
-import "package:ibiti_guardian/services/pro/billing_service.dart";
 import "package:ibiti_guardian/services/alerts/notification_service.dart";
 import "package:ibiti_guardian/services/alerts/sound_service.dart";
 import "package:ibiti_guardian/services/audio_manager.dart";
 import "package:ibiti_guardian/services/alerts/alert_service.dart";
-import "package:ibiti_guardian/services/security/monitoring_service.dart";
 import "package:ibiti_guardian/services/threat_intelligence_service.dart";
-import "package:ibiti_guardian/services/security/system_health_service.dart";
 import "package:ibiti_guardian/services/wallet/wallet_topup_detector.dart";
 import "package:ibiti_guardian/services/moralis/moralis_config_service.dart";
 import "package:ibiti_guardian/services/security/security_event_service.dart";
@@ -122,12 +117,10 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
       log.e('Core services still starting', e);
     }
 
-    // Phase A: Independent services in parallel
-    // ProService + SoundService have no cross-deps.
+    // Phase A: SoundService (the boot sounds below need it).
     // SettingsService is already initialized in main() — not repeated here.
     try {
       await Future.wait([
-        ProService.instance.init(),
         SoundService.instance.init(),
       ]).timeout(const Duration(seconds: 10));
     } catch (e) {
@@ -171,19 +164,16 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
           Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
       final deferredSteps = <String, Future<void> Function()>{
-        // First: MonitoringService registers a Workmanager task.
+        // Workmanager: only removes the background tasks older builds left.
         'BackgroundTasks': setupBackgroundTasks,
         'MarketMemory': () => MarketMemoryService.instance.ensureTable(),
         'ThreatIntelligence': () => ThreatIntelligenceService.instance.init(),
-        if (!isDesktop) 'Billing': () => BillingService.instance.init(),
         if (!isDesktop)
           'Notification': () => NotificationService.instance.init(),
         'Alert': () => AlertService.instance.init(),
-        if (!isDesktop) 'Monitoring': () => MonitoringService.instance.init(),
         'MoralisConfig': () => MoralisConfigService.instance.init(),
         if (!isDesktop)
           'SecurityEvent': () => SecurityEventService.instance.init(),
-        'SystemHealth': () => SystemHealthService.instance.init(),
         'VoiceGreeting': () => VoiceGreetingService.instance.init(),
         if (!isDesktop)
           'TopUpDetector': () async {

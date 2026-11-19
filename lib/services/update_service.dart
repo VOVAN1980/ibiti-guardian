@@ -12,16 +12,36 @@ class UpdateService {
 
   static const _log = GuardianLogger('UpdateService');
 
-  /// Off until the app is published. version.json and the store listing below
-  /// don't exist yet (both answer 404), so every check would be a wasted
-  /// request. To turn it on: publish version.json, point [appId] (the Android
-  /// applicationId is com.ibiti.guardian), [updateUrl], [defaultAppStoreUrl]
-  /// and [_trustedHosts] at the published app, then set this to true.
+  // ── Settings: the only place to change when the app is published ────────
+  //
+  // The check is off until then: the app makes no update request and the
+  // "Check" button in Settings > Software Update is greyed out.
+  //
+  // To turn it on:
+  //  1. Put version.json at [updateUrl] (the Guardian site is the gh-pages
+  //     branch of github.com/VOVAN1980/ibiti-guardian):
+  //       {"version": "0.2.0", "build": 2,
+  //        "url": "https://play.google.com/store/apps/details?id=com.ibiti.guardian"}
+  //     "version" and "build" are the new release's pubspec version; "url" is
+  //     where the Update button leads (it must be on a [_trustedHosts] host).
+  //  2. If there is an iOS app, set [appStoreUrl] to its App Store page.
+  //  3. Set [enabled] to true.
+  // Then the app checks at launch (at most every 12 hours) and shows an
+  // update dialog, and the button in Settings checks on demand.
+
   static const bool enabled = false;
 
-  static const String appId = 'app.aimoney.guardian';
+  /// Android applicationId (android/app/build.gradle.kts).
+  static const String appId = 'com.ibiti.guardian';
+
   static const String updateUrl =
-      'https://vovan1980.github.io/aimoney_guardian/version.json';
+      'https://vovan1980.github.io/ibiti-guardian/version.json';
+
+  /// App Store page of the iOS app; null while there is none.
+  static const String? appStoreUrl = null;
+
+  /// Opened on iOS while there is no App Store page.
+  static const String websiteUrl = 'https://vovan1980.github.io/ibiti-guardian/';
 
   // Trusted domains for update URLs — prevents injection from tampered JSON
   static const _trustedHosts = {
@@ -33,16 +53,11 @@ class UpdateService {
   // Default fallback URL if JSON fetch fails or doesn't provide one
   static const String defaultPlayStoreUrl =
       'https://play.google.com/store/apps/details?id=$appId';
-  static const String defaultAppStoreUrl =
-      'https://apps.apple.com/app/id6739669566';
+  static String get _defaultStoreUrl => Platform.isAndroid
+      ? defaultPlayStoreUrl
+      : (appStoreUrl ?? websiteUrl);
 
   String? _cachedUpdateUrl;
-
-  Future<void> initBackground() async {
-    // This will be called from Workmanager callback
-    // Background task usually doesn't show UI dialogs, just notifications
-    await checkForUpdates(isAutoCheck: true);
-  }
 
   Future<UpdateCheckResult> checkForUpdates({bool isAutoCheck = false}) async {
     if (!enabled) return UpdateCheckResult(status: UpdateStatus.upToDate);
@@ -158,25 +173,20 @@ class UpdateService {
   }
 
   Future<void> launchStore({String? customUrl}) async {
-    final url = customUrl ??
-        _cachedUpdateUrl ??
-        (Platform.isAndroid ? defaultPlayStoreUrl : defaultAppStoreUrl);
+    final url = customUrl ?? _cachedUpdateUrl ?? _defaultStoreUrl;
 
     // Security: only launch URLs from trusted domains
+    var target = url;
     if (!_isTrustedUrl(url)) {
       _log.w('Blocked untrusted update URL: $url');
-      // Fallback to default store
-      final fallback =
-          Platform.isAndroid ? defaultPlayStoreUrl : defaultAppStoreUrl;
-      if (await canLaunchUrl(Uri.parse(fallback))) {
-        await launchUrl(Uri.parse(fallback),
-            mode: LaunchMode.externalApplication);
-      }
-      return;
+      target = _defaultStoreUrl;
     }
-
-    if (await canLaunchUrl(Uri.parse(url))) {
-      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    // launchUrl directly: canLaunchUrl answers false on Android 11+ unless the
+    // manifest lists the scheme under <queries>.
+    try {
+      await launchUrl(Uri.parse(target), mode: LaunchMode.externalApplication);
+    } catch (e) {
+      _log.e('Could not open $target', e);
     }
   }
 

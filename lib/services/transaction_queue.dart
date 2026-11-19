@@ -113,7 +113,7 @@ class TransactionQueue {
         job.status = RevokeJobStatus.submitted;
         successCount++;
 
-        // Emit security event for timeline (FREE & PRO)
+        // Emit security event (revoke result notification)
         if (emitEvents) {
           SecurityEventService.instance.emit(
             SecurityEvent(

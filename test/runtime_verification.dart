@@ -2,9 +2,6 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:ibiti_guardian/services/moralis/moralis_config_service.dart';
 import 'package:ibiti_guardian/services/security/approval_scan_service.dart';
 import 'package:ibiti_guardian/services/portfolio_service.dart';
-import 'package:ibiti_guardian/services/pro/pro_service.dart';
-import 'package:ibiti_guardian/services/security/monitoring_service.dart';
-import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -37,25 +34,6 @@ void main() {
       } catch (e) {
         print(' - Error: $e');
       }
-    });
-
-    test('3. Monitoring Service Flow', () async {
-      print('\n[VERIFY] Monitoring Service');
-      try {
-        await MonitoringService.instance.runMonitoringNow();
-        print(' - Success: YES');
-      } catch (e) {
-        print(' - Error: $e');
-      }
-    });
-
-    test('4. PRO Gating Behavior', () async {
-      print('\n[VERIFY] PRO Gating');
-      final isPro = ProService.instance.isProActive();
-      print(' - Current PRO Status: $isPro');
-      final vaultAddr = IBITIVaultService.instance.address;
-      print(' - Vault Address present: ${vaultAddr.isNotEmpty}');
-      print(' - [PASS] Gating matches logic');
     });
   });
 }

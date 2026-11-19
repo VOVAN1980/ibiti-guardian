@@ -20,10 +20,36 @@ void main() {
       'selectedTopUpSoundId': 'coins_3',
     });
     expect(s.soundEnabled, false);
-    expect(s.vibrationEnabled, true);
-    expect(s.topUpSoundEnabled, true);
+    expect(s.singleVibrationEnabled, true);
+    expect(s.doubleVibrationEnabled, true);
+    // Its "Sound effects" switch was off, which muted the coins too.
+    expect(s.topUpSoundEnabled, false);
     expect(s.selectedTopUpSoundId, 'coins_3');
     expect(s.toJson().keys, isNot(contains('selectedCriticalSoundId')));
+  });
+
+  test('the old single vibration switch carries over to both new ones', () {
+    final off = SoundSettings.fromJson({'vibrationEnabled': false});
+    expect(off.singleVibrationEnabled, false);
+    expect(off.doubleVibrationEnabled, false);
+    final fresh = SoundSettings.fromJson({});
+    expect(fresh.singleVibrationEnabled, true);
+    expect(fresh.doubleVibrationEnabled, true);
+    expect(fresh.topUpSoundEnabled, true);
+    final saved = SoundSettings.fromJson(
+        SoundSettings(doubleVibrationEnabled: false).toJson());
+    expect(saved.singleVibrationEnabled, true);
+    expect(saved.doubleVibrationEnabled, false);
+    expect(saved.toJson().keys, isNot(contains('vibrationEnabled')));
+  });
+
+  test('coin sound and start-up sound are separate in the new format', () {
+    final s = SoundSettings.fromJson(
+        SoundSettings(soundEnabled: false).toJson());
+    expect(s.soundEnabled, false);
+    expect(s.topUpSoundEnabled, true);
+    expect(SoundSettings.fromJson({'soundEnabled': true}).topUpSoundEnabled,
+        true);
   });
 
   test('an unknown top-up sound falls back to the first coin sound', () {

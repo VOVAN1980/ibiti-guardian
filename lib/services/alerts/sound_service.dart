@@ -1,9 +1,11 @@
 import 'dart:async';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
-import 'package:vibration/vibration.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
 
+/// Plays the app's own sounds: the start-up sound and the coin sound on a
+/// wallet top-up. It never vibrates: vibration belongs to notifications
+/// (see NotificationService).
 class SoundService {
   static final SoundService instance = SoundService._();
   SoundService._();
@@ -13,100 +15,38 @@ class SoundService {
   final AudioPlayer _player = AudioPlayer();
   Timer? _stopTimer;
 
-  Future<void> init() async {
-    // Preload sounds if needed
-  }
+  Future<void> init() async {}
 
-  // Alerts have no sound of their own: their notification vibrates. The app
-  // plays only the boot sounds and the coin sound on a wallet top-up.
-
+  /// Start-up sound; plays when "Start-up sound" is on.
   Future<void> playSound(String fileName) async {
-    await _stopAndPlay('sounds/$fileName', intensive: false, duration: 2000);
+    if (!SettingsService.instance.settings.soundSettings.soundEnabled) return;
+    await _stopAndPlay('sounds/$fileName', duration: 2000);
   }
 
-  /// Play the user's selected wallet top-up sound (coins).
-  Future<void> playTopUp() async {
+  /// The user's selected wallet top-up sound (coins), when it is on.
+  /// Returns whether it started playing.
+  Future<bool> playTopUp() async {
     final settings = SettingsService.instance.settings.soundSettings;
-    if (!settings.topUpSoundEnabled) return;
-
-    final soundId = settings.selectedTopUpSoundId;
-    await _stopAndPlay('sounds/$soundId.mp3', intensive: false, duration: 3000);
+    if (!settings.topUpSoundEnabled) return false;
+    return _stopAndPlay('sounds/${settings.selectedTopUpSoundId}.mp3',
+        duration: 3000);
   }
 
+  /// Plays a coin sound in Settings when the user picks it.
   Future<void> previewTopUpSound(String soundId) async {
-    await _stopAndPlay('sounds/$soundId.mp3', intensive: false, duration: 3000);
+    await _stopAndPlay('sounds/$soundId.mp3', duration: 3000);
   }
 
-  Future<void> _stopAndPlay(
-    String assetPath, {
-    int duration = 30000,
-    bool intensive = false,
-  }) async {
+  Future<bool> _stopAndPlay(String assetPath, {required int duration}) async {
     try {
-      // 1. Cancel everything first to ensure immediate stop of previous action
       _stopTimer?.cancel();
       await _player.stop();
-      await Vibration.cancel();
-
-      final settings = SettingsService.instance.settings.soundSettings;
-      final soundOn = settings.soundEnabled;
-      final vibeOn = settings.vibrationEnabled;
-
-      // 2. If neither sound nor vibration is enabled, we are done
-      if (!soundOn && !vibeOn) return;
-
-      // 3. Start audio if enabled
-      if (soundOn) {
-        await _player.play(AssetSource(assetPath));
-      }
-
-      // 4. Start vibration if enabled
-      if (vibeOn) {
-        await _startVibration(intensive: intensive, isAudioMuted: !soundOn);
-      }
-
-      // 5. Timer stops both after duration
-      _stopTimer = Timer(Duration(milliseconds: duration), () {
-        _player.stop();
-        Vibration.cancel();
-      });
+      await _player.play(AssetSource(assetPath));
+      _stopTimer = Timer(Duration(milliseconds: duration), _player.stop);
+      return true;
     } catch (e) {
-      _log.e('Error in sound/vibration action', e);
-    }
-  }
-
-  Future<void> testVibration() async {
-    final settings = SettingsService.instance.settings.soundSettings;
-    if (!settings.vibrationEnabled) return;
-    await _startVibration(
-        intensive: true, isAudioMuted: !settings.soundEnabled);
-  }
-
-  Future<void> _startVibration(
-      {required bool intensive, bool isAudioMuted = false}) async {
-    try {
-      final hasVibrator = await Vibration.hasVibrator();
-      if (hasVibrator == true) {
-        if (intensive && isAudioMuted) {
-          // Fallback continuous vibration (30 sec) because audio is off
-          Vibration.vibrate(
-            pattern: [0, 500, 200, 500],
-            intensities: [0, 255, 0, 255],
-            repeat: 0,
-          );
-        } else if (intensive) {
-          // Intense burst, but audio is playing so no continuous loop
-          Vibration.vibrate(
-            pattern: [0, 500, 200, 500, 200, 500],
-            intensities: [0, 255, 0, 255, 0, 255],
-          );
-        } else {
-          // Standard notifications: short 2-beat vibration
-          Vibration.vibrate(pattern: [0, 200, 100, 200]);
-        }
-      }
-    } catch (e) {
-      _log.e('Vibration error', e);
+      _log.e('Error playing $assetPath', e);
+      return false;
     }
   }
 
@@ -115,17 +55,8 @@ class SoundService {
       _stopTimer?.cancel();
       _stopTimer = null;
       await _player.stop();
-      await Vibration.cancel();
     } catch (e) {
-      _log.e('Error stopping sound/vibration', e);
-    }
-  }
-
-  Future<void> stopVibration() async {
-    try {
-      await Vibration.cancel();
-    } catch (e) {
-      _log.e('Error stopping vibration', e);
+      _log.e('Error stopping sound', e);
     }
   }
 }
