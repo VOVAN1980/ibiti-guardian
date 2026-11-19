@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/services/voice/tts_service.dart';
+import 'package:ibiti_guardian/services/voice/ai_voice.dart';
 
 /// Thin voice orchestrator facade.
 ///
@@ -18,29 +19,37 @@ class VoiceGreetingService extends ChangeNotifier {
 
   final TtsService _tts = TtsService.instance;
 
-  static const Set<String> _validVoices = {
-    'verse', 'cedar', 'marin', // new generation (best quality)
-    'alloy', 'echo', 'fable', 'nova', // classic
-    'onyx', 'shimmer', 'coral', 'sage', // classic
-  };
+  /// The voices offered in Settings: exactly two, male (cedar) first, then
+  /// female (marin). See [AiVoice].
+  static const List<String> voiceIds = AiVoice.all;
+
+  /// Label of [voiceId] in the Settings voice picker.
+  static String voiceLabel(String voiceId, {required bool isRussian}) {
+    final female = AiVoice.normalize(voiceId) == AiVoice.female;
+    if (isRussian) return female ? 'Женский' : 'Мужской';
+    return female ? 'Female' : 'Male';
+  }
+
+  /// The id init() saves in place of an older [saved] id (older builds
+  /// offered 11 voices), or null when [saved] is already one of the two.
+  @visibleForTesting
+  static String? migratedVoiceId(String? saved) {
+    final voice = AiVoice.normalize(saved);
+    return saved == voice ? null : voice;
+  }
 
   /// True when TTS is actively speaking.
   bool get isSpeaking => _tts.isCurrentlySpeaking;
 
-  /// Current voice id from settings (restricted to curated set).
-  String get selectedVoiceId {
-    final saved = SettingsService.instance.settings.preferredAiVoiceId;
-    if (saved != null && _validVoices.contains(saved)) {
-      return saved;
-    }
-    return 'verse';
-  }
+  /// The voice chosen in Settings: [AiVoice.male] or [AiVoice.female].
+  String get selectedVoiceId => AiVoice.current;
 
   Future<void> init() async {
     final saved = SettingsService.instance.settings.preferredAiVoiceId;
-    if (saved == null || !_validVoices.contains(saved)) {
+    final migrated = migratedVoiceId(saved);
+    if (migrated != null) {
       await SettingsService.instance
-          .updateAiSettings(preferredAiVoiceId: 'verse');
+          .updateAiSettings(preferredAiVoiceId: migrated);
     }
     _log.d('init: voice=$selectedVoiceId');
   }
@@ -57,9 +66,9 @@ class VoiceGreetingService extends ChangeNotifier {
     await _tts.stop();
   }
 
-  /// Update voice in settings.
+  /// Update voice in settings (always one of the two, see [AiVoice]).
   Future<void> updateVoice(String voiceId) async {
-    final normalized = _validVoices.contains(voiceId) ? voiceId : 'verse';
+    final normalized = AiVoice.normalize(voiceId);
     await SettingsService.instance
         .updateAiSettings(preferredAiVoiceId: normalized);
     notifyListeners();

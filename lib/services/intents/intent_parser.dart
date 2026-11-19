@@ -286,7 +286,17 @@ class IntentParser {
   ];
 
   static final _walletCardsPattern = RegExp(
-    r'(сколько|какие)\s+(у\s+(нас|меня)\s+)?(карт|карточ)|карта\s+(пустая|основная)|(мои|покажи|список)\s+(карты|карточ)|на\s+какой\s+карте|баланс\s+карты|статус\s+карты|карт\s+создано|cards?|card\s+(count|balance|status)|which\s+card|how\s+many\s+(cards|wallets)',
+    r'(сколько|какие)\s+(у\s+(нас|меня)\s+)?(карт|карточ)|карта\s+(пустая|основная)|(мои|покажи|список)\s+(карты|карточ)|на\s+какой\s+карте|баланс\s+карты|статус\s+карты|карт\s+создано|\bcards?\b|card\s+(count|balance|status)|which\s+card|how\s+many\s+(cards|wallets)',
+    caseSensitive: false,
+  );
+
+  /// The "System status" card on the Wallet tab ("карточка статуса",
+  /// "статус системы", "status card", its red / green colour) is not a
+  /// wallet card.
+  static final _statusCardPattern = RegExp(
+    r'карточк\S*\s+статус|статус\S*\s+систем|систем\S*\s+статус|'
+    r'(красн|зел[её]н)\S*\s+карточк|карточк\S*\s+(\S+\s+)?(красн|зел[её]н)|'
+    r'status\s+card|system\s+status|(red|green)\s+card|card\s+(is\s+)?(red|green)',
     caseSensitive: false,
   );
 
@@ -628,7 +638,8 @@ class IntentParser {
     }
 
     // 7a. Wallet cards (MUST be checked BEFORE balance to prevent fallthrough)
-    if (_walletCardsPattern.hasMatch(normalized)) {
+    if (_walletCardsPattern.hasMatch(normalized) &&
+        !_statusCardPattern.hasMatch(normalized)) {
       return IntentData(type: IntentType.showWalletCards, rawInput: input);
     }
 
@@ -692,13 +703,198 @@ class IntentParser {
   );
 
   /// A question or a story about something already done — not a command.
+  ///
+  /// A story ("я вчера купил BTC") and "ли" ("не знаю, стоит ли купить BTC")
+  /// always are. A question is, unless it is a polite request ("ты можешь
+  /// открыть отправку?", "could you open send?", "откроешь отправку?",
+  /// "давай купим BTC на 10$?"). "Как обычно", "как договаривались", "что
+  /// ж", "ну что" do not start a question ("как обычно купи BTC на 10$").
   static bool isConversational(String text) {
     final t = text.trim().toLowerCase();
     if (t.isEmpty) return false;
-    if (t.endsWith('?')) return true;
-    if (_questionStarts.any(t.startsWith)) return true;
+    if (_pastTenseAction.hasMatch(t)) return true;
     if (t.contains(' ли ')) return true;
-    return _pastTenseAction.hasMatch(t);
+    final sentences = _sentences(t).toList();
+    if (sentences.isEmpty) return t.endsWith('?');
+    if (t.endsWith('?') &&
+        !_isRequestSentence(sentences.last, splitClauses: false)) {
+      return true;
+    }
+    final first = sentences.first;
+    return _startsWithQuestion(withoutLeadIns(first)) &&
+        !_isRequestSentence(first, splitClauses: !t.contains('?'));
+  }
+
+  // ── Requests ──────────────────────────────────────────────────────────────
+
+  /// Imperatives that start a request ("купи BTC", "откройте отправку").
+  static const _imperatives = [
+    'купи', 'купите', 'продай', 'продайте', 'слей', 'обменяй', 'обменяйте',
+    'поменяй', 'поменяйте', 'отправь', 'отправьте', 'переведи',
+    'переведите', 'открой', 'откройте', 'покажи', 'покажите', 'закрой',
+    'закройте', 'запусти', 'запустите', 'включи', 'включите', 'выключи',
+    'выключите', 'установи', 'поставь', 'поставьте', 'измени', 'смени',
+    'переключи', 'создай', 'отмени', 'сделай', 'сканируй', 'просканируй',
+    'проверь', 'проверьте', 'отзови', 'отзовите', 'заблокируй',
+  ];
+
+  /// English verbs that start a request ("open send", "buy BTC").
+  static const _enVerbs = [
+    'buy', 'sell', 'swap', 'send', 'transfer', 'receive', 'open', 'show',
+    'close', 'start', 'run', 'launch', 'enable', 'disable', 'set', 'change',
+    'switch', 'create', 'cancel', 'scan', 'check', 'revoke', 'block',
+  ];
+
+  /// Perfective infinitives after a polite modal ("можешь открыть
+  /// отправку?"). Imperfective ones ("можешь покупать монеты?") ask what the
+  /// assistant is able to do, so they are not here.
+  static const _infinitives = [
+    'купить', 'продать', 'обменять', 'поменять', 'отправить', 'перевести',
+    'открыть', 'показать', 'закрыть', 'запустить', 'включить', 'выключить',
+    'установить', 'поставить', 'сменить', 'переключить', 'создать',
+    'отменить', 'сделать', 'провести', 'просканировать', 'проверить',
+    'отозвать', 'заблокировать',
+  ];
+
+  /// Second-person future used as a request ("откроешь отправку?").
+  static const _future2nd = [
+    'купишь', 'продашь', 'продадите', 'обменяешь', 'обменяете', 'поменяешь',
+    'поменяете', 'отправишь', 'отправите', 'переведёшь', 'переведешь',
+    'переведёте', 'переведете', 'откроешь', 'откроете', 'покажешь',
+    'покажете', 'закроешь', 'закроете', 'запустишь', 'включишь', 'выключишь',
+    'поставишь', 'проверишь', 'проверите', 'просканируешь', 'отзовёшь',
+    'отзовешь',
+  ];
+
+  /// First-person plural after "давай" ("давай купим BTC").
+  static const _letUs = [
+    'купим', 'продадим', 'обменяем', 'поменяем', 'отправим', 'переведём',
+    'переведем', 'откроем', 'закроем', 'запустим', 'включим', 'выключим',
+    'поставим', 'проверим', 'просканируем', 'отзовём', 'отзовем',
+  ];
+
+  static String _alt(List<String> words) => words.join('|');
+
+  static final _sentenceBreak = RegExp(r'[!?;\n]+|\.(?!\d)');
+  static final _clauseBreak = RegExp(r'[,—–]|\s-\s');
+  static final _leadPunct = RegExp(r'^[\s,:;—–-]+');
+
+  /// Words in front of the real start of a sentence.
+  static final _leadFiller = RegExp(
+    r'^(?:а|и|ну|ладно|слушай|слушайте|пожалуйста|окей|ок|гардиан|'
+    r'guardian|ok|okay|hey|so|please)(?![a-zа-яё0-9])',
+  );
+
+  /// Lead-ins that look like a question word but are not a question.
+  static final _leadDiscourse = RegExp(
+    r'^(?:как\s+(?:и\s+)?(?:обычно|всегда|договаривались|договорились)|'
+    r'что\s+ж|ну\s+что|as\s+usual|as\s+agreed)(?![a-zа-яё0-9])',
+  );
+
+  static final _imperativeStart = RegExp(
+    '^(?:${_alt(_imperatives)}|${_alt(_enVerbs)})(?![a-zа-яё0-9])',
+  );
+
+  /// "если", "когда", "ли", "if": a condition or a question, not a request
+  /// ("ты купишь BTC, если он упадёт?").
+  static final _hypothetical = RegExp(
+    r'(?:^|[^а-яё])(?:если|когда|ли)(?![а-яё])|'
+    r'(?:^|[^a-z])(?:if|when|whether)(?![a-z])',
+  );
+
+  /// "можешь / ты можешь / а можешь, пожалуйста, / не мог бы ты" + action.
+  static final _politeRu = RegExp(
+    r'(?:^|[,—–]\s*)(?:(?:а|и|ну|слушай|пожалуйста|ты|вы|гардиан|guardian)'
+    r'[,\s]+)*'
+    r'(?:можешь|можете|сможешь|сможете|не\s+мог(?:ла|ли)?\s+бы)'
+    r'(?:[,\s]+(?:ты|вы|мне|нам|пожалуйста|а|ну|и|сейчас|быстро))*[,\s]+'
+    '(?:${_alt(_infinitives)}|${_alt(_imperatives)})(?![а-яё])',
+  );
+
+  /// "could you / can you / would you / please could you" + action.
+  static final _politeEn = RegExp(
+    r'(?:^|,\s*)(?:(?:so|ok|okay|hey|and|guardian)[,\s]+)*(?:please[,\s]+)?'
+    r'(?:could|can|would|will)\s+you(?:[,\s]+(?:please|now|just))*[,\s]+'
+    '(?:${_alt(_enVerbs)})(?![a-z0-9])',
+  );
+
+  /// "откроешь отправку?", "а ты купишь BTC на 10$?"
+  static final _future2ndRequest = RegExp(
+    r'(?:^|[,—–]\s*)(?:(?:а|и|ну|слушай|пожалуйста|ты|вы)[,\s]+)*'
+    '(?:${_alt(_future2nd)})(?![а-яё])',
+  );
+
+  /// "давай купим BTC", "давай купи SOL", "давайте откроем отправку",
+  /// "let's open send".
+  static final _letUsRequest = RegExp(
+    r'(?:^|[,—–]\s*)(?:(?:а|и|ну|слушай|пожалуйста)[,\s]+)*давай(?:те)?'
+    r'(?:[,\s]+(?:ты|вы|мы|пожалуйста|тогда|сейчас|уже))*[,\s]+'
+    '(?:${_alt(_letUs)}|${_alt(_infinitives)}|${_alt(_imperatives)})'
+    r'(?![а-яё])|'
+    r"(?:^|,\s*)let(?:'s|s|\s+us)\s+"
+    '(?:${_alt(_enVerbs)})(?![a-z0-9])',
+  );
+
+  static Iterable<String> _sentences(String lower) => lower
+      .split(_sentenceBreak)
+      .map((s) => s.trim())
+      .where((s) => s.isNotEmpty);
+
+  static bool _startsWithQuestion(String body) =>
+      _questionStarts.any(body.startsWith);
+
+  /// [sentence] lowercased, without the words in front of its real start:
+  /// "а", "ну", "слушай,", "пожалуйста", "guardian,", and lead-ins that are
+  /// not questions: "как обычно", "как договаривались", "что ж", "ну что".
+  static String withoutLeadIns(String sentence) {
+    var s = sentence.trim().toLowerCase();
+    for (var i = 0; i < 8; i++) {
+      final before = s;
+      s = s.replaceFirst(_leadPunct, '');
+      s = s.replaceFirst(_leadDiscourse, '');
+      s = s.replaceFirst(_leadPunct, '');
+      s = s.replaceFirst(_leadFiller, '');
+      if (s == before) break;
+    }
+    return s.trim();
+  }
+
+  /// Whether [text] asks the app to do something now: a sentence that starts
+  /// with an action verb ("купи BTC", "ну что, открой отправку", "как обычно
+  /// купи BTC"), a polite request ("ты можешь открыть отправку?", "можешь,
+  /// пожалуйста, открыть отправку?", "could you please open send?"), a
+  /// second-person future ("откроешь отправку?") or "давай" ("давай купим
+  /// BTC"). With no "?" in the text, a later clause may carry it ("слушай,
+  /// guardian, открой отправку"). "если", "когда", "ли", "if" keep everything
+  /// but a leading imperative a question.
+  static bool isActionRequest(String text) {
+    final t = text.trim().toLowerCase();
+    if (t.isEmpty) return false;
+    final splitClauses = !t.contains('?');
+    return _sentences(t)
+        .any((s) => _isRequestSentence(s, splitClauses: splitClauses));
+  }
+
+  static bool _isRequestSentence(
+    String sentence, {
+    required bool splitClauses,
+  }) {
+    final body = withoutLeadIns(sentence);
+    if (body.isEmpty) return false;
+    if (_imperativeStart.hasMatch(body)) return true;
+    if (_hypothetical.hasMatch(body)) return false;
+    if (_politeRu.hasMatch(body) ||
+        _politeEn.hasMatch(body) ||
+        _future2ndRequest.hasMatch(body) ||
+        _letUsRequest.hasMatch(body)) {
+      return true;
+    }
+    if (!splitClauses || _startsWithQuestion(body)) return false;
+    return body
+        .split(_clauseBreak)
+        .skip(1)
+        .map(withoutLeadIns)
+        .any(_imperativeStart.hasMatch);
   }
 
   static double? extractAmount(String input) {

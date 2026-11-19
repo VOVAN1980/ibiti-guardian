@@ -9,7 +9,6 @@ import 'package:ibiti_guardian/models/jarvis_personality.dart';
 import 'package:ibiti_guardian/services/adapters/wallet_adapter.dart';
 import 'package:ibiti_guardian/services/adapters/portfolio_adapter.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
-import 'package:ibiti_guardian/services/adapters/security_adapter.dart';
 import 'package:ibiti_guardian/services/execution/tx_registry.dart';
 import 'package:ibiti_guardian/services/wallet/address_book_service.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
@@ -30,12 +29,71 @@ import 'package:ibiti_guardian/services/audit_log_service.dart';
 import 'package:ibiti_guardian/services/wallet/market_watchlist_service.dart';
 import 'package:ibiti_guardian/services/history/tx_history_service.dart';
 import 'package:ibiti_guardian/models/on_chain_tx.dart';
+import 'package:ibiti_guardian/services/assistant/app_guide.dart';
+import 'package:ibiti_guardian/services/security/system_status_service.dart';
+import 'package:ibiti_guardian/services/security/approval_scan_service.dart';
+import 'package:ibiti_guardian/config/privy_chain_registry.dart';
+import 'package:ibiti_guardian/models/approval.dart';
+import 'package:ibiti_guardian/services/voice/ai_voice.dart';
 
-/// Uses gpt-4o-mini to resolve user intent into structured JSON.
+/// Resolves user intent into structured JSON with [chatModel]
+/// (OpenAI Chat Completions).
 class OpenAIChatService {
   OpenAIChatService._();
   static final instance = OpenAIChatService._();
   static const _log = GuardianLogger('OpenAI');
+
+  /// Chat model for [solve] and [solveTradeIntent]. gpt-4o-mini is
+  /// deprecated (shutdown 2027-01-14); gpt-6-luna is its replacement. It is a
+  /// reasoning model: function tools on Chat Completions work only with
+  /// reasoning_effort "none", temperature is allowed only at "none", and the
+  /// output cap is max_completion_tokens (not max_tokens).
+  static const chatModel = 'gpt-6-luna';
+
+  /// Used for [fallbackRetryAfter] when [chatModel] is rejected (unknown
+  /// model or an unsupported parameter), with the old request parameters.
+  static const fallbackChatModel = 'gpt-4o-mini';
+
+  /// How long requests go straight to [fallbackChatModel] after a rejection.
+  /// Then [chatModel] is tried again: a rejection can be temporary (model
+  /// rollout, account access), and the fallback model is deprecated.
+  static const fallbackRetryAfter = Duration(minutes: 10);
+
+  static const _completionsUrl = 'https://api.openai.com/v1/chat/completions';
+
+  /// Per-request timeout for [solve]. Stays under the voice pipeline's 30 s
+  /// LLM cap (VoiceTurnController._llmTimeout).
+  static const _solveRequestTimeout = Duration(seconds: 20);
+
+  /// Strict per-request timeout for [solveTradeIntent]; on timeout the
+  /// caller falls back to the local parser.
+  static const _tradeIntentTimeout = Duration(milliseconds: 2500);
+
+  /// Set when [chatModel] was rejected: until then requests go straight to
+  /// [fallbackChatModel]; null = [chatModel] first.
+  DateTime? _fallbackUntil;
+
+  /// Clock for [fallbackRetryAfter]; tests move it forward.
+  @visibleForTesting
+  DateTime Function() clock = DateTime.now;
+
+  bool get _useFallbackModel {
+    final until = _fallbackUntil;
+    return until != null && clock().isBefore(until);
+  }
+
+  /// Tests inject a mock client here; null = the real network.
+  @visibleForTesting
+  http.Client? httpClientForTest;
+
+  @visibleForTesting
+  bool get usingFallbackModel => _useFallbackModel;
+
+  @visibleForTesting
+  void resetModelFallbackForTest() {
+    _fallbackUntil = null;
+    clock = DateTime.now;
+  }
 
   bool _initialized = false;
   String? _apiKey;
@@ -60,9 +118,13 @@ class OpenAIChatService {
     }
   }
 
-  /// Internal Message History — capped at 6 turns (12 messages).
-  /// Beyond 6 turns, gpt-4o-mini degrades on intent classification.
+  /// Internal Message History — capped at 6 turns (12 messages): enough for
+  /// follow-ups, small enough to keep every turn cheap and focused.
   static const _maxHistoryTurns = 6;
+
+  /// Longest canned answer kept by [rememberTurn] (long lists add cost and
+  /// nothing the next question needs).
+  static const _maxRememberedAnswerChars = 1500;
 
   /// Tools whose results carry third-party text (web pages, search results,
   /// token names from history or markets). A response produced after any of
@@ -78,6 +140,194 @@ class OpenAIChatService {
   void clearHistory() {
     _history.clear();
   }
+
+  @visibleForTesting
+  List<Map<String, dynamic>> get historyForTest => List.unmodifiable(_history);
+
+  /// Adds one user/assistant exchange to the LLM history and keeps the cap.
+  void _appendHistory(String user, String assistant) {
+    _history.add({'role': 'user', 'content': user});
+    _history.add({'role': 'assistant', 'content': assistant});
+    if (_history.length > _maxHistoryTurns * 2) {
+      _history.removeRange(0, _history.length - _maxHistoryTurns * 2);
+    }
+  }
+
+  /// Records a turn answered without the LLM (a canned or fast-path answer)
+  /// so a follow-up question ("а почему?", "and the second one?") still has
+  /// its context. Same cap as the LLM's own turns. The answer is stored in
+  /// the JSON shape the model itself returns, so the model keeps answering
+  /// in that shape, but only once, as displayMessage: a speechText copy
+  /// would send the same text twice on every later turn.
+  void rememberTurn({required String user, required String assistant}) {
+    final u = user.trim();
+    final a = assistant.trim();
+    if (u.isEmpty || a.isEmpty) return;
+    final shortAnswer = a.length > _maxRememberedAnswerChars
+        ? '${a.substring(0, _maxRememberedAnswerChars)}…'
+        : a;
+    _appendHistory(
+      u,
+      jsonEncode({
+        'displayMessage': shortAnswer,
+        'uiCommands': <Object>[],
+        'explicitIntent': null,
+      }),
+    );
+  }
+
+  // ── Requests ────────────────────────────────────────────────────────────
+
+  /// Chat Completions request body. [fallback] = the old [fallbackChatModel]
+  /// parameters (max_tokens, no reasoning_effort).
+  @visibleForTesting
+  static Map<String, dynamic> buildChatRequestBody({
+    required List<Map<String, dynamic>> messages,
+    required double temperature,
+    required int maxTokens,
+    bool fallback = false,
+    List<Map<String, dynamic>>? tools,
+    String? toolChoice,
+  }) {
+    return {
+      'model': fallback ? fallbackChatModel : chatModel,
+      // Function tools and temperature work only at reasoning_effort "none".
+      if (!fallback) 'reasoning_effort': 'none',
+      'temperature': temperature,
+      if (fallback)
+        'max_tokens': maxTokens
+      else
+        'max_completion_tokens': maxTokens,
+      'messages': messages,
+      if (tools != null) 'tools': tools,
+      if (tools != null && toolChoice != null) 'tool_choice': toolChoice,
+    };
+  }
+
+  /// True when an error response says the model or one of its request
+  /// parameters is not accepted — the cases the fallback model fixes.
+  /// Quota, auth, rate and server errors are not: the old model would fail
+  /// the same way.
+  @visibleForTesting
+  static bool isModelRejection(int statusCode, String body) {
+    if (statusCode != 400 && statusCode != 403 && statusCode != 404) {
+      return false;
+    }
+    String code = '';
+    String param = '';
+    String message = '';
+    try {
+      final decoded = jsonDecode(body);
+      final error = decoded is Map ? decoded['error'] : null;
+      if (error is Map) {
+        code = error['code']?.toString().toLowerCase() ?? '';
+        param = error['param']?.toString().toLowerCase() ?? '';
+        message = error['message']?.toString().toLowerCase() ?? '';
+      }
+    } catch (_) {
+      message = body.toLowerCase();
+    }
+    const modelCodes = {
+      'model_not_found',
+      'invalid_model',
+      'unsupported_parameter',
+      'unsupported_value',
+    };
+    const modelParams = {
+      'model',
+      'reasoning_effort',
+      'max_completion_tokens',
+      'temperature',
+      'tool_choice',
+    };
+    if (modelCodes.contains(code)) return true;
+    // 403 only when it is about access to the model itself.
+    if (statusCode == 403) {
+      return message.contains('model') && message.contains('access');
+    }
+    if (modelParams.contains(param)) return true;
+    return message.contains('reasoning_effort') ||
+        message.contains('unsupported parameter') ||
+        message.contains('invalid model') ||
+        (message.contains('model') &&
+            (message.contains('does not exist') ||
+                message.contains('not found')));
+  }
+
+  Future<http.Response> _postJson(
+      Map<String, dynamic> body, Duration timeout) {
+    final uri = Uri.parse(_completionsUrl);
+    final headers = {
+      'Authorization': 'Bearer $_apiKey',
+      'Content-Type': 'application/json',
+    };
+    final encoded = jsonEncode(body);
+    final client = httpClientForTest;
+    final request = client != null
+        ? client.post(uri, headers: headers, body: encoded)
+        : http.post(uri, headers: headers, body: encoded);
+    return request.timeout(timeout);
+  }
+
+  /// Sends a chat request with [chatModel]. If that model or one of its
+  /// parameters is rejected, retries once with [fallbackChatModel] and keeps
+  /// using it for [fallbackRetryAfter]; after that [chatModel] is tried
+  /// again.
+  Future<http.Response> _postChat(
+    Map<String, dynamic> Function(bool fallback) buildBody,
+    Duration timeout,
+  ) async {
+    if (_useFallbackModel) return _postJson(buildBody(true), timeout);
+    final response = await _postJson(buildBody(false), timeout);
+    if (response.statusCode == 200 ||
+        !isModelRejection(response.statusCode, response.body)) {
+      return response;
+    }
+    _fallbackUntil = clock().add(fallbackRetryAfter);
+    _log.w('$chatModel rejected (HTTP ${response.statusCode}: '
+        '${_errorDetail(response)}); using $fallbackChatModel for '
+        '${fallbackRetryAfter.inMinutes} min');
+    return _postJson(buildBody(true), timeout);
+  }
+
+  static String _errorDetail(http.Response response) {
+    try {
+      final decoded = jsonDecode(response.body);
+      final error = decoded is Map ? decoded['error'] : null;
+      final message = error is Map ? error['message'] : null;
+      if (message != null) return message.toString();
+    } catch (_) {}
+    return response.body.length > 300
+        ? response.body.substring(0, 300)
+        : response.body;
+  }
+
+  /// Russian if the message (or, when it gives no hint, the app) is Russian.
+  static bool _isRu(String input, String languageCode) {
+    final detected = LanguageDetector.detect(input);
+    final code = detected.isNotEmpty ? detected : languageCode;
+    return code.startsWith('ru');
+  }
+
+  /// The user-facing "AI can't answer right now" reply. No key, quota or
+  /// HTTP details: the user can't act on them (logged instead).
+  static Map<String, dynamic> _unavailableResponse(bool isRu) => {
+        'displayMessage': isRu
+            ? 'Guardian AI сейчас недоступен. Попробуйте чуть позже.'
+            : 'Guardian AI is temporarily unavailable. Please try again later.',
+        'speechText': isRu
+            ? AiVoice.ru('Я сейчас недоступен. Попробуйте чуть позже.',
+                'Я сейчас недоступна. Попробуйте чуть позже.')
+            : "I'm unavailable right now. Please try again later.",
+      };
+
+  /// Which grammatical gender the assistant uses about itself in Russian:
+  /// the gender of the voice chosen in Settings ([AiVoice]).
+  static String _voiceGenderInstruction() => AiVoice.isFemale
+      ? 'Your voice is female: in Russian always use feminine forms about '
+          'yourself (я проверила, я нашла, я не уверена, я сама).'
+      : 'Your voice is male: in Russian always use masculine forms about '
+          'yourself (я проверил, я нашёл, я не уверен, я сам).';
 
   Future<void> init() async {
     final settings = SettingsService.instance.settings;
@@ -124,11 +374,23 @@ class OpenAIChatService {
     await init();
 
     if (_apiKey == null) {
-      return {
-        'displayMessage':
-            'Guardian AI is offline. Please check your OpenAI API key in Settings.',
-        'speechText': 'Connection offline.',
-      };
+      final isRu = _isRu(input, languageCode);
+      // Settings has a switch for the AI but no key field: only the switch
+      // is something the user can change.
+      if (!SettingsService.instance.settings.isNeuralOperatorEnabled) {
+        return {
+          'displayMessage': isRu
+              ? 'Guardian AI выключен. Включите его: Меню → Guardian AI.'
+              : 'Guardian AI is turned off. Turn it on in Settings → Guardian AI.',
+          'speechText': isRu
+              ? AiVoice.ru(
+                  'Я выключен. Включите меня в меню, раздел Guardian AI.',
+                  'Я выключена. Включите меня в меню, раздел Guardian AI.')
+              : "I'm turned off. Turn me on in Settings, Guardian AI.",
+        };
+      }
+      _log.w('No API key available');
+      return _unavailableResponse(isRu);
     }
 
     final aiSettings = AiControlService.instance.settings;
@@ -140,17 +402,14 @@ class OpenAIChatService {
     // Truncate at LINE boundaries so individual vocab/macro entries stay intact.
     final personalContext = _truncateAtLineBoundary(rawPersonalContext, 1000);
 
+    // Static sections first, per-turn values last: the provider caches a
+    // repeated prompt prefix, which makes most of each turn cheaper.
     final systemPrompt = '''
 You are IBITI Guardian, an AI assistant and voice OS for the IBITI Guardian app.
-The preferred app language is: $languageCode.
 Always infer the language of the CURRENT user message and answer in that
 language. Understand mixed language and surzhyk naturally. Use the preferred
-app language only when the current message does not provide enough evidence.
-${allowActionTools ? '' : '''
-This is a conversation-only turn. The user has not authorized an app action.
-Answer or explain naturally. Do not propose, simulate, or claim that you opened,
-changed, bought, sold, sent, swapped, scanned, revoked, or executed anything.
-'''}
+app language (given below) only when the current message does not provide
+enough evidence.
 
 ━━━ OUTPUT FORMAT (STRICT JSON) ━━━
 You must return a JSON object with this exact schema:
@@ -179,7 +438,8 @@ small talk, emotions ("я в панике"), or stories about what already happe
 just answer. Never open a window on your own initiative.
 
 ━━━ WHAT THE APP CAN AND CANNOT DO ━━━
-Answer only from this list, the live context below and your tool results.
+Answer only from this list, the APP GUIDE, the live context below and your
+tool results.
 - Wallet networks (exactly seven): BNB Chain, Ethereum, Polygon, Arbitrum,
   Base, Solana, Tron. Nothing else (no Optimism, Bitcoin network, TON…).
 - Wallet: send, receive, swap (0x on EVM networks, Jupiter on Solana,
@@ -187,8 +447,9 @@ Answer only from this list, the live context below and your tool results.
 - Exchanges: live prices from MEXC, Binance, Gate.io and OKX; SPOT buy/sell
   only, on exchanges connected with API keys (Policy → Funding sources).
   No futures, margin, leverage, staking, lending, earn or copy trading.
-- Security: approval scan, revoke (Panic), EPK on-chain policy, limits in
-  Policy, AI modes Manual / Guarded / Full Autonomy.
+- Security: Safe Scan (token approval check) with Safe review and Panic
+  revoke, the System status card, EPK on-chain policy, limits in Policy, AI
+  modes Manual / Guarded / Full Autonomy.
 - Trusted addresses (AI whitelist; Command Center → Trusted addresses): the
   only addresses you, the AI, may send to (on every wallet network) while
   the policy is STRICT. Only
@@ -201,20 +462,36 @@ Answer only from this list, the live context below and your tool results.
 If something is not covered here, in the context or by a tool, say plainly
 that you don't know or that the app can't do it. Never invent balances,
 prices, features, transactions or results.
+Questions about the app itself ("what is Safe Scan", "why is the status card
+red", "how do I add a card", "what does the approve limit do") are questions:
+answer them from the APP GUIDE and the live context. Call a tool only for live
+values (balances, prices, scan results, the status card right now).
 
+${AppGuide.text}
 ━━━ HOW YOU SOUND ━━━
-speechText is read aloud by a voice. Write it the way a calm, friendly person
-talks: short natural sentences, no lists, no symbols, no emoji, no addresses
-or hashes. Round numbers sensibly (amounts and prices of 1 or more to two
-decimals, smaller ones to two significant digits) and keep them as digits —
-the app turns them into words.
+Your tone, length and wording come from YOUR PERSONALITY at the end of this
+prompt; follow it. speechText is read aloud by a voice: plain sentences, no
+lists, no symbols, no emoji, no addresses or hashes. Round numbers sensibly
+(amounts and prices of 1 or more to two decimals, smaller ones to two
+significant digits) and keep them as digits — the app turns them into words.
 
+━━━ THIS TURN ━━━
+The preferred app language is: $languageCode.
+${_voiceGenderInstruction()}
+${allowActionTools ? '' : '''
+This is a conversation-only turn. The user has not authorized an app action.
+Answer or explain naturally. Do not propose, simulate, or claim that you opened,
+changed, bought, sold, sent, swapped, scanned, revoked, or executed anything.
+'''}
 ━━━ AI MODE & POLICY ━━━
-Current Mode: ${aiSettings.mode.name.toUpperCase()}
-Daily trading limit: ${aiSettings.dailyLimit}\$ per day.
-Permitted Actions: ${aiSettings.allowedActions.map((e) => e.name).join(", ")}.
-EPK State: ${epkState.isActive ? 'ACTIVE' : 'PAUSED'}, daily limit ${epkState.dailyLimit}\$.
-If an action is blocked by mode or limits, explain the restriction clearly and guide the user on where to change it in settings.
+Current AI mode: ${_aiModeLabel(aiSettings.mode)}.
+Permitted AI actions: ${aiSettings.allowedActions.map((e) => e.name).join(", ")}.
+EPK protection: ${epkState.isActive ? 'ACTIVE' : 'PAUSED'} (${epkState.isDeployed ? 'on-chain kernel' : 'local checks'}).
+Limits and the System status are in the live context below.
+If an action is blocked by the mode or a limit, say which one and where the
+owner changes it: the AI mode in Security → AI Center (or Policy → AI mode),
+limits in Security → Policy. Raising the mode or a spending limit needs the
+PIN; you can't change them.
 
 ━━━ LIVE APP CONTEXT ━━━
 $appContext
@@ -239,7 +516,7 @@ $personalContext
         "function": {
           "name": "get_vault_info",
           "description":
-              "Fetch information about the user's vault: number of wallet cards (EVM cards), all addresses (EVM, Solana, Tron). Use for questions about: how many cards, how many wallets, how many addresses, card count, wallet structure. Russian triggers: сколько карточек, сколько карт, карточки, карты, кошельки, адреса. ALWAYS use this tool when user asks about cards (карточки/карты). NOT for trusted / whitelisted addresses (доверенные адреса, белый список): use get_trusted_addresses."
+              "Fetch information about the user's vault: number of wallet cards (EVM cards), all addresses (EVM, Solana, Tron). Use for questions about: how many cards, how many wallets, how many addresses, card count, wallet structure. Russian triggers: сколько карточек, сколько карт, карточки, карты, кошельки, адреса. ALWAYS use this tool when user asks about wallet cards (карточки/карты). NOT for the System status card (статус системы, красная/опасно, what's wrong): use get_system_status. NOT for trusted / whitelisted addresses (доверенные адреса, белый список): use get_trusted_addresses."
         }
       },
       {
@@ -293,7 +570,26 @@ $personalContext
         "type": "function",
         "function": {
           "name": "scan_security_risks",
-          "description": "Scan wallet for dangerous smart contract approvals."
+          "description":
+              "READ-ONLY. Results of Safe Scan (the token approval check): the latest scan of this session, "
+                  "plus saved results of earlier scans (risky approvals per network and wallet). "
+                  "Does NOT start a scan; if none ran this session it says so (the user scans in Security → Safe/Panic). "
+                  "Use when user asks: 'что нашёл Safe Scan', 'есть опасные разрешения', 'результаты сканирования', "
+                  "'did the scan find anything', 'risky approvals'."
+        }
+      },
+      {
+        "type": "function",
+        "function": {
+          "name": "get_system_status",
+          "description":
+              "READ-ONLY. The live 'System status' card on the Wallet tab (RU «Статус системы»): "
+                  "isSafe (green «Безопасно») or not (red «Опасно»), the problems behind red "
+                  "(riskyApprovals found by Safe Scan, sessionExpired sign-in, notificationsOff) with how to fix each, "
+                  "and riskyScans (network, wallet, count). "
+                  "Use when user asks: 'статус системы', 'почему карточка статуса красная', 'что не так', "
+                  "'всё ли в порядке', 'system status', 'why is it red', 'is my wallet safe'. "
+                  "NOT get_vault_info: this card is not a wallet card."
         }
       },
       {
@@ -339,7 +635,7 @@ $personalContext
         "function": {
           "name": "panic_revoke_all",
           "description":
-              "EMERGENCY: immediately open Panic Revoke mode. Scans and revokes ALL critical dangerous approvals without delay. Call when user says: паника, emergency, revoke all, опасность, экстренно, всё ревокнуть."
+              "EMERGENCY: immediately open Panic Revoke mode. It scans and lists ALL critical dangerous approvals; the user confirms once to revoke them all. Call when user says: паника, emergency, revoke all, опасность, экстренно, всё ревокнуть."
         }
       },
       {
@@ -439,8 +735,9 @@ $personalContext
         }
       }
     ];
+    // scan_security_risks and get_system_status only read results, so
+    // conversation-only (voice) turns may use them.
     const actionToolNames = {
-      'scan_security_risks',
       'panic_revoke_all',
       'safe_revoke_review',
       'manage_watchlist',
@@ -471,60 +768,34 @@ $personalContext
     String? pendingGuardianMode;
     var usedUntrustedTool = false;
 
-    try {
-      int maxLoops = 3;
-      for (int i = 0; i < maxLoops; i++) {
-        final requestBody = {
-          'model': 'gpt-4o-mini',
-          'temperature': 0.7,
-          'max_tokens': 1200,
-          // NOTE: response_format: json_object is intentionally REMOVED
-          // because it conflicts with 'tools'. With tools active, the model
-          // returns tool_calls OR a final message. We enforce JSON via the system prompt.
-          'messages': currentMessages,
-          'tools': advertisedTools,
-          'tool_choice': 'auto',
-        };
+    final isRuTurn = _isRu(input, languageCode);
 
-        final response = await http
-            .post(
-              Uri.parse('https://api.openai.com/v1/chat/completions'),
-              headers: {
-                'Authorization': 'Bearer $_apiKey',
-                'Content-Type': 'application/json'
-              },
-              body: jsonEncode(requestBody),
-            )
-            .timeout(const Duration(seconds: 45));
+    try {
+      const maxLoops = 3;
+      for (int i = 0; i < maxLoops; i++) {
+        // The last round must produce the answer: no more tool calls, so the
+        // user never gets a "limit reached" instead of a reply.
+        final isLastRound = i == maxLoops - 1;
+        // NOTE: response_format: json_object is intentionally not used
+        // because it conflicts with 'tools'. With tools active, the model
+        // returns tool_calls OR a final message. We enforce JSON via the
+        // system prompt.
+        final response = await _postChat(
+          (fallback) => buildChatRequestBody(
+            messages: currentMessages,
+            temperature: 0.3,
+            maxTokens: 1200,
+            fallback: fallback,
+            tools: advertisedTools,
+            toolChoice: isLastRound ? 'none' : 'auto',
+          ),
+          _solveRequestTimeout,
+        );
 
         if (response.statusCode != 200) {
-          String errorDetail = '';
-          try {
-            final errBody = jsonDecode(response.body);
-            errorDetail =
-                errBody['error']?['message']?.toString() ?? response.body;
-          } catch (_) {
-            errorDetail = response.body;
-          }
-          final statusMsg = switch (response.statusCode) {
-            401 =>
-              'Invalid or expired API key (401). Please update your OpenAI key in Settings.',
-            429 =>
-              'OpenAI quota exceeded (429). Your account may have run out of credits.',
-            500 ||
-            503 =>
-              'OpenAI server error (${response.statusCode}). Try again later.',
-            _ => 'HTTP ${response.statusCode}: $errorDetail',
-          };
-          _log.e('$statusMsg');
-          return {
-            'displayMessage': statusMsg,
-            'speechText': response.statusCode == 429
-                ? 'Закончились токены OpenAI.'
-                : response.statusCode == 401
-                    ? 'Неверный API ключ.'
-                    : 'Ошибка подключения.',
-          };
+          _log.e('Chat request failed: HTTP ${response.statusCode}: '
+              '${_errorDetail(response)}');
+          return _unavailableResponse(isRuTurn);
         }
 
         final body = jsonDecode(response.body);
@@ -539,14 +810,14 @@ $personalContext
         // so the UI/voice pipeline gets a real message, not a crash.
         if (finishReason == 'length') {
           _log.w('Response truncated (finish_reason=length)');
-          final isRu = languageCode.startsWith('ru');
+          // Same language choice as every other reply of this turn.
           return {
-            'displayMessage': isRu
+            'displayMessage': isRuTurn
                 ? 'Ответ оказался слишком длинным и был обрезан. '
                     'Попробуйте задать вопрос конкретнее.'
                 : 'My response was too long and got cut off. '
                     'Please try a simpler question.',
-            'speechText': isRu
+            'speechText': isRuTurn
                 ? 'Ответ слишком длинный. Спросите конкретнее.'
                 : 'Sorry, my answer was too long. Can you ask more specifically?',
           };
@@ -595,7 +866,14 @@ $personalContext
         }
 
         // Final response handling — safe JSON extraction
-        final text = message['content'] as String;
+        final text = message['content']?.toString() ?? '';
+        if (text.trim().isEmpty) {
+          _log.w('Empty answer (finish_reason=$finishReason)');
+          // An assistant message with neither text nor tool calls is not
+          // valid input for the next round.
+          currentMessages.removeLast();
+          continue;
+        }
         Map<String, dynamic>? decoded;
         try {
           decoded = Map<String, dynamic>.from(jsonDecode(text) as Map);
@@ -619,7 +897,10 @@ $personalContext
           final responseLanguageCode = LanguageDetector.detect(input).isNotEmpty
               ? LanguageDetector.detect(input)
               : languageCode;
-          if (aiSpeech.isNotEmpty &&
+          // No retry on the last round: an answer in the wrong language is
+          // better than no answer.
+          if (!isLastRound &&
+              aiSpeech.isNotEmpty &&
               LanguageDetector.isWrongLanguage(
                   aiSpeech, responseLanguageCode)) {
             currentMessages.add({
@@ -631,11 +912,7 @@ $personalContext
           }
 
           // Persistence: Update memory (original user input, not tool-hinted)
-          _history.add({'role': 'user', 'content': input});
-          _history.add({'role': 'assistant', 'content': text});
-          if (_history.length > _maxHistoryTurns * 2) {
-            _history.removeRange(0, _history.length - _maxHistoryTurns * 2);
-          }
+          _appendHistory(input, text);
 
           // Override if phantom modal was pending
           if (pendingGuardianMode != null) {
@@ -667,19 +944,20 @@ $personalContext
           return {'displayMessage': text, 'speechText': text};
         }
       }
-      return {
-        'displayMessage': 'Neural limit reached.',
-        'speechText': 'Limit reached.'
-      };
+      // Only reached if even the tool-free last round gave no usable text.
+      _log.w('No answer after $maxLoops rounds');
+      final msg = isRuTurn
+          ? 'Не получилось ответить. Спросите, пожалуйста, ещё раз.'
+          : "I couldn't finish the answer. Please ask again.";
+      return {'displayMessage': msg, 'speechText': msg};
     } catch (e) {
-      return {
-        'displayMessage': 'Neural bridge failure: $e',
-        'speechText': 'Failed.'
-      };
+      // Timeouts, network and parse errors: the details go to the log.
+      _log.e('solve failed', e);
+      return _unavailableResponse(isRuTurn);
     }
   }
 
-  /// Primary trading intent resolver using gpt-4o-mini.
+  /// Primary trading intent resolver using [chatModel].
   /// Strictly classifies buy/sell intents and extracts trading details.
   Future<Map<String, dynamic>?> solveTradeIntent(String input,
       {String? languageCode}) async {
@@ -716,7 +994,7 @@ $contextStr
 
 ━━━ PARSING RULES ━━━
 1. Determine if user wants to buy or sell a cryptocurrency asset.
-   - If the user is asking whether you are capable of buying/selling (e.g., "можешь покупать?", "умеешь покупать?", "can you buy?", "are you able to buy?", "ты можешь купить?", "можешь продать?"), this is a capability question, NOT an active trade command. Set type to "capabilityQuestion" and confidence to 1.0.
+   - If the user is asking whether you are capable of buying/selling (e.g., "можешь покупать?", "умеешь покупать?", "can you buy?", "are you able to buy?", "ты можешь купить?", "можешь продать?") and names no coin AND amount, this is a capability question, NOT an active trade command. Set type to "capabilityQuestion" and confidence to 1.0. A polite request that names a coin and an amount ("А можешь купить BTC на 10 USDT?", "could you buy 10 USDT of BTC?") is a trade command.
    - If the user is giving an actual imperative command to execute a trade (e.g. "купи SOL", "продай BTC", "купи монету на 1 долар"), set type to "buyAsset" or "sellAsset" accordingly.
    - Advice or opinion questions ("стоит ли купить BTC?", "когда продавать?", "should I buy?") and stories about past trades ("я вчера купил SOL", "I sold ETH") are NOT trade commands: set type to "unknown".
    - If neither, set type to "unknown".
@@ -757,29 +1035,21 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 }
 ''';
 
-    final messages = [
+    final messages = <Map<String, dynamic>>[
       {'role': 'system', 'content': systemPrompt},
       {'role': 'user', 'content': input},
     ];
 
     try {
-      final requestBody = {
-        'model': 'gpt-4o-mini',
-        'temperature': 0.0, // Strict and deterministic parsing
-        'max_tokens': 150,
-        'messages': messages,
-      };
-
-      final response = await http
-          .post(
-            Uri.parse('https://api.openai.com/v1/chat/completions'),
-            headers: {
-              'Authorization': 'Bearer $_apiKey',
-              'Content-Type': 'application/json'
-            },
-            body: jsonEncode(requestBody),
-          )
-          .timeout(const Duration(milliseconds: 2500)); // Strict 2.5 second timeout
+      final response = await _postChat(
+        (fallback) => buildChatRequestBody(
+          messages: messages,
+          temperature: 0.0, // Strict and deterministic parsing
+          maxTokens: 150,
+          fallback: fallback,
+        ),
+        _tradeIntentTimeout,
+      );
 
       if (response.statusCode != 200) {
         _log.w('solveTradeIntent failed with status: ${response.statusCode}');
@@ -884,11 +1154,13 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 
   Stream<String> solveStreaming(String input,
       [String languageCode = 'ru']) async* {
+    final isRu = _isRu(input, languageCode);
     try {
       final result = await solve(input, languageCode);
       final speechText = result['speechText']?.toString() ?? '';
       if (speechText.isEmpty) {
-        yield result['displayMessage']?.toString() ?? 'No response.';
+        yield result['displayMessage']?.toString() ??
+            (isRu ? 'Нет ответа.' : 'No response.');
         return;
       }
 
@@ -912,7 +1184,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
       }
     } catch (e) {
       _log.e('solveStreaming error', e);
-      yield 'Failed.';
+      yield _unavailableResponse(isRu)['speechText'] as String;
     }
   }
 
@@ -927,6 +1199,11 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
         char == ':' ||
         char == '\n';
   }
+
+  @visibleForTesting
+  Future<String> executeToolForTest(String name,
+          [String argumentsJson = '{}']) =>
+      _executeTool(name, argumentsJson);
 
   Future<String> _executeTool(String name, String argumentsJson) async {
     final wallet = WalletAdapter.instance;
@@ -1023,16 +1300,27 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
         }
 
       case 'scan_security_risks':
-        _setActivity('Сканирую смарт-контракты...');
-        if (!wallet.isConnected) {
-          _setActivity(null);
-          return '{"error": "No wallet"}';
-        }
-        final secSummary = await SecurityAdapter.instance
-            .getSummary(wallet.address, wallet.chainId);
+        // Reads results only. It used to report "0 risks" when no scan had
+        // run at all, which sounded like a clean wallet.
+        _setActivity('Смотрю результаты Safe Scan...');
+        await _loadSystemStatus();
+        final scanPayload = buildSafeScanPayload(
+          lastScanAt: ApprovalScanService.lastScanTime,
+          lastScanApprovals: ApprovalScanService.lastScannedApprovals,
+          savedRiskyScans: SystemStatusService.instance.riskyScans,
+        );
         _setActivity(null);
-        return jsonEncode(
-            {'risks': secSummary.riskyApprovalsCount, 'timestamp': ts});
+        return jsonEncode({...scanPayload, 'timestamp': ts});
+
+      case 'get_system_status':
+        _setActivity('Проверяю статус системы...');
+        await _loadSystemStatus();
+        final statusPayload = buildSystemStatusPayload(
+          problems: SystemStatusService.instance.problems,
+          riskyScans: SystemStatusService.instance.riskyScans,
+        );
+        _setActivity(null);
+        return jsonEncode({...statusPayload, 'timestamp': ts});
 
       case 'panic_revoke_all':
         _setActivity('Запускаю экстренный отзыв...');
@@ -1043,7 +1331,8 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
           'mode': 'panic',
           'timestamp': ts,
           'message':
-              'Panic revoke flow initiated. All critical approvals will be revoked immediately.',
+              'Panic window opened: it scans the wallet and lists the critical '
+              'approvals; they are revoked only after the user confirms.',
         });
 
       // Security policy belongs to the user alone. The assistant may explain the
@@ -1340,6 +1629,7 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
         'web_search',
         'read_url',
         'scan_security_risks',
+        'get_system_status',
         'get_market_overview',
         // Phase K: expanded knowledge read-only tools
         'get_transaction_history',
@@ -1563,8 +1853,49 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
     }
   }
 
+  static String _aiModeLabel(AiMode mode) => switch (mode) {
+        AiMode.manual => 'Manual',
+        AiMode.guarded => 'Guarded',
+        AiMode.fullAutonomy => 'Full Autonomy',
+      };
+
+  /// Makes sure the saved Safe Scan results are loaded (the status card
+  /// usually did it already). Never blocks a turn for long, never throws.
+  static Future<void> _loadSystemStatus() async {
+    try {
+      await SystemStatusService.instance
+          .load()
+          .timeout(const Duration(seconds: 2));
+    } catch (e) {
+      _log.w('System status not loaded', e);
+    }
+  }
+
+  /// "send $50" style value of one wallet limit as the policy engine applies
+  /// it: an expired temporary limit is back at the safe default
+  /// (GuardianPolicyEngine._activeLimit).
+  static String _walletLimitLabel(PolicyProfile profile, String action,
+      double configured, double safeDefault) {
+    final expiry = profile.actionExpiries[action];
+    final now = DateTime.now();
+    if (expiry != null && !now.isBefore(expiry)) {
+      return '\$${safeDefault.toStringAsFixed(0)} (temporary limit ended)';
+    }
+    final until = expiry == null
+        ? ''
+        : ' (temporary, until ${expiry.toIso8601String().substring(0, 16)})';
+    return '\$${configured.toStringAsFixed(0)}$until';
+  }
+
   Future<String> _buildAppContextSnapshot() async {
     final wallet = WalletAdapter.instance;
+    await _loadSystemStatus();
+    final status = SystemStatusService.instance;
+    final statusProblems = status.problems;
+    final statusLine = statusProblems.isEmpty
+        ? 'Safe (green)'
+        : 'Danger (red); problems: ${statusProblems.map((p) => p == SystemProblem.riskyApprovals ? '${p.name} (${status.riskyApprovals})' : p.name).join(', ')}';
+    final safeDefaults = PolicyProfile.safe();
     final okxConnected = await ExchangeAccountStore.instance.isConnected('okx');
     String okxRegionStr = 'disconnected';
     String okxQuoteStr = 'USDT';
@@ -1621,9 +1952,11 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 - Latest tx: ${latestTx == null ? 'none' : '${latestTx.status.name} ${latestTx.assetLabel ?? latestTx.operationLabel ?? latestTx.txHash.substring(0, 8)}'}
 - Saved recipients: ${AddressBookService.instance.entries.length}
 - Trusted addresses (AI whitelist, read-only for AI): ${trustProfile.trustedAddresses.length + trustProfile.trustedContracts.length}; policy mode ${trustProfile.mode.name}${trustProfile.mode == PolicyMode.safe ? ' (STRICT: AI may send only to these)' : ''}
-- AI mode: ${aiSettings.mode.name}
-- Allowed AI actions: ${aiSettings.allowedActions.map((e) => e.name).join(', ')}
-- AI daily limit USD: ${aiSettings.dailyLimit.toStringAsFixed(2)}
+- System status card: $statusLine
+- Wallet limits (USD value of ONE operation; Security → Policy): send ${_walletLimitLabel(trustProfile, 'SEND', trustProfile.sendLimitUsd, safeDefaults.sendLimitUsd)}, swap ${_walletLimitLabel(trustProfile, 'SWAP', trustProfile.swapLimitUsd, safeDefaults.swapLimitUsd)}, approve ${_walletLimitLabel(trustProfile, 'APPROVE', trustProfile.approveLimitUsd, safeDefaults.approveLimitUsd)} (unlimited approvals always blocked)
+- Block unknown contracts: ${trustProfile.allowUnknownContracts ? 'OFF (unknown contracts allowed)' : 'ON'}
+- Daily trading limit USD (everything not started in the wallet's own Send/Swap windows: exchange buys, the AI's exchange sells, sends and swaps the AI carries out from chat or voice): ${aiSettings.dailyLimit.toStringAsFixed(0)}
+- Min trade balance USD (no exchange buy below it): ${aiSettings.minTradeBalance.toStringAsFixed(0)}
 - AI mandate goal: ${mandate.goal.name}
 - AI mandate assets: ${mandate.allowedAssets.isEmpty ? 'any' : mandate.allowedAssets.join(', ')}
 - AI mandate networks: ${mandate.allowedNetworks.isEmpty ? 'any' : mandate.allowedNetworks.join(', ')}
@@ -1650,10 +1983,35 @@ ${ScreenContextService.instance.buildContextPrompt()}
 
   // ── Tool Routing Hints ──────────────────────────────────────────────────
 
+  @visibleForTesting
+  static String? toolHintFor(String input) => _buildToolHint(input);
+
+  /// "System status" card wording that needs no card word: "статус системы",
+  /// "system status", "status card".
+  static final _systemStatusPhrase = RegExp(
+      r'статус[а-яё]*\s+систем|систем[а-яё]*\s+статус|system status|status card');
+
+  /// Words that, next to a card word, mean the status card (its title, its
+  /// colours, its «Опасно» badge) rather than a wallet card.
+  static final _statusCardWord =
+      RegExp(r'статус|status|красн|зел[её]н|опасн|danger|\bred\b|\bgreen\b');
+
+  static final _anyCardWord = RegExp(r'карт|card');
+
+  /// True when [lower] asks about the System status card on the Wallet tab.
+  static bool _mentionsSystemStatusCard(String lower) {
+    if (_systemStatusPhrase.hasMatch(lower)) return true;
+    // "безопасно" / "прекрасно" contain "опасн" / "красн" but say nothing
+    // about the card's colour.
+    final cleaned =
+        lower.replaceAll('безопасн', ' ').replaceAll('прекрасн', ' ');
+    return _anyCardWord.hasMatch(cleaned) && _statusCardWord.hasMatch(cleaned);
+  }
+
   /// Deterministic pre-processor: detects what kind of question the user is
-  /// asking and returns a strong routing hint that is prepended to the user
-  /// message. This compensates for gpt-4o-mini frequently ignoring tool
-  /// descriptions when the query contains ambiguous keywords like "кошелёк".
+  /// asking and returns a strong routing hint, sent as a system message
+  /// before the user message. It keeps the model from picking a tool by an
+  /// ambiguous keyword ("кошелёк", "карточка").
   static String? _buildToolHint(String input) {
     final lower = input.toLowerCase();
 
@@ -1669,6 +2027,17 @@ ${ScreenContextService.instance.buildContextPrompt()}
           'remove trusted addresses; if asked, say only the owner can, with '
           'the PIN, in Command Center → Trusted addresses or Address book → '
           'Trust for AI.]';
+    }
+
+    // The System status card (green Safe / red Danger) is not a wallet card:
+    // "почему карточка статуса красная?" → get_system_status. Checked before
+    // the wallet-card patterns below, which would match "карточка".
+    if (_mentionsSystemStatusCard(lower)) {
+      return '[TOOL ROUTING: The user is asking about the "System status" '
+          'card on the Wallet tab (RU «Статус системы»: green «Безопасно» / '
+          'red «Опасно»), NOT about wallet cards. You MUST call '
+          'get_system_status. Do NOT call get_vault_info. Explain each '
+          'problem and its button as the APP GUIDE describes.]';
     }
 
     // Card / vault structure queries → get_vault_info
@@ -1732,5 +2101,138 @@ Map<String, dynamic> buildTrustedAddressesPayload(
     'note': 'Applies to AI, market and dApp sends on every wallet network '
         "while the policy is STRICT; the owner's own wallet sends are not "
         'limited.',
+  };
+}
+
+/// What each System status problem means and the button that fixes it (the
+/// "What's wrong" sheet: wallet_space_screen.dart _ProblemTile / _fix).
+const Map<SystemProblem, ({String meaning, String fix})> _systemProblemInfo = {
+  SystemProblem.riskyApprovals: (
+    meaning: 'Safe Scan found token approvals that can be used to take '
+        'tokens (see riskyScans).',
+    fix: 'Tap the red card → «Открыть «Защиту»» (Open Security) → tile '
+        '«Safe/Panic» (or «Рисков: N») → «Сейф» or «Паника» → revoke them. '
+        'Each revoke is an on-chain transaction with a small network fee. '
+        'Revoking works in every AI mode when the user opens Safe/Panic; '
+        'only a window the AI opened is review-only while the AI mode is '
+        'Manual.',
+  ),
+  SystemProblem.sessionExpired: (
+    meaning: 'The sign-in (Privy) session expired: transfers cannot be '
+        'signed until the user signs in again.',
+    fix: 'Tap the red card → «Войти» (Sign in): email code or Google.',
+  ),
+  SystemProblem.notificationsOff: (
+    meaning: 'Android notifications are blocked: no top-up, price or API '
+        'key messages.',
+    fix: 'Tap the red card → «Разрешить» (Allow). If that does not help: '
+        'Android Settings → Apps → IBITI Guardian → Notifications.',
+  ),
+};
+
+String _networkName(int chainId) =>
+    PrivyChainRegistry.getEvmChain(chainId)?.displayName ?? 'Chain $chainId';
+
+List<Map<String, dynamic>> _riskyScanRows(List<RiskyScan> scans) => [
+      for (final s in scans)
+        {
+          'network': _networkName(s.chainId),
+          'wallet': OpenAIChatService._maskAddress(s.wallet),
+          'count': s.count,
+        },
+    ];
+
+/// The `get_system_status` tool result, without the timestamp: what the
+/// "System status" card on the Wallet tab shows right now.
+@visibleForTesting
+Map<String, dynamic> buildSystemStatusPayload({
+  required List<SystemProblem> problems,
+  required List<RiskyScan> riskyScans,
+}) {
+  final safe = problems.isEmpty;
+  return {
+    'isSafe': safe,
+    'card': safe ? 'green «Безопасно» (Safe)' : 'red «Опасно» (Danger)',
+    'problems': [
+      for (final p in problems)
+        {
+          'problem': p.name,
+          'meaning': _systemProblemInfo[p]?.meaning,
+          'fix': _systemProblemInfo[p]?.fix,
+        },
+    ],
+    'riskyScans': _riskyScanRows(riskyScans),
+    'note': safe
+        ? 'Green means: no Safe Scan result with unrevoked risky approvals, '
+            'sign-in active, notifications allowed. A wallet or network '
+            'that was never scanned is not checked.'
+        : 'Tapping the red card opens «Что не так» (What\'s wrong) with one '
+            'button per problem. The card turns green by itself once all '
+            'are fixed (risky approvals: after revoking them in the app, or '
+            'a new scan of that wallet + network that finds none).',
+  };
+}
+
+/// The `scan_security_risks` tool result, without the timestamp. It reports
+/// scan results and never starts a scan; "not scanned yet" is said plainly.
+///
+/// The scan's own list ([lastScanApprovals]) is not updated by a revoke, so
+/// what is still risky comes from [savedRiskyScans] (SystemStatusService:
+/// set after every full scan and lowered after every in-app revoke, per
+/// wallet + network), the same numbers the System status card shows.
+@visibleForTesting
+Map<String, dynamic> buildSafeScanPayload({
+  required DateTime? lastScanAt,
+  required List<ApprovalData> lastScanApprovals,
+  required List<RiskyScan> savedRiskyScans,
+}) {
+  final scanned = lastScanAt != null;
+  final first = lastScanApprovals.isEmpty ? null : lastScanApprovals.first;
+  final scannedWallet = first?.walletAddress?.toLowerCase();
+  final scannedChainId = first?.chainId;
+  final foundRisky =
+      lastScanApprovals.where((a) => a.assessment.shouldRevoke).length;
+  // Risky approvals of the scanned wallet + network not revoked yet. Unknown
+  // only when the scan result carries no wallet (then see saved results).
+  int? notRevoked;
+  if (foundRisky == 0) {
+    notRevoked = 0;
+  } else if (scannedWallet != null) {
+    notRevoked = 0;
+    for (final s in savedRiskyScans) {
+      if (s.chainId == scannedChainId &&
+          s.wallet.toLowerCase() == scannedWallet) {
+        notRevoked = s.count;
+        break;
+      }
+    }
+  }
+  return {
+    'scanned_this_session': scanned,
+    if (lastScanAt == null) 'status': 'not_scanned_yet',
+    if (lastScanAt != null)
+      'last_scan': {
+        'at': lastScanAt.toIso8601String(),
+        if (first != null) 'network': _networkName(first.chainId),
+        if (first != null && first.walletAddress != null)
+          'wallet': OpenAIChatService._maskAddress(first.walletAddress),
+        'approvals_checked': lastScanApprovals.length,
+        'risky_found_by_scan': foundRisky,
+        if (notRevoked != null) 'risky_not_revoked': notRevoked,
+      },
+    'saved_risky_results': _riskyScanRows(savedRiskyScans),
+    'note': scanned
+        ? 'The last scan covered one card on one network. '
+            'risky_found_by_scan is what that scan found; '
+            'risky_not_revoked is what is left after revokes made in the app '
+            'since then (the System status card counts the same): report '
+            'that one as still risky. saved_risky_results lists every '
+            'wallet + network where risky approvals are not revoked yet.'
+        : 'Safe Scan has not run in this session, so there is no fresh '
+            'result; this tool does not scan. saved_risky_results lists only '
+            'wallet + network pairs where an earlier scan found risky '
+            'approvals not revoked yet. To scan: Security «Защита» → tile '
+            '«Safe/Panic» → «Сейф» or «Паника» (opening either scans; '
+            'scanning is free).',
   };
 }

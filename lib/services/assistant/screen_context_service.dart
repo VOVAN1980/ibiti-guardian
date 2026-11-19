@@ -25,7 +25,7 @@ class ScreenContextService {
   // ── Market context ────────────────────────────────────────────────────────
   String? _activeExchange; // 'binance', 'mexc'
   String?
-      _activeTerminalView; // 'fastGrowth', 'newListings', 'top', 'meme', 'majors'
+      _activeTerminalView; // TerminalView.name: 'fastGrowth', 'newListings', 'memeTrend', 'majors'
 
   // ── Token focus ───────────────────────────────────────────────────────────
   String? _focusedSymbol;
@@ -343,12 +343,14 @@ class ScreenContextService {
           : '';
       return 'Description: Token detail for $_focusedSymbol$ex. '
           'User sees: live price, price chart, 24h volume, high/low, market cap. '
-          'Actions: Buy, Sell, Swap, add to watchlist, set price alert. '
+          'Actions: Buy, Sell (spot), star = watchlist, bell = price alert. '
           'User can ask about price, trends, risks, volume, liquidity.';
     }
     if (_activeSubScreen == 'exchange_terminal') {
       final ex = _activeExchange ?? 'unknown';
-      return 'Description: $ex exchange terminal. Live ticker list. User can browse coins, switch categories (Fast Growth, New, Top, Meme, Majors), tap coin for detail.';
+      return 'Description: $ex exchange terminal. Live ticker list. User can '
+          'browse coins, switch categories (Fast Growth «Рост», New «Новые», '
+          'Meme «Мемы», Majors «Топ»), tap a coin for detail.';
     }
     switch (_activeScreen) {
       case 'ai':
@@ -356,13 +358,39 @@ class ScreenContextService {
       case 'chat':
         return 'Description: Text chat with AI. Same capabilities as voice.';
       case 'security':
-        return 'Description: Security center. Sub-screens: Guardian Control (Safe/Panic), AI Control (modes/limits), Policy Limits, EPK Control, Audit History, AI Memory, Trusted addresses (AI whitelist).';
+        return 'Description: Security tab «Защита» (Command Center). Tiles: '
+            'Safe/Panic (Guardian Control: Safe Scan of token approvals; Safe '
+            '= revoke the ones the user picks, Panic = revoke all critical), '
+            'AI Center «AI-Центр» (AI modes, AI Memory), Policy «Политика» '
+            '(limits, unknown contracts, Audit History), EPK, Trusted '
+            'addresses (AI whitelist).';
       case 'wallet':
-        return 'Description: Wallet space. EVM cards (Black/Silver/Gold/Platinum), balances. Actions: Send, Receive, Swap. Can view token details and transaction history.';
+        return 'Description: Wallet tab «Счёт». Total balance, EVM cards '
+            '(Black/Silver/Gold/Platinum), network selector, assets. '
+            'Actions: Send, Receive, Swap, Scan (asks the AI to check the '
+            'wallet for risks). Tap a card for its details and transaction '
+            'history. Below the assets: the «Статус системы» (System status) '
+            'card, NOT a wallet card: green «Безопасно» (Safe) = no problems, '
+            'red «Опасно» (Danger) = a problem. Tapping red opens «Что не так» '
+            "(What's wrong): each problem with a fix button — risky token "
+            'approvals found by Safe Scan (per network and wallet) → «Открыть '
+            '«Защиту»»; sign-in expired → «Войти»; Android notifications off '
+            '→ «Разрешить».';
       case 'market':
         return 'Description: Market command center. Live exchange terminals: Binance, MEXC, Gate.io, OKX. Actions: browse coins, open exchange, view token details.';
       case 'settings':
-        return 'Description: App settings. Actions: change language, set PIN, check updates.';
+        return 'Description: Settings «Меню». Guardian AI: on/off, look, '
+            'personality («Умный», «Аналитик», «Дружелюбный», «Тихий»), '
+            'voice «Голос ассистента», stable voice mode. Language «Язык». '
+            'Notifications «Уведомления»: only «Результаты отзыва» (revoke '
+            'results). Sound & Vibration «Звук и вибрация»: single vibration '
+            '(ordinary notifications), double vibration (wallet top-up), coin '
+            'sound on top-up «Звук монет», start-up sound «Звук при запуске». '
+            'dApp browser. Security «Безопасность»: biometric sign-in and PIN. '
+            'Software Update «Обновление ПО»: button greyed out until the app '
+            'is published in the store. About «О приложении»: Help & Support '
+            '(info@ibiticoin.com), Privacy, Terms, Website, open-source '
+            'licences.';
       default:
         return '';
     }

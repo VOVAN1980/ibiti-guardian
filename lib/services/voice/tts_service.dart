@@ -10,6 +10,7 @@ import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/services/assistant/api_key_provider.dart';
 import 'package:ibiti_guardian/models/jarvis_personality.dart';
 import 'package:ibiti_guardian/services/assistant/voice_greeting_service.dart';
+import 'package:ibiti_guardian/services/voice/ai_voice.dart';
 
 /// Converts text to speech using OpenAI gpt-4o-mini-tts and plays it back.
 ///
@@ -34,15 +35,75 @@ class TtsService {
     return useStable ? 'tts-1' : 'gpt-4o-mini-tts';
   }
 
-  // All OpenAI TTS voices supported directly — no mapping needed.
-  // verse, cedar, marin are the newest generation voices.
-  // Old mapping (verse→onyx, cedar→echo, marin→nova) caused the user to
-  // hear a completely different voice than the one they selected.
-  static const _validVoices = {
-    'verse', 'cedar', 'marin', // new generation (best quality)
-    'alloy', 'echo', 'fable', 'nova', // classic
-    'onyx', 'shimmer', 'coral', 'sage', // classic
-  };
+  // The two voices offered in Settings (AiVoice): male cedar, female marin.
+  // An older saved id is mapped to one of them by AiVoice.normalize. The
+  // personality never picks the voice.
+  static const _validVoices = {AiVoice.male, AiVoice.female};
+
+  // tts-1 (Stable voice mode) has no cedar or marin: the closest classic
+  // voice of the same gender.
+  static const _stableVoices = {AiVoice.male: 'onyx', AiVoice.female: 'nova'};
+
+  /// The voice sent to OpenAI for the saved [voiceId]: one of the two
+  /// Settings voices, or its tts-1 equivalent when [stable].
+  @visibleForTesting
+  static String voiceFor(String? voiceId, {required bool stable}) {
+    var voice = AiVoice.normalize(voiceId);
+    if (!_validVoices.contains(voice)) voice = AiVoice.male;
+    return stable ? (_stableVoices[voice] ?? 'onyx') : voice;
+  }
+
+  /// Voice instructions for gpt-4o-mini-tts. [character] is the personality
+  /// description. In Russian the voice is described in the grammatical
+  /// gender of the chosen voice ([female]); the English text is neutral.
+  @visibleForTesting
+  static String instructionsFor({
+    required bool russian,
+    required bool female,
+    required String character,
+  }) {
+    // Earlier instructions asked for pauses between words, every syllable
+    // pronounced separately and an even tone, which is exactly what made
+    // the voice sound robotic. Numbers already arrive as words
+    // (SpeechFormatter), so the voice only has to read them naturally.
+    if (russian) {
+      final person = female
+          ? 'тёплая, уверенная, внимательная собеседница'
+          : 'тёплый, уверенный, внимательный собеседник';
+      return 'Ты — голос ассистента IBITI Guardian. '
+          'Характер: $character. '
+          'Говори как живой человек: $person, а не диктор и не робот. '
+          'Интонация идёт от смысла: в вопросе голос поднимается, в '
+          'утверждении спокойно опускается; суммы, итоги и предупреждения '
+          'чуть выделяй голосом. '
+          'Паузы делай только там, где в тексте точка, запятая или тире, а '
+          'внутри фразы говори слитно и плавно, без остановок между словами. '
+          'Темп обычный разговорный: не торопись и не растягивай слова. '
+          'Числа в тексте уже записаны словами — читай их как написано, '
+          'ясно и до конца, с естественным ударением: «три целых восемьдесят '
+          'семь сотых», «шестнадцать центов», «плюс двенадцать процентов». '
+          'Названия монет латиницей произноси так, как их называют трейдеры. '
+          'Читай русский текст естественно, как носитель языка: с '
+          'правильными ударениями и живой русской интонацией, без акцента и '
+          'не переходи на английский. '
+          'Сохраняй один и тот же голос и манеру во всех ответах.';
+    }
+    return 'You are the voice of the IBITI Guardian assistant. '
+        'Character: $character. '
+        'Sound like a real person: warm, confident and attentive, not a '
+        'newsreader and not a robot. '
+        'Let the meaning drive the intonation: rise on questions, settle on '
+        'statements, and give amounts, totals and warnings a little emphasis. '
+        'Pause only where the text has a period, comma or dash; within a '
+        'phrase, speak smoothly with no gaps between words. '
+        'Normal conversational pace: never rushed, never drawn out. '
+        'Numbers are already written as words; read them as written, clearly '
+        'and completely, with natural stress. '
+        'Pronounce IBITI as "ih-BIT-ee" and coin tickers the way traders say '
+        'them. '
+        'Speak natural English only, and keep the same voice and manner in '
+        'every reply.';
+  }
 
   final AudioPlayer _player = AudioPlayer();
   bool _isSpeaking = false;
@@ -72,31 +133,13 @@ class TtsService {
     }
   }
 
+  /// Always the voice chosen in Settings ([AiVoice.current]).
   String _resolveVoice() {
-    final saved = SettingsService.instance.settings.preferredAiVoiceId;
-    // If user explicitly picked a voice → use it.
-    // Otherwise → use the active personality's preferred voice.
-    final personalityVoice = _activePersonality.ttsVoice;
-    var voice = (saved != null && _validVoices.contains(saved.toLowerCase()))
-        ? saved.toLowerCase()
-        : personalityVoice;
-
-    // If using stable model (tts-1), map new-gen voices to their closest classic equivalents.
     final useStable = SettingsService.instance.settings.useStableVoice;
-    if (useStable) {
-      if (voice == 'verse') {
-        voice = 'onyx';
-      } else if (voice == 'cedar') {
-        voice = 'echo';
-      } else if (voice == 'marin') {
-        voice = 'nova';
-      } else if (voice == 'coral' || voice == 'sage') {
-        voice = 'alloy';
-      }
-    }
-
-    _log.d(
-        '_resolveVoice: saved=$saved personality=${_activePersonality.name} model=$_model → using=$voice');
+    final voice = voiceFor(AiVoice.current, stable: useStable);
+    _log.d('_resolveVoice: saved='
+        '${SettingsService.instance.settings.preferredAiVoiceId} '
+        'model=$_model → using=$voice');
     return voice;
   }
 
@@ -107,47 +150,12 @@ class TtsService {
             .toLowerCase();
     final personality = _activePersonality;
     final isRu = appLang.startsWith('ru');
-    final personalityDesc =
-        isRu ? personality.descriptionRu() : personality.descriptionEn();
-
-    // Earlier instructions asked for pauses between words, every syllable
-    // pronounced separately and an even tone, which is exactly what made
-    // the voice sound robotic. Numbers already arrive as words
-    // (SpeechFormatter), so the voice only has to read them naturally.
-    if (isRu) {
-      return 'Ты — голос ассистента IBITI Guardian. '
-          'Характер: $personalityDesc. '
-          'Говори как живой человек: тёплый, уверенный, внимательный '
-          'собеседник, а не диктор и не робот. '
-          'Интонация идёт от смысла: в вопросе голос поднимается, в '
-          'утверждении спокойно опускается; суммы, итоги и предупреждения '
-          'чуть выделяй голосом. '
-          'Паузы делай только там, где в тексте точка, запятая или тире, а '
-          'внутри фразы говори слитно и плавно, без остановок между словами. '
-          'Темп обычный разговорный: не торопись и не растягивай слова. '
-          'Числа в тексте уже записаны словами — читай их как написано, '
-          'ясно и до конца, с естественным ударением: «три целых восемьдесят '
-          'семь сотых», «шестнадцать центов», «плюс двенадцать процентов». '
-          'Названия монет латиницей произноси так, как их называют трейдеры. '
-          'Говори на чистом русском языке без акцента и не переходи на '
-          'английский. '
-          'Сохраняй один и тот же голос и манеру во всех ответах.';
-    }
-    return 'You are the voice of the IBITI Guardian assistant. '
-        'Character: $personalityDesc. '
-        'Sound like a real person: warm, confident and attentive, not a '
-        'newsreader and not a robot. '
-        'Let the meaning drive the intonation: rise on questions, settle on '
-        'statements, and give amounts, totals and warnings a little emphasis. '
-        'Pause only where the text has a period, comma or dash; within a '
-        'phrase, speak smoothly with no gaps between words. '
-        'Normal conversational pace: never rushed, never drawn out. '
-        'Numbers are already written as words; read them as written, clearly '
-        'and completely, with natural stress. '
-        'Pronounce IBITI as "ih-BIT-ee" and coin tickers the way traders say '
-        'them. '
-        'Speak natural English only, and keep the same voice and manner in '
-        'every reply.';
+    return instructionsFor(
+      russian: isRu,
+      female: AiVoice.isFemale,
+      character:
+          isRu ? personality.descriptionRu() : personality.descriptionEn(),
+    );
   }
 
   // ── Streaming TTS ─────────────────────────────────────────────────────────

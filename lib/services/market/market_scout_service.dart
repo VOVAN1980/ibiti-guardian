@@ -419,11 +419,12 @@ class MarketScoutService {
             'Allowed actions: $actions. '
             'You confirm before anything executes.';
       case AiMode.fullAutonomy:
-        return 'Full Autonomy — I can prepare and execute trades automatically '
+        return 'Full Autonomy — I carry out the trades you ask for, '
             'within your mandate: $assets on $networks. '
             'Allowed actions: $actions. '
             'Daily limit: \$${settings.dailyLimit.toStringAsFixed(0)}. '
-            'Policy and EPK are enforced on every trade.';
+            'Policy and EPK are enforced on every trade. '
+            'I never trade on my own without your request.';
     }
   }
 }

@@ -25,6 +25,8 @@ import 'package:ibiti_guardian/models/portfolio_summary.dart';
 import 'package:ibiti_guardian/models/wallet_asset.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 import 'package:ibiti_guardian/services/voice/transcription_service.dart';
+import 'package:ibiti_guardian/services/intents/intent_parser.dart';
+import 'package:ibiti_guardian/models/intent_data.dart';
 
 class MockExchangeExecutionAdapter implements ExchangeExecutionAdapter {
   final Map<String, double> balances = {};
@@ -279,7 +281,7 @@ void main() {
       );
 
       expect(response.type, ResponseType.info);
-      expect(response.message, contains('Подготовила ордер'));
+      expect(response.message, matches(RegExp('Подготовила? ордер')));
       expect(mockMexc.ordersPlaced.isEmpty, true);
 
       // Verify dispatched UICommand
@@ -729,7 +731,7 @@ void main() {
         'sell 2 SOL',
         source: AssistantInputSource.voice,
       );
-      expect(guardedRes.message, anyOf(contains('Подготовила ордер'), contains('Prepared')));
+      expect(guardedRes.message, anyOf(matches(RegExp('Подготовила? ордер')), contains('Prepared')));
       expect(dispatchedCommands.length, 1);
       expect(dispatchedCommands[0].type, UICommandType.openModal);
       expect(dispatchedCommands[0].target, 'cex_trade');
@@ -787,7 +789,7 @@ void main() {
         source: AssistantInputSource.voice,
       );
 
-      expect(response.message, anyOf(contains('Подготовила ордер'), contains('Prepared')));
+      expect(response.message, anyOf(matches(RegExp('Подготовила? ордер')), contains('Prepared')));
       expect(dispatchedCommands.length, 1);
       expect(dispatchedCommands[0].type, UICommandType.openModal);
       expect(dispatchedCommands[0].target, 'cex_trade');
@@ -953,7 +955,7 @@ void main() {
       );
 
       expect(dispatchedCommands.any((cmd) => cmd.target == 'wallet_buy' || cmd.target == 'wallet_sell' || cmd.target == 'wallet_swap'), false);
-      expect(response.message, anyOf(contains('Подготовила ордер'), contains('Prepared trade modal')));
+      expect(response.message, anyOf(matches(RegExp('Подготовила? ордер')), contains('Prepared trade modal')));
     });
 
     test('Voice CEX trade parses decimals with comma "купи SOL на 0,50"', () async {
@@ -1563,6 +1565,241 @@ void main() {
         );
         expect(response.type, isNot(ResponseType.error));
       }, overrides);
+    });
+
+    group('a story or a question about buying never trades', () {
+      const phrases = [
+        'Я вчера купил BTC на 10\$',
+        'Не знаю, стоит ли купить BTC на 10\$',
+      ];
+      const tradeWindows = {
+        'cex_trade',
+        'wallet_buy',
+        'wallet_sell',
+        'wallet_swap',
+      };
+
+      // BTC on MEXC with a live price and USDT on the account: any route that
+      // reached the exchange in Full Autonomy would place a real order.
+      void listBtcOnMexc() {
+        MarketDataService.instance.mergeExchangeData({
+          'mexc:BTCUSDT': MarketAsset(
+            id: 'bitcoin-mexc',
+            symbol: 'BTC',
+            name: 'Bitcoin (MEXC)',
+            imageUrl: '',
+            price: 60000.0,
+            change24h: 1.0,
+            marketCap: 1000000.0,
+            volume: 50000.0,
+            rank: 1,
+            sparkline: const [],
+            high24h: 61000.0,
+            low24h: 59000.0,
+            change7d: 2.0,
+            change30d: 5.0,
+            networkGroup: 'Bitcoin',
+            sourceId: 'mexc',
+            sourcePair: 'BTCUSDT',
+            sourceUpdatedAt: DateTime.now(),
+          ),
+        });
+        setLivePrice('mexc', 'BTC', 'USDT', 60000.0);
+        mockMexc.balances['USDT'] = 500.0;
+      }
+
+      // A model that wrongly reads every message as "buy BTC for 10$": in the
+      // trade resolver, and in the chat answer as an intent and a window.
+      String wrongBuyModel() => jsonEncode({
+            'choices': [
+              {
+                'message': {
+                  'content': jsonEncode({
+                    'type': 'buyAsset',
+                    'tokenSymbol': 'BTC',
+                    'amount': 10,
+                    'isQuantity': false,
+                    'confidence': 1.0,
+                    'displayMessage': 'MODEL_ANSWER',
+                    'speechText': 'MODEL_ANSWER',
+                    'uiCommands': [
+                      {'type': 'openModal', 'target': 'wallet_buy'}
+                    ],
+                    'explicitIntent': {
+                      'type': 'buyAsset',
+                      'params': {
+                        'tokenSymbol': 'BTC',
+                        'amount': 10,
+                        'isQuantity': false,
+                      }
+                    },
+                  })
+                }
+              }
+            ]
+          });
+
+      Future<void> withWrongBuyModel(Future<void> Function() body) async {
+        final overrides = MockHttpOverrides();
+        await HttpOverrides.runWithHttpOverrides(() async {
+          overrides.mockResponses['completions'] = wrongBuyModel();
+          SettingsService.instance.settingsForTest = AppSettings(
+            openaiApiKey: 'mock_key',
+            isNeuralOperatorEnabled: true,
+          );
+          await OpenAIChatService.instance.init();
+          await body();
+        }, overrides);
+      }
+
+      test('is never a trade command or a parsed trade', () {
+        for (final text in phrases) {
+          expect(GuardianAssistantService.isTradingCommandForTest(text), false,
+              reason: text);
+          expect(IntentParser.isConversational(text), true, reason: text);
+          expect(IntentParser.isActionRequest(text), false, reason: text);
+          final type = IntentParser.parse(text).type;
+          expect(type, isNot(IntentType.buyAsset), reason: text);
+          expect(type, isNot(IntentType.sellAsset), reason: text);
+        }
+      });
+
+      test('no order and no trade window from any source in any mode',
+          () async {
+        listBtcOnMexc();
+        await withWrongBuyModel(() async {
+          for (final mode in AiMode.values) {
+            AiControlService.instance.setSettingsForTest(AiControlSettings(
+              mode: mode,
+              activeSources: const ['mexc', 'okx'],
+              dailyLimit: 500000.0,
+            ));
+            for (final source in AssistantInputSource.values) {
+              for (final text in phrases) {
+                final reason = '${mode.name} / ${source.name}: $text';
+                OpenAIChatService.instance.clearHistory();
+                dispatchedCommands.clear();
+                final response =
+                    await GuardianAssistantService.instance.process(
+                  text,
+                  languageCode: 'ru',
+                  source: source,
+                );
+                await Future<void>.delayed(Duration.zero);
+                expect(mockMexc.ordersPlaced, isEmpty, reason: reason);
+                expect(
+                    dispatchedCommands
+                        .where((c) => tradeWindows.contains(c.target)),
+                    isEmpty,
+                    reason: reason);
+                expect(
+                    response.uiCommands
+                        .where((c) => tradeWindows.contains(c.target)),
+                    isEmpty,
+                    reason: reason);
+              }
+            }
+          }
+        });
+      });
+
+      test('an explicit or polite request still trades in Full Autonomy',
+          () async {
+        listBtcOnMexc();
+        await withWrongBuyModel(() async {
+          final requests = {
+            'купи BTC на 10\$': AssistantInputSource.voice,
+            'А можешь купить BTC на 10\$?': AssistantInputSource.marketChat,
+            'как обычно купи BTC на 10\$': AssistantInputSource.marketChat,
+            'что ж, купи BTC на 10\$': AssistantInputSource.voice,
+          };
+          for (final entry in requests.entries) {
+            mockMexc.ordersPlaced.clear();
+            DelegationController.instance.resetUsageForTest();
+            await GuardianAssistantService.instance.process(
+              entry.key,
+              languageCode: 'ru',
+              source: entry.value,
+            );
+            expect(mockMexc.ordersPlaced, hasLength(1), reason: entry.key);
+            expect(mockMexc.ordersPlaced.single['isBuy'], true,
+                reason: entry.key);
+            expect(mockMexc.ordersPlaced.single['symbol'], contains('BTC'),
+                reason: entry.key);
+          }
+        });
+      });
+
+      test('a polite buy with a coin and an amount is not a capability question',
+          () async {
+        listBtcOnMexc();
+        final overrides = MockHttpOverrides();
+        await HttpOverrides.runWithHttpOverrides(() async {
+          // The trade resolver reads "можешь купить" as "can you buy?".
+          overrides.mockResponses['completions'] = jsonEncode({
+            'choices': [
+              {
+                'message': {
+                  'content': jsonEncode({
+                    'type': 'capabilityQuestion',
+                    'confidence': 1.0,
+                  })
+                }
+              }
+            ]
+          });
+          SettingsService.instance.settingsForTest = AppSettings(
+            openaiApiKey: 'mock_key',
+            isNeuralOperatorEnabled: true,
+          );
+          await OpenAIChatService.instance.init();
+
+          await GuardianAssistantService.instance.process(
+            'А можешь купить BTC на 10\$?',
+            languageCode: 'ru',
+            source: AssistantInputSource.marketChat,
+          );
+          expect(mockMexc.ordersPlaced, hasLength(1));
+          expect(mockMexc.ordersPlaced.single['amount'], 10.0);
+
+          // Without a coin and an amount it stays the capability answer.
+          mockMexc.ordersPlaced.clear();
+          final capability = await GuardianAssistantService.instance.process(
+            'can you buy coin?',
+            languageCode: 'en',
+            source: AssistantInputSource.voice,
+          );
+          expect(capability.message, contains('Tell me the coin and amount'));
+          expect(mockMexc.ordersPlaced, isEmpty);
+        }, overrides);
+      });
+
+      test('whole words: "купил" and "покупка" are not "купи"', () {
+        for (final text in [
+          'Я вчера купил BTC на 10\$',
+          'моя покупка BTC на 10\$',
+          'не покупай BTC',
+          "don't buy BTC",
+          'думаю купить BTC на 10\$',
+        ]) {
+          expect(GuardianAssistantService.isTradingCommandForTest(text), false,
+              reason: text);
+        }
+        for (final text in [
+          'купи BTC на 10\$',
+          'продай SOL',
+          'buy BTC for 10',
+          'хочу купить BTC на 10\$',
+          'Купить BTC на 10\$',
+          'А можешь купить BTC на 10\$?',
+          'Давай купим BTC на 10\$?',
+          'как обычно купи BTC на 10\$',
+          'обменяй USDT на SOL',
+        ]) {
+          expect(GuardianAssistantService.isTradingCommandForTest(text), true,
+              reason: text);
+        }
+      });
     });
   });
 }

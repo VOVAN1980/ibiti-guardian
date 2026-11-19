@@ -1462,7 +1462,7 @@ class _AiSettingsScreenState extends State<_AiSettingsScreen> {
 
           // Personality Selection
           _SectionHeader(
-              label: isRussian ? 'JARVIS Personality' : 'AI Voice Personality'),
+              label: isRussian ? 'Характер Guardian AI' : 'Guardian AI personality'),
           const SizedBox(height: 16),
           _PersonalitySelector(
             current: settings.jarvisPersonality,
@@ -1473,14 +1473,15 @@ class _AiSettingsScreenState extends State<_AiSettingsScreen> {
           ),
           const SizedBox(height: 32),
 
-          // Voice Selection
+          // Voice Selection: two voices, male (cedar) and female (marin).
           _SectionHeader(label: t.t('settingsAiVoice')),
           const SizedBox(height: 16),
           _VoiceSelector(
             currentVoiceId: VoiceGreetingService.instance.selectedVoiceId,
+            isRussian: isRussian,
             onSelect: (voiceId) async {
               await VoiceGreetingService.instance.updateVoice(voiceId);
-              setState(() {});
+              if (mounted) setState(() {});
             },
           ),
           const SizedBox(height: 32),
@@ -1658,7 +1659,7 @@ class _PersonalitySelector extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.only(left: 4, bottom: 12),
             child: Text(
-              'Как JARVIS разговаривает',
+              'Как говорит Guardian AI',
               style: GuardianTextStyles.caption
                   .copyWith(color: GuardianColors.accent),
             ),
@@ -1748,11 +1749,18 @@ class _PersonalitySelector extends StatelessWidget {
 
 // ─── Voice Selector ──────────────────────────────────────────────────────────
 
+// Two voices only (VoiceGreetingService.voiceIds): «Мужской» (cedar) and
+// «Женский» (marin).
 class _VoiceSelector extends StatefulWidget {
   final String currentVoiceId;
-  final ValueChanged<String> onSelect;
+  final bool isRussian;
+  final Future<void> Function(String voiceId) onSelect;
 
-  const _VoiceSelector({required this.currentVoiceId, required this.onSelect});
+  const _VoiceSelector({
+    required this.currentVoiceId,
+    required this.isRussian,
+    required this.onSelect,
+  });
 
   @override
   State<_VoiceSelector> createState() => _VoiceSelectorState();
@@ -1760,18 +1768,14 @@ class _VoiceSelector extends StatefulWidget {
 
 class _VoiceSelectorState extends State<_VoiceSelector> {
   String? _previewing;
-  static const _voices = [
-    ('verse', 'Verse — нейтральный, чистый'),
-    ('cedar', 'Cedar — глубокий, уверенный'),
-    ('marin', 'Marin — мягкий, дружелюбный'),
-  ];
 
   Future<void> _preview(String voiceId) async {
     setState(() => _previewing = voiceId);
-    // Apply voice & speak test phrase
-    await VoiceGreetingService.instance.updateVoice(voiceId);
-    await VoiceGreetingService.instance
-        .speak('И\u0301бити Гардиан. Оператор на связи.');
+    // Apply the voice (the parent marks it selected) & speak a test phrase.
+    await widget.onSelect(voiceId);
+    await VoiceGreetingService.instance.speak(widget.isRussian
+        ? 'И\u0301бити Гардиан. Оператор на связи.'
+        : 'IBITI Guardian. Operator online.');
     if (mounted) setState(() => _previewing = null);
   }
 
@@ -1794,8 +1798,9 @@ class _VoiceSelectorState extends State<_VoiceSelector> {
                   .copyWith(color: GuardianColors.accent),
             ),
           ),
-          ..._voices.map((entry) {
-            final (voiceId, displayName) = entry;
+          ...VoiceGreetingService.voiceIds.map((voiceId) {
+            final displayName = VoiceGreetingService.voiceLabel(voiceId,
+                isRussian: widget.isRussian);
             final isSelected = voiceId == widget.currentVoiceId;
             final isPreviewing = _previewing == voiceId;
             return InkWell(
