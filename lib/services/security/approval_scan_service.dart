@@ -11,6 +11,7 @@ import 'package:flutter/foundation.dart';
 import 'package:ibiti_guardian/services/ankr/ankr_config_service.dart';
 import 'package:ibiti_guardian/services/ankr/ankr_approval_source.dart';
 import 'package:ibiti_guardian/services/security/approval_source.dart';
+import 'package:ibiti_guardian/services/security/system_status_service.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
 class ApprovalScanService {
@@ -63,6 +64,9 @@ class ApprovalScanService {
       updateScore(out);
       lastScannedApprovals = out;
       lastScanTime = DateTime.now();
+      // Saved in the background: the scan result must not wait for storage.
+      unawaited(SystemStatusService.instance.recordScan(wallet, activeChainId,
+          out.where((a) => a.assessment.shouldRevoke).length));
     }
     return out;
   }

@@ -16,6 +16,7 @@ import 'package:wallet/wallet.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:math';
+import 'package:ibiti_guardian/services/security/system_status_service.dart';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // VaultState — полное состояние IBITI Vault в памяти
@@ -865,6 +866,8 @@ class IBITIVaultService extends ChangeNotifier {
     _nativeBalanceAtomic = null;
     _web3?.dispose();
     _web3 = null;
+    // Safe Scan results of the old wallet must not keep the status card red.
+    await SystemStatusService.instance.clear();
     notifyListeners();
   }
 

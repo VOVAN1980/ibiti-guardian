@@ -21,10 +21,13 @@ import 'package:ibiti_guardian/screens/wallet/components/network_create_modal.da
 import 'package:ibiti_guardian/screens/wallet/components/token_management_sheet.dart';
 import 'package:ibiti_guardian/screens/wallet/wallet_card_detail_screen.dart';
 import 'package:ibiti_guardian/screens/wallet/all_wallets_screen.dart';
-import 'package:ibiti_guardian/screens/wallet/wallet_transaction_history_screen.dart';
 import 'package:ibiti_guardian/screens/assistant/components/assistant_chat_screen.dart';
 import 'package:ibiti_guardian/models/app_intent.dart';
 import 'package:ibiti_guardian/services/execution/tx_registry.dart';
+import 'package:ibiti_guardian/services/security/system_status_service.dart';
+import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
+import 'package:ibiti_guardian/models/assistant_directive.dart';
+import 'package:ibiti_guardian/screens/vault/components/privy_auth_modal.dart';
 import 'package:ibiti_guardian/models/tx_status.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/audit_log_service.dart';
@@ -431,13 +434,6 @@ class _WalletSpaceScreenState extends State<WalletSpaceScreen>
 
                                 // ── SYSTEM STATUS ───────────────────────────
                                 const _SystemStatusCard(),
-                                const SizedBox(height: 16),
-
-                                // ── RECENT ACTIONS ──────────────────────────
-                                _RecentActionsBlock(
-                                  onOpenHistory: () =>
-                                      _openTransactionHistory(context),
-                                ),
                                 const SizedBox(height: 32),
                               ],
                             ),
@@ -648,17 +644,6 @@ class _WalletSpaceScreenState extends State<WalletSpaceScreen>
   void _showTokenManagementSheet(BuildContext context, WalletAsset asset) {
     HapticFeedback.selectionClick();
     TokenManagementSheet.show(context, asset: asset);
-  }
-
-  void _openTransactionHistory(BuildContext context) {
-    final activeAddress = IBITIVaultService.instance.activeAddress;
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => WalletTransactionHistoryScreen(
-          walletAddress: activeAddress,
-        ),
-      ),
-    );
   }
 
   Widget _buildConnectPrompt(BuildContext context) {
@@ -1931,6 +1916,7 @@ class _SystemStatusCardState extends State<_SystemStatusCard>
       duration: const Duration(milliseconds: 2400),
     )..repeat(reverse: true);
     _glow = CurvedAnimation(parent: _breathe, curve: Curves.easeInOut);
+    SystemStatusService.instance.load();
   }
 
   @override
@@ -1939,153 +1925,245 @@ class _SystemStatusCardState extends State<_SystemStatusCard>
     super.dispose();
   }
 
+  /// Red card tapped: what is wrong and what to do about it.
+  void _showProblems(BuildContext context, List<SystemProblem> problems) {
+    final t = LocalizationProvider.of(context);
+    showModalBottomSheet<void>(
+      context: context,
+      useRootNavigator: true,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF12151C),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(sheetContext).size.height * 0.8),
+          child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(t.t('systemStatusSheetTitle'),
+                  style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w900)),
+              const SizedBox(height: 16),
+              for (final p in problems)
+                _ProblemTile(
+                  problem: p,
+                  onAction: () {
+                    Navigator.of(sheetContext).pop();
+                    _fix(context, p);
+                  },
+                ),
+            ],
+          ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _fix(BuildContext context, SystemProblem problem) {
+    switch (problem) {
+      case SystemProblem.riskyApprovals:
+        UICommandBus.instance.dispatch(const UICommand(
+            type: UICommandType.navigate, target: 'security_center'));
+      case SystemProblem.sessionExpired:
+        // The sign-in dialog closes itself; the app stays where it is.
+        showPrivyReauthModal(context)
+            .then((_) => SystemStatusService.instance.refresh());
+      case SystemProblem.notificationsOff:
+        SystemStatusService.instance.requestNotifications();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: TxRegistry.instance,
+      listenable: SystemStatusService.instance,
       builder: (_, __) {
         final t = LocalizationProvider.of(context);
-        // Priority: active tx state > security clean state
-        final activeTx = TxRegistry.instance.activeTx;
-        final latest = TxRegistry.instance.latest;
+        final problems = SystemStatusService.instance.problems;
+        final bool safe = problems.isEmpty;
 
-        // Determine visual mode
-        final bool isPending = activeTx != null;
-        final bool isConfirmed =
-            !isPending && latest?.status == TxStatus.confirmed;
-        final bool isFailed = !isPending && latest?.status == TxStatus.failed;
+        final Color statusColor =
+            safe ? GuardianColors.success : GuardianColors.danger;
+        final IconData statusIcon =
+            safe ? Icons.verified_user_rounded : Icons.gpp_bad_rounded;
+        final String title =
+            t.t('walletSysStatusSafe', {'default': 'System status'});
+        final String badge = safe
+            ? t.t('walletSysStateSafe', {'default': 'Safe'})
+            : t.t('riskLabelDanger', {'default': 'Danger'});
 
-        final Color statusColor = isPending
-            ? const Color(0xFFFFBB33)
-            : isFailed
-                ? GuardianColors.danger
-                : GuardianColors.success;
-
-        final IconData statusIcon = isPending
-            ? Icons.hourglass_top_rounded
-            : isFailed
-                ? Icons.error_outline_rounded
-                : Icons.verified_user_rounded;
-
-        final String title = isPending
-            ? t.t('walletSysStatusActive',
-                {'default': 'System status · TX active'})
-            : isFailed
-                ? t.t('walletSysStatusFailed',
-                    {'default': 'System status · TX failed'})
-                : isConfirmed
-                    ? t.t('walletSysStatusConfirmed',
-                        {'default': 'System status · Confirmed'})
-                    : t.t('walletSysStatusSafe', {'default': 'System status'});
-
-        // Show operation context from TxRegistry when available
-        final activeLabel = (activeTx ?? latest)?.operationLabel;
-
-        final String subtitle = isPending
-            ? (activeLabel != null
-                ? '$activeLabel…'
-                : 'Processing transaction…')
-            : isFailed
-                ? (activeLabel != null
-                    ? '$activeLabel failed'
-                    : 'Last transaction failed')
-                : isConfirmed
-                    ? (activeLabel != null
-                        ? '$activeLabel completed ✓'
-                        : 'Transaction confirmed ✓')
-                    : 'Protected · No threats detected';
-
-        final String badge = isPending
-            ? t.t('walletSysStateActive', {'default': 'Active'})
-            : isFailed
-                ? t.t('walletSysStateFailed', {'default': 'Failed'})
-                : t.t('walletSysStateSafe', {'default': 'Safe'});
-
-        return AnimatedBuilder(
-          animation: _glow,
-          builder: (_, __) => Container(
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(28),
-              gradient: LinearGradient(
-                colors: [
-                  statusColor.withOpacity(0.06 + _glow.value * 0.06),
-                  (isPending ? const Color(0xFFFF8C00) : GuardianColors.accent)
-                      .withOpacity(0.04 + _glow.value * 0.04),
+        return GestureDetector(
+          onTap: safe ? null : () => _showProblems(context, problems),
+          child: AnimatedBuilder(
+            animation: _glow,
+            builder: (_, __) => Container(
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(28),
+                gradient: LinearGradient(
+                  colors: [
+                    statusColor.withOpacity(0.06 + _glow.value * 0.06),
+                    (safe ? GuardianColors.accent : GuardianColors.danger)
+                        .withOpacity(0.04 + _glow.value * 0.04),
+                  ],
+                ),
+                border: Border.all(
+                  color: statusColor.withOpacity(0.14 + _glow.value * 0.18),
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: statusColor.withOpacity(0.06 + _glow.value * 0.10),
+                    blurRadius: 18 + _glow.value * 12,
+                    spreadRadius: _glow.value * 2,
+                  ),
                 ],
               ),
-              border: Border.all(
-                color: statusColor.withOpacity(0.14 + _glow.value * 0.18),
+              child: Row(
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: statusColor.withOpacity(0.10 + _glow.value * 0.10),
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: statusColor
+                              .withOpacity(0.2 + _glow.value * 0.25),
+                          blurRadius: 12 + _glow.value * 8,
+                        )
+                      ],
+                    ),
+                    child: Icon(statusIcon, color: statusColor, size: 22),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Text(title,
+                        style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800)),
+                  ),
+                  AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    child: Text(
+                        key: ValueKey(badge),
+                        badge,
+                        style: TextStyle(
+                          color: statusColor,
+                          fontWeight: FontWeight.w900,
+                          fontSize: 15,
+                        )),
+                  ),
+                  if (!safe)
+                    Icon(Icons.chevron_right_rounded,
+                        color: statusColor, size: 22),
+                ],
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: statusColor.withOpacity(0.06 + _glow.value * 0.10),
-                  blurRadius: 18 + _glow.value * 12,
-                  spreadRadius: _glow.value * 2,
-                ),
-              ],
-            ),
-            child: Row(
-              children: [
-                Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    color: statusColor.withOpacity(0.10 + _glow.value * 0.10),
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color:
-                            statusColor.withOpacity(0.2 + _glow.value * 0.25),
-                        blurRadius: 12 + _glow.value * 8,
-                      )
-                    ],
-                  ),
-                  child: Icon(statusIcon, color: statusColor, size: 22),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
-                        child: Text(
-                            key: ValueKey(title),
-                            title,
-                            style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                                fontWeight: FontWeight.w800)),
-                      ),
-                      const SizedBox(height: 3),
-                      AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
-                        child: Text(
-                            key: ValueKey(subtitle),
-                            subtitle,
-                            style: const TextStyle(
-                                color: Colors.white54, fontSize: 12)),
-                      ),
-                    ],
-                  ),
-                ),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: Text(
-                      key: ValueKey(badge),
-                      badge,
-                      style: TextStyle(
-                        color: statusColor,
-                        fontWeight: FontWeight.w900,
-                        fontSize: 15,
-                      )),
-                ),
-              ],
             ),
           ),
         );
       },
+    );
+  }
+}
+
+/// One problem in the "What's wrong" sheet: title, explanation, button.
+class _ProblemTile extends StatelessWidget {
+  final SystemProblem problem;
+  final VoidCallback onAction;
+  const _ProblemTile({required this.problem, required this.onAction});
+
+  static String _short(String a) =>
+      a.length > 12 ? '${a.substring(0, 6)}…${a.substring(a.length - 4)}' : a;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = LocalizationProvider.of(context);
+    final String title;
+    final String body;
+    final String action;
+    final IconData icon;
+    switch (problem) {
+      case SystemProblem.riskyApprovals:
+        title = t.t('systemProblemRiskyTitle',
+            {'count': SystemStatusService.instance.riskyApprovals});
+        body = t.t('systemProblemRiskyBody');
+        action = t.t('systemProblemRiskyAction');
+        icon = Icons.gpp_bad_rounded;
+      case SystemProblem.sessionExpired:
+        title = t.t('systemProblemSessionTitle');
+        body = t.t('systemProblemSessionBody');
+        action = t.t('systemProblemSessionAction');
+        icon = Icons.lock_clock_rounded;
+      case SystemProblem.notificationsOff:
+        title = t.t('systemProblemNotifTitle');
+        body = t.t('systemProblemNotifBody');
+        action = t.t('systemProblemNotifAction');
+        icon = Icons.notifications_off_rounded;
+    }
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: GuardianColors.danger.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: GuardianColors.danger.withOpacity(0.25)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: GuardianColors.danger, size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800)),
+                const SizedBox(height: 4),
+                Text(body,
+                    style: const TextStyle(
+                        color: Colors.white70, fontSize: 13, height: 1.35)),
+                if (problem == SystemProblem.riskyApprovals)
+                  for (final s in SystemStatusService.instance.riskyScans)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                          '${PrivyChainRegistry.getEvmChain(s.chainId)?.displayName ?? 'Chain ${s.chainId}'}'
+                          ' · ${_short(s.wallet)} — ${s.count}',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700)),
+                    ),
+                const SizedBox(height: 10),
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: onAction,
+                    style: TextButton.styleFrom(
+                        foregroundColor: GuardianColors.danger),
+                    child: Text(action,
+                        style: const TextStyle(fontWeight: FontWeight.w800)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -2163,136 +2241,6 @@ class WalletCardModel {
   static String shortTailFrom(String fullAddress) {
     if (fullAddress.length < 4) return fullAddress;
     return '•${fullAddress.substring(fullAddress.length - 4)}';
-  }
-}
-
-// ── Recent actions block ──────────────────────────────────────────────────────
-
-class _RecentActionsBlock extends StatelessWidget {
-  final VoidCallback onOpenHistory;
-
-  const _RecentActionsBlock({required this.onOpenHistory});
-
-  @override
-  Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: TxRegistry.instance,
-      builder: (_, __) {
-        // Show only terminal txs, newest first, max 3
-        final recent = TxRegistry.instance.history
-            .where((e) => e.isTerminal)
-            .toList()
-            .reversed
-            .take(3)
-            .toList();
-
-        if (recent.isEmpty) return const SizedBox.shrink();
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(left: 4, bottom: 12),
-              child: Row(
-                children: [
-                  Text(LocalizationService.instance.t('walletRecent'),
-                      style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 20,
-                          fontWeight: FontWeight.w900)),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: onOpenHistory,
-                    child:
-                        Text(LocalizationService.instance.t('walletViewAll')),
-                  ),
-                ],
-              ),
-            ),
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.04),
-                borderRadius: BorderRadius.circular(24),
-                border: Border.all(color: Colors.white.withOpacity(0.07)),
-              ),
-              child: Column(
-                children: recent
-                    .asMap()
-                    .entries
-                    .map((entry) => _RecentRow(
-                          event: entry.value,
-                          isLast: entry.key == recent.length - 1,
-                        ))
-                    .toList(),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
-class _RecentRow extends StatelessWidget {
-  final TxStatusEvent event;
-  final bool isLast;
-  const _RecentRow({required this.event, required this.isLast});
-
-  @override
-  Widget build(BuildContext context) {
-    final (color, icon) = switch (event.status) {
-      TxStatus.confirmed => (GuardianColors.success, Icons.check_rounded),
-      TxStatus.failed => (GuardianColors.danger, Icons.close_rounded),
-      TxStatus.timeout => (GuardianColors.warning, Icons.timer_off_rounded),
-      _ => (Colors.white54, Icons.radio_button_unchecked),
-    };
-
-    final label = event.operationLabel ?? event.statusLabel;
-    final age = _timeAgo(event.timestamp);
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        border: isLast
-            ? null
-            : Border(bottom: BorderSide(color: Colors.white.withOpacity(0.06))),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: color.withOpacity(0.12),
-              shape: BoxShape.circle,
-            ),
-            child: Icon(icon, color: color, size: 16),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(label,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 14,
-                    fontWeight: FontWeight.w600),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis),
-          ),
-          const SizedBox(width: 8),
-          Text(age,
-              style: TextStyle(
-                  color: Colors.white.withOpacity(0.4), fontSize: 12)),
-        ],
-      ),
-    );
-  }
-
-  String _timeAgo(DateTime t) {
-    final diff = DateTime.now().difference(t);
-    if (diff.inSeconds < 60) return 'just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    return '${diff.inDays}d ago';
   }
 }
 

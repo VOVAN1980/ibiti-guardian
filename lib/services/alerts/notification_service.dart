@@ -90,6 +90,20 @@ class NotificationService {
     }
   }
 
+  /// Asks Android for the notification permission (Android 13+ shows the
+  /// system dialog unless the user blocked it). Returns whether it is granted.
+  Future<bool> requestPermission() async {
+    final android = _notifications.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    if (android == null) return false;
+    try {
+      return await android.requestNotificationsPermission() ?? false;
+    } catch (e) {
+      _log.e('Notification permission request failed', e);
+      return false;
+    }
+  }
+
   Future<bool> isPermissionGranted() async {
     final status = await _notifications
         .resolvePlatformSpecificImplementation<

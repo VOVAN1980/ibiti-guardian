@@ -4,6 +4,7 @@ import 'package:ibiti_guardian/models/approval.dart';
 import 'package:ibiti_guardian/services/security/approval_scan_service.dart';
 import 'package:ibiti_guardian/services/transaction_queue.dart';
 import 'package:ibiti_guardian/services/adapters/wallet_adapter.dart';
+import 'package:ibiti_guardian/services/security/system_status_service.dart';
 
 enum GuardianMode {
   safe,
@@ -164,6 +165,26 @@ class GuardianFlowController extends ChangeNotifier {
 
   String _key(ApprovalData a) => '${a.spenderAddress}-${a.token}';
 
+  /// Tells the wallet's System status card what is left after a revoke:
+  /// the risky approvals of this scan minus the ones just revoked. (A rescan
+  /// right away could still list them while the indexers catch up.)
+  void _recordAfterRevoke() {
+    String key(ApprovalData a) =>
+        '${a.chainId}|${a.token.toLowerCase()}|${a.spenderAddress.toLowerCase()}';
+    final revoked = {
+      for (final j in TransactionQueue().currentJobs)
+        if (j.status == RevokeJobStatus.submitted ||
+            j.status == RevokeJobStatus.confirmed)
+          key(j.approval),
+    };
+    final left = model.all
+        .where((a) => a.assessment.shouldRevoke && !revoked.contains(key(a)))
+        .length;
+    final wallet = WalletAdapter.instance;
+    SystemStatusService.instance
+        .recordScan(wallet.address, wallet.chainId, left);
+  }
+
   @override
   void dispose() {
     _disposed = true;
@@ -322,6 +343,7 @@ class GuardianFlowController extends ChangeNotifier {
       }
 
       if (p.completed == p.total && p.total > 0) {
+        _recordAfterRevoke();
         Future.delayed(const Duration(milliseconds: 600), () {
           model = model.copyWith(state: GuardianFlowState.completed);
           notifyListeners();
