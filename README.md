@@ -52,7 +52,7 @@ A double-layered shield validating every transaction *before* it leaves your dev
 
 ### 4. Eternal Permission Kernel (EPK)
 An **on-chain permission & policy enforcement** module for Smart Accounts — it governs *what the AI is allowed to do*, and does **not** store keys:
-- **On-chain rule enforcement**: per-transaction and daily spend limits, target/selector guards, and threat-feed blocklists, validated against the EPK module deployed on the wallet's chain.
+- **On-chain rule enforcement**: per-transaction and daily spend limits, target/selector guards, and a threat blocklist check (no threat feed connected yet), validated against the EPK module deployed on the wallet's chain.
 - **Execution modes**: local, guarded, and on-chain EPK enforcement, with a safe fallback path.
 - Policy is enforced locally today; the EPK contract is live on **BSC Testnet** (mainnet pending audit — see *Coming Soon*).
 

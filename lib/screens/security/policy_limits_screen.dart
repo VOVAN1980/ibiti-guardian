@@ -605,9 +605,6 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
               _row('TargetGuard',
                   epk.hasTargetSelectorGuard ? '✓ Active' : '✗ Off'),
               _divider(),
-              _row('ThreatFeed',
-                  epk.hasThreatFeedBlocklistValidator ? '✓ Active' : '✗ Off'),
-              _divider(),
               Padding(
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 12),

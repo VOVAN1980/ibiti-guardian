@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import "package:flutter/material.dart";
 import "package:flutter/scheduler.dart";
 import "package:ibiti_guardian/app/background_tasks.dart";
+import "package:ibiti_guardian/app/legacy_cleanup.dart";
 import "package:ibiti_guardian/app/startup_services.dart";
 import "package:ibiti_guardian/utils/guardian_logger.dart";
 import "package:ibiti_guardian/app/guardian_app_shell.dart";
@@ -11,10 +12,8 @@ import "package:ibiti_guardian/services/alerts/notification_service.dart";
 import "package:ibiti_guardian/services/alerts/sound_service.dart";
 import "package:ibiti_guardian/services/audio_manager.dart";
 import "package:ibiti_guardian/services/alerts/alert_service.dart";
-import "package:ibiti_guardian/services/threat_intelligence_service.dart";
 import "package:ibiti_guardian/services/wallet/wallet_topup_detector.dart";
 import "package:ibiti_guardian/services/moralis/moralis_config_service.dart";
-import "package:ibiti_guardian/services/security/security_event_service.dart";
 import "package:ibiti_guardian/services/assistant/voice_greeting_service.dart";
 import "package:ibiti_guardian/services/vault/privy_config_service.dart";
 import "package:ibiti_guardian/services/vault/ibiti_vault_service.dart";
@@ -166,14 +165,13 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
       final deferredSteps = <String, Future<void> Function()>{
         // Workmanager: only removes the background tasks older builds left.
         'BackgroundTasks': setupBackgroundTasks,
+        // Once: data DrainShield-era features left on the phone.
+        if (!isDesktop) 'LegacyCleanup': cleanUpLegacyData,
         'MarketMemory': () => MarketMemoryService.instance.ensureTable(),
-        'ThreatIntelligence': () => ThreatIntelligenceService.instance.init(),
         if (!isDesktop)
           'Notification': () => NotificationService.instance.init(),
         'Alert': () => AlertService.instance.init(),
         'MoralisConfig': () => MoralisConfigService.instance.init(),
-        if (!isDesktop)
-          'SecurityEvent': () => SecurityEventService.instance.init(),
         'VoiceGreeting': () => VoiceGreetingService.instance.init(),
         if (!isDesktop)
           'TopUpDetector': () async {

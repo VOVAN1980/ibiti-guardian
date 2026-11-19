@@ -34,7 +34,7 @@ graph TD
 ### 2. Guard & Security Layer
 * **Heuristic Policy Engine**: Inspects the trade payload against safety constraints (daily budgets, per-transaction limits, allowed assets, and platform statuses).
 * **SandboxGuard**: For Web3 operations, queries public RPC nodes to perform pre-flight transaction simulations. It analyzes target bytecode, checks for proxy patterns, and parses potential state changes.
-* **Eternal Permission Kernel (EPK)**: On-chain permission & policy enforcement for Smart Accounts (per-tx / daily spend limits, target-selector guards, threat-feed blocklists). It governs *what the AI may execute* — it does not store keys. Live on BSC Testnet; enforced locally today.
+* **Eternal Permission Kernel (EPK)**: On-chain permission & policy enforcement for Smart Accounts (per-tx / daily spend limits, target-selector guards, a threat blocklist check with no feed connected yet). It governs *what the AI may execute* — it does not store keys. Live on BSC Testnet; enforced locally today.
 * **Local Secure Storage**: Hardware-backed secure storage (`flutter_secure_storage`) plus biometrics (PIN / FaceID / Fingerprint) for app unlock; stores wallet metadata and encrypted config. Embedded wallet keys are managed by Privy's non-custodial infrastructure.
 
 ### 3. Execution Engines

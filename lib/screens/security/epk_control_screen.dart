@@ -194,9 +194,6 @@ class _EPKControlScreenState extends State<EPKControlScreen> {
               _divider(),
               _checkRow('TargetSelectorGuard', epk.hasTargetSelectorGuard),
               _divider(),
-              _checkRow('ThreatFeedBlocklistValidator',
-                  epk.hasThreatFeedBlocklistValidator),
-              _divider(),
               _checkRow('CompositeValidator', epk.hasCompositeValidator),
               _divider(),
               _row(

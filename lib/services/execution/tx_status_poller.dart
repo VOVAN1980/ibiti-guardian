@@ -235,9 +235,9 @@ class TxStatusPoller {
   String _rpcUrl(int chainId) {
     switch (chainId) {
       case 1:
-        return 'https://eth.llamarpc.com';
+        return 'https://ethereum-rpc.publicnode.com';
       case 137:
-        return 'https://polygon-rpc.com';
+        return 'https://polygon.drpc.org';
       case 42161:
         return 'https://arb1.arbitrum.io/rpc';
       case 10:

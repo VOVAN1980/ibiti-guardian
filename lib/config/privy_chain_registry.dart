@@ -62,7 +62,7 @@ class PrivyChainRegistry {
     evmChainId: 1,
     nativeSymbol: 'ETH',
     moralisSlug: 'eth',
-    rpcUrl: 'https://eth.llamarpc.com',
+    rpcUrl: 'https://ethereum-rpc.publicnode.com',
   );
 
   static const PrivyChain polygon = PrivyChain(
@@ -72,7 +72,8 @@ class PrivyChainRegistry {
     evmChainId: 137,
     nativeSymbol: 'POL',
     moralisSlug: 'polygon',
-    rpcUrl: 'https://polygon-rpc.com',
+    // Not publicnode: it answers 403 for receipts of not-yet-mined txs.
+    rpcUrl: 'https://polygon.drpc.org',
   );
 
   static const PrivyChain arbitrum = PrivyChain(

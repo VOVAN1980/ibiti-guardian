@@ -18,10 +18,6 @@ class RiskEngine {
     }
   }
 
-  static void evaluateApprovals(List<ApprovalData> approvals) {
-    evaluate(approvals);
-  }
-
   /// Extracts risk signals from ApprovalData
   static ApprovalSignals _extractSignals(ApprovalData a) {
     final threat = ThreatIntelligenceService.instance.lookup(
@@ -460,13 +456,6 @@ class RiskEngine {
       suspiciousCount: caution,
       reasons: [], // Could aggregate overall reasons if needed
     );
-  }
-
-  /// Legacy score calculation (Backward Compatible)
-  static int calculateOverallScore(List<ApprovalData> approvals) {
-    if (approvals.isEmpty) return 100;
-    final assessment = computeWalletAssessment(approvals);
-    return 100 - assessment.score;
   }
 
   static RiskLabel _getLabelForScore(int score) {

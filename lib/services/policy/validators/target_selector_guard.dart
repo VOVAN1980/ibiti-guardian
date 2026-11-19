@@ -33,8 +33,9 @@ class TargetSelectorGuard extends EPKValidator {
     // swap provider's contracts). The default profile is STRICT and the app
     // has no screen to whitelist an address, so this guard used to refuse
     // every manual send and swap. Manual operations stay bounded by the
-    // wallet Send / Swap / Approve limits (policy engine) and the threat
-    // blocklist; AI, market and dApp requests still face this guard.
+    // wallet Send / Swap / Approve limits (policy engine); the threat
+    // blocklist they also pass is empty for now. AI, market and dApp requests
+    // still face this guard.
     if (tx.sourceIntent.origin == IntentOrigin.wallet) {
       return EpkValidatorResult.pass();
     }
@@ -81,8 +82,9 @@ class TargetSelectorGuard extends EPKValidator {
           );
         }
 
-        // If it's a send to an unknown address in guarded mode, we allow it to pass to Threat feed
-        // Guarded allows transfers to non-whitelisted, relying on threat Intel Blocklist.
+        // Guarded mode lets sends to unknown addresses through; only the
+        // spend limits apply after this. The threat blocklist that runs
+        // before this guard is empty for now, so it does not vet the address.
       }
     } else if (profile.mode == PolicyMode.advanced) {
       // Unrestricted scope allows sending anywhere

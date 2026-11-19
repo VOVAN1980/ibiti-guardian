@@ -4,6 +4,8 @@ import 'package:ibiti_guardian/services/policy/validators/epk_validator_result.d
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/threat_intelligence_service.dart';
 
+/// Rejects targets listed in ThreatIntelligenceService. That list is empty for
+/// now (Guardian has no threat feed), so every address passes this check.
 class ThreatFeedBlocklistValidator extends EPKValidator {
   const ThreatFeedBlocklistValidator() : super('ThreatFeedBlocklistValidator');
 
@@ -16,7 +18,6 @@ class ThreatFeedBlocklistValidator extends EPKValidator {
 
     final toAddress = tx.spenderAddress ?? tx.toAddress;
 
-    // Use Threat Intelligence Service
     final threatService = ThreatIntelligenceService.instance;
     final threatRecord = threatService.lookup(tx.chainId, toAddress);
 
@@ -25,9 +26,9 @@ class ThreatFeedBlocklistValidator extends EPKValidator {
         reason: 'THREAT_FEED_MATCH',
         severity: 'danger',
         userMessage:
-            'Security Alert: The destination address is flagged in the global threat intelligence feed as a ${threatRecord.category.name}.',
+            'Security Alert: The destination address is on the blocklist as a ${threatRecord.category.name}.',
         debugDetails:
-            'Matched threat feed record: ${threatRecord.label} (Base Risk ${threatRecord.baseRiskWeight})',
+            'Matched blocklist record: ${threatRecord.label} (Base Risk ${threatRecord.baseRiskWeight})',
       );
     }
 

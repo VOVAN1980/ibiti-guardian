@@ -6,7 +6,6 @@ import "package:ibiti_guardian/utils/guardian_logger.dart";
 import "package:sqflite_common_ffi/sqflite_ffi.dart";
 import "package:flutter_localizations/flutter_localizations.dart";
 import "package:ibiti_guardian/services/localization_service.dart";
-import "package:ibiti_guardian/services/spender_intelligence_service.dart";
 import "package:ibiti_guardian/services/update_service.dart";
 import "package:ibiti_guardian/services/execution/execution_router.dart";
 import "package:ibiti_guardian/services/settings/settings_service.dart";
@@ -78,12 +77,11 @@ Future<void> _main() async {
 
 Future<void> _initCoreServices() async {
   // ── Phase 2: Independent services in parallel
-  // AiControlService, EPKPolicyManager, SpenderIntelligence, UserMemory,
-  // WalletSendModal — verified: no cross-dependencies between them.
+  // AiControlService, EPKPolicyManager, UserMemory, WalletSendModal —
+  // verified: no cross-dependencies between them.
   await Future.wait([
     AiControlService.instance.init(),
     EPKPolicyManager.instance.init(),
-    SpenderIntelligenceService.instance.init(),
     UserMemoryService.instance.init(),
     WalletSendModal.loadMuteState(),
     TxRegistry.instance.load(),
