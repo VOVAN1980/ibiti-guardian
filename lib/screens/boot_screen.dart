@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:io' show Platform;
 import "package:flutter/material.dart";
 import "package:flutter/scheduler.dart";
-import "package:ibiti_guardian/app/background_tasks.dart";
 import "package:ibiti_guardian/app/legacy_cleanup.dart";
 import "package:ibiti_guardian/app/startup_services.dart";
 import "package:ibiti_guardian/utils/guardian_logger.dart";
@@ -163,8 +162,6 @@ class _BootScreenState extends State<BootScreen> with TickerProviderStateMixin {
           Platform.isWindows || Platform.isMacOS || Platform.isLinux;
 
       final deferredSteps = <String, Future<void> Function()>{
-        // Workmanager: only removes the background tasks older builds left.
-        'BackgroundTasks': setupBackgroundTasks,
         // Once: data DrainShield-era features left on the phone.
         if (!isDesktop) 'LegacyCleanup': cleanUpLegacyData,
         'MarketMemory': () => MarketMemoryService.instance.ensureTable(),
