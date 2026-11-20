@@ -6,6 +6,7 @@ import 'package:ibiti_guardian/models/autonomy_mandate.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/market/automation_engine.dart'
     as market_auto;
+import 'package:ibiti_guardian/services/market/automation_dispatch_service.dart';
 import 'dart:convert';
 
 enum AiMode { manual, guarded, fullAutonomy }
@@ -47,6 +48,14 @@ class AiControlSettings {
   /// List of active funding/trading source keys (e.g. 'bsc', 'mexc', 'binance', 'gateio', 'bybit').
   final List<String> activeSources;
 
+  /// «Подтверждать действия ИИ ПИН-кодом» — used only in Full Autonomy.
+  /// ON (the default): every AI money action shows a card (what, amount,
+  /// fee) and asks for the PIN. OFF: the AI acts by itself, but still only
+  /// within the daily limit, the AI mandate, EPK and to trusted addresses
+  /// (see AiActionGate). Reset to ON when the mode leaves Full Autonomy and
+  /// on emergency stop. The AI has no way to change it.
+  final bool aiPinConfirm;
+
   const AiControlSettings({
     this.mode = AiMode.guarded,
     this.allowedActions = const [
@@ -66,6 +75,7 @@ class AiControlSettings {
     this.mandate = const AutonomyMandate(),
     this.fundingNetwork = '',
     this.activeSources = const ['bsc'],
+    this.aiPinConfirm = true,
   });
 
   /// Human-readable funding source label for the Market card.
@@ -82,6 +92,11 @@ class AiControlSettings {
       (permissionsExpiry == null ||
           DateTime.now().isBefore(permissionsExpiry!));
 
+  /// Whether an AI money action needs the card + PIN. Always outside Full
+  /// Autonomy (there the user confirms in the window); in Full Autonomy
+  /// unless the owner turned «Подтверждать действия ИИ ПИН-кодом» off.
+  bool get pinRequiredForAi => mode != AiMode.fullAutonomy || aiPinConfirm;
+
   AiControlSettings copyWith({
     AiMode? mode,
     List<AiAction>? allowedActions,
@@ -93,6 +108,7 @@ class AiControlSettings {
     AutonomyMandate? mandate,
     String? fundingNetwork,
     List<String>? activeSources,
+    bool? aiPinConfirm,
     bool clearExpiry = false,
   }) {
     return AiControlSettings(
@@ -105,6 +121,7 @@ class AiControlSettings {
       mandate: mandate ?? this.mandate,
       fundingNetwork: fundingNetwork ?? this.fundingNetwork,
       activeSources: activeSources ?? this.activeSources,
+      aiPinConfirm: aiPinConfirm ?? this.aiPinConfirm,
       permissionsExpiry:
           clearExpiry ? null : (permissionsExpiry ?? this.permissionsExpiry),
     );
@@ -121,6 +138,7 @@ class AiControlSettings {
         'mandate': mandate.toJson(),
         'fundingNetwork': fundingNetwork,
         'activeSources': activeSources,
+        'aiPinConfirm': aiPinConfirm,
       };
 
   factory AiControlSettings.fromJson(Map<String, dynamic> json) {
@@ -175,6 +193,9 @@ class AiControlSettings {
                   return mapped == 'bybit' ? 'okx' : mapped;
                 })()]
               : const ['bsc']),
+      // A missing key (older builds, backups) means ON: only an explicit
+      // false turns the PIN confirmation off.
+      aiPinConfirm: json['aiPinConfirm'] != false,
     );
   }
 }
@@ -214,11 +235,15 @@ class AiControlService extends ChangeNotifier {
       _log.e('SecureStorage read error', e);
     }
 
+    // Settings read from the plaintext SharedPreferences mirror (or rebuilt
+    // from the mode backup) cannot be trusted to turn a safety off.
+    var fromPlaintext = false;
     if (secureData == null || secureData.isEmpty) {
       try {
         final prefs = await SharedPreferences.getInstance();
         secureData = prefs.getString(_key);
         if (secureData != null && secureData.isNotEmpty) {
+          fromPlaintext = true;
           _log.i('Restored settings from SharedPreferences backup');
         }
       } catch (e) {
@@ -251,11 +276,19 @@ class AiControlService extends ChangeNotifier {
         // a fully valid SecureStorage read with a potentially older backup value.
         if (secureData == null || secureData.isEmpty) {
           _settings = _settings.copyWith(mode: backedUpMode);
+          fromPlaintext = true;
           _log.i('Restored mode from backup: ${backedUpMode.name}');
         }
       }
     } catch (e) {
       _log.e('Prefs backup read error', e);
+    }
+
+    // «Подтверждать действия ИИ ПИН-кодом» may only be OFF when it came
+    // from the encrypted store; the plaintext mirror always restores ON.
+    if (fromPlaintext && !_settings.aiPinConfirm) {
+      _settings = _settings.copyWith(aiPinConfirm: true);
+      _log.i('AI PIN confirmation forced ON (settings from plaintext backup)');
     }
 
     _isLoaded = true;
@@ -303,7 +336,24 @@ class AiControlService extends ChangeNotifier {
   Future<void> updateMode(AiMode mode) async {
     // Auto-preset allowed actions whenever mode changes.
     final presetActions = _defaultActionsFor(mode);
-    _settings = _settings.copyWith(mode: mode, allowedActions: presetActions);
+    _settings = _settings.copyWith(
+      mode: mode,
+      allowedActions: presetActions,
+      // Leaving Full Autonomy turns the PIN confirmation back on, so coming
+      // back to Full always starts with the card + PIN.
+      aiPinConfirm: mode == AiMode.fullAutonomy ? null : true,
+    );
+    await _save();
+  }
+
+  /// Stores «Подтверждать действия ИИ ПИН-кодом». No auth here: the AI
+  /// Center screen asks for the PIN (or biometrics) before turning it OFF,
+  /// the same as [toggleAction]. Turning it OFF only applies in Full
+  /// Autonomy; turning it ON is always allowed.
+  Future<void> setAiPinConfirm(bool on) async {
+    if (!on && _settings.mode != AiMode.fullAutonomy) return;
+    if (_settings.aiPinConfirm == on) return;
+    _settings = _settings.copyWith(aiPinConfirm: on);
     await _save();
   }
 
@@ -454,6 +504,7 @@ class AiControlService extends ChangeNotifier {
       allowedActions: [],
       permissionsExpiry: null,
       clearExpiry: true,
+      aiPinConfirm: true,
     );
     await _save();
     _syncEpkLimits();
@@ -464,6 +515,18 @@ class AiControlService extends ChangeNotifier {
       _log.i('Emergency stop activated — AI manual, automation stopped');
     } catch (e) {
       _log.e('Emergency stop cascade error', e);
+    }
+    // «Делегировать AI» queue: cancel every item that has not finished. The
+    // processor timer keeps running (it is started once per app shell), so
+    // delegation works again after the owner re-enables Full Autonomy;
+    // nothing new can be queued meanwhile (enqueue needs Full Autonomy).
+    try {
+      final dispatch = AutomationDispatchService.instance;
+      for (final item in dispatch.pendingItems) {
+        dispatch.cancelItem(item.id);
+      }
+    } catch (e) {
+      _log.e('Emergency stop dispatch cancel error', e);
     }
   }
 

@@ -32,6 +32,8 @@ import 'package:ibiti_guardian/services/execution/rpc_transaction_simulator.dart
 import 'package:ibiti_guardian/models/rpc_simulation_result.dart';
 import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/services/swap/swap_provider.dart';
+import 'package:ibiti_guardian/services/exchanges/exchange_order_history_store.dart';
+import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 
 class MockExchangeExecutionAdapter implements ExchangeExecutionAdapter {
   final Map<String, double> balances = {};
@@ -354,6 +356,17 @@ void main() {
         dispatchedCommands.add(cmd);
       });
 
+      // «Автономный» exchange orders go through AiActionGate. The cases run
+      // with «Подтверждать действия ИИ ПИН-кодом» OFF (see below) in the
+      // foreground with an unlocked wallet, so an allowed order runs at
+      // once; a card, if one were shown, is confirmed by this stand-in.
+      final gate = AiActionGate.instance;
+      gate.resetForTest();
+      gate.foregroundOverride = () => true;
+      gate.confirmUiOverride = (_) async => true;
+      gate.notifyOverride = (_, __) {};
+      ExchangeOrderHistoryStore.instance.resetForTest();
+
       // Mock Vault and Portfolio
       IBITIVaultService.instance.setVaultCreatedForTest(
         evmAddress: '0x9999999999999999999999999999999999999999',
@@ -506,6 +519,7 @@ void main() {
     });
 
     tearDown(() {
+      AiActionGate.instance.resetForTest();
       commandSubscription?.cancel();
       ExchangeOrderService.instance.resetAdaptersForTest();
 
@@ -549,6 +563,7 @@ void main() {
           mode: mode,
           activeSources: const ['mexc'],
           dailyLimit: 500000.0,
+          aiPinConfirm: false,
         ));
 
         if (tc['focusedSymbol'] != null) {
@@ -595,6 +610,8 @@ void main() {
             source: source,
           );
 
+          // An order confirmed on a card runs after the turn: wait for it.
+          await GuardianAssistantService.instance.pendingAiActionForTest();
           // Let asynchronous microtasks/events complete so command stream is dispatched
           await Future.delayed(Duration.zero);
 
@@ -636,11 +653,13 @@ void main() {
           } else if (blockReason == 'missing_token') {
             expect(response.message, anyOf(contains('Укажите монету.'), contains('specify the token')));
           } else if (blockReason == 'manual_mode_blocked') {
-            expect(response.message, anyOf(contains('режим Manual'), contains('Manual mode'), contains('Торговля отключена')));
+            // «Советник» (code name manual): advice only.
+            expect(response.message, anyOf(contains('«Советник»'), contains('Advisor'), contains('Manual mode')));
           } else if (blockReason == 'insufficient_balance') {
             expect(response.message, contains('Недостаточный баланс'));
           } else if (blockReason == 'source_blocked') {
-            // General chat or automated block
+            // Automated signals never place exchange orders (general chat
+            // may, under the same rules as voice and the market chat).
             expect(response.message, contains('Торговля CEX поддерживается только'));
           }
 

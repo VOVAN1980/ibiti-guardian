@@ -14,8 +14,10 @@ import 'package:ibiti_guardian/services/assistant/openai_chat_service.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
 import 'package:ibiti_guardian/services/assistant/ui_command_resolver.dart';
+import 'package:ibiti_guardian/services/assistant/user_memory_service.dart';
 import 'package:ibiti_guardian/services/intents/intent_parser.dart';
-import 'package:ibiti_guardian/services/market/market_scout_service.dart';
+import 'package:ibiti_guardian/services/market/automation_engine.dart';
+import 'package:ibiti_guardian/services/market/watchlist_service.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/services/voice/ai_voice.dart';
@@ -607,13 +609,13 @@ void main() {
       expect(offlineAnswers, isNot(contains(r.message)));
     });
 
-    test('Manual mode refuses only send and swap windows', () async {
+    test('«Советник» refuses only send and swap windows', () async {
       AiControlService.instance.setSettingsForTest(
         const AiControlSettings(mode: AiMode.manual, allowedActions: []),
       );
       final send =
           await ask('открой отправку', source: AssistantInputSource.generalChat);
-      expect(send.message, contains('Manual'));
+      expect(send.message, contains('«Советник»'));
       expect(send.uiCommands, isEmpty);
 
       final history =
@@ -631,8 +633,8 @@ void main() {
       final history = OpenAIChatService.instance.historyForTest;
       expect(history, hasLength(2));
       expect(history.first['content'], 'какой режим?');
-      expect(history.last['content'], contains('Guarded'));
-      expect(r.message, contains('Guarded'));
+      expect(history.last['content'], contains('«Ручной»'));
+      expect(r.message, contains('«Ручной»'));
     });
 
     test('an LLM turn is not recorded twice', () async {
@@ -655,31 +657,139 @@ void main() {
           await ask('what mode?', source: AssistantInputSource.generalChat);
       expect(en.message, contains('you ask for'));
       expect(en.message, isNot(contains('schedule')));
-
-      final note = MarketScoutService.instance.buildModeCapabilityNote(
-          const AiControlSettings(mode: AiMode.fullAutonomy));
-      expect(note, contains('you ask for'));
-      expect(note, isNot(contains('automatically')));
     });
 
-    test('Full Autonomy: only exchange and delegated trades skip the PIN',
+    test('the three modes are named «Советник» / «Ручной» / «Автономный»',
+        () async {
+      final names = {
+        AiMode.manual: ('«Советник»', 'Advisor'),
+        AiMode.guarded: ('«Ручной»', '"Manual"'),
+        AiMode.fullAutonomy: ('«Автономный»', 'Autonomous'),
+      };
+      for (final entry in names.entries) {
+        AiControlService.instance
+            .setSettingsForTest(AiControlSettings(mode: entry.key));
+        final ru =
+            await ask('какой режим?', source: AssistantInputSource.generalChat);
+        expect(ru.message, contains(entry.value.$1), reason: entry.key.name);
+        final en =
+            await ask('what mode?', source: AssistantInputSource.generalChat);
+        expect(en.message, contains(entry.value.$2), reason: entry.key.name);
+        for (final old in ['Guarded', 'Full Autonomy', 'Manual mode']) {
+          expect(ru.message, isNot(contains(old)), reason: entry.key.name);
+          expect(en.message, isNot(contains(old)), reason: entry.key.name);
+        }
+      }
+    });
+
+    test('«Советник» only advises: it opens and prepares nothing', () async {
+      AiControlService.instance.setSettingsForTest(
+        const AiControlSettings(mode: AiMode.manual, allowedActions: []),
+      );
+      final ru =
+          await ask('какой режим?', source: AssistantInputSource.generalChat);
+      expect(ru.message, contains('только советую'));
+      expect(ru.message, contains('алертов, стоп-лоссов'));
+      final en =
+          await ask('what mode?', source: AssistantInputSource.generalChat);
+      expect(en.message, contains('I only advise'));
+    });
+
+    test('«Автономный», PIN ON: every AI action shows a card and asks the PIN',
         () async {
       AiControlService.instance.setSettingsForTest(
         const AiControlSettings(mode: AiMode.fullAutonomy),
       );
       final ru =
           await ask('какой режим?', source: AssistantInputSource.generalChat);
-      expect(ru.message, isNot(contains('без отдельного окна подтверждения')));
-      expect(ru.message, contains('Ордера на биржах'));
+      expect(ru.message, contains('ПИН-кодом включено'));
+      expect(ru.message, contains('карточку'));
+      expect(ru.message, contains('словом «да»'));
+      expect(ru.message, contains('Ордера на биржах'.toLowerCase()));
       expect(ru.message, contains('«Делегировать AI»'));
-      expect(ru.message, contains('подтверждаете их вы, ПИН-кодом'));
+      expect(ru.message, contains('«ИИ выполнил»'));
+      expect(ru.message, contains('поднимите порог в «Политике»'));
+      // No claim that anything runs without the PIN.
+      expect(ru.message, isNot(contains('без ПИН-кода')));
       final en =
           await ask('what mode?', source: AssistantInputSource.generalChat);
-      expect(en.message,
-          isNot(contains('without a separate confirmation window')));
-      expect(en.message, contains('Exchange orders'));
+      expect(en.message, contains('PIN confirmation is ON'));
       expect(en.message, contains('Delegate to AI'));
-      expect(en.message, contains('you confirm them with your PIN'));
+      expect(en.message, contains('enter your PIN'));
+      expect(en.message, isNot(contains('without your PIN')));
+    });
+
+    test('«Автономный», PIN OFF: only within the limits, to trusted addresses',
+        () async {
+      AiControlService.instance.setSettingsForTest(
+        const AiControlSettings(
+            mode: AiMode.fullAutonomy, aiPinConfirm: false),
+      );
+      final ru =
+          await ask('какой режим?', source: AssistantInputSource.generalChat);
+      expect(ru.message, contains('ПИН-кодом выключено'));
+      expect(ru.message, contains('без карточки и ПИН-кода'));
+      expect(ru.message, contains('доверенные адреса'));
+      expect(ru.message, contains('«ИИ выполнил»'));
+      expect(ru.message, contains('новый адрес'));
+      final en =
+          await ask('what mode?', source: AssistantInputSource.generalChat);
+      expect(en.message, contains('PIN confirmation is OFF'));
+      expect(en.message, contains('only to trusted addresses'));
+
+      // The limits answer says it too.
+      final limits =
+          await ask('какие у тебя лимиты', source: AssistantInputSource.generalChat);
+      expect(limits.message, contains('ПИН-кодом: выключено'));
+      expect(limits.message, contains('Превысить лимиты я не могу'));
+    });
+
+    test('«Советник» sets no alert, stop-loss or watchlist entry', () async {
+      AiControlService.instance.setSettingsForTest(
+        const AiControlSettings(mode: AiMode.manual, allowedActions: []),
+      );
+      final triggersBefore = AutomationEngine.instance.triggers.length;
+      final favoriteBefore = WatchlistService.instance.isFavoriteBySymbol('BTC');
+      for (final text in [
+        'поставь стоп-лосс на SOL 120',
+        'поставь алерт на BTC 70000',
+        'поставь тейк BTC 10%',
+        'добавь BTC в избранное',
+        'set stop loss SOL 120',
+      ]) {
+        final r = await ask(text, source: AssistantInputSource.generalChat);
+        expect(r.message, anyOf(contains('«Советник»'), contains('Advisor')),
+            reason: text);
+        expect(opensWindow(dispatched), false, reason: text);
+      }
+      expect(AutomationEngine.instance.triggers.length, triggersBefore);
+      expect(WatchlistService.instance.isFavoriteBySymbol('BTC'),
+          favoriteBefore);
+    });
+
+    test('macro «эвакуация» opens Panic first, then switches to «Советник»',
+        () async {
+      await UserMemoryService.instance.init();
+      AiControlService.instance.setSettingsForTest(
+        const AiControlSettings(mode: AiMode.guarded),
+      );
+      final r = await ask('эвакуация', source: AssistantInputSource.voice);
+      final panic = dispatched.where(
+          (c) => c.type == UICommandType.openModal && c.target == 'panic');
+      expect(panic, hasLength(1));
+      // The user's own phrase: the window is the user's (revoke stays on).
+      expect(panic.single.payload?['byUserMacro'], true);
+      expect(AiControlService.instance.settings.mode, AiMode.manual);
+      expect(r.message, contains('эвакуация'));
+      expect(r.message, contains('режим «Советник»'));
+      expect(r.message, isNot(contains('Manual')));
+
+      // Already in «Советник»: nothing opens, and it says so.
+      dispatched.clear();
+      final again = await ask('эвакуация', source: AssistantInputSource.voice);
+      expect(opensWindow(dispatched), false);
+      expect(dispatched, isEmpty);
+      expect(again.message, contains('Откройте его сами'));
     });
 
     for (final source in [
@@ -750,6 +860,7 @@ void main() {
               source: AssistantInputSource.generalChat);
           expect(offlineAnswers, contains(r.message));
           expect(r.message, isNot(contains('режим Manual')));
+          expect(r.message, isNot(contains('«Советник»')));
           expect(
               dispatched.any((c) =>
                   c.type == UICommandType.selectToken ||
@@ -801,7 +912,7 @@ void main() {
           () async {
         useVoice(AiVoice.female);
         final a = await cannedAnswers();
-        expect(a[0], contains('я выставляю сама,'));
+        expect(a[0], contains('я сама заполняю'));
         expect(a[0], contains('Сама, без вашей просьбы'));
         expect(a[1], contains('Открыла EPK'));
         expect(a[2], 'Закрыла.');
@@ -812,7 +923,7 @@ void main() {
           () async {
         useVoice(AiVoice.male);
         final a = await cannedAnswers();
-        expect(a[0], contains('я выставляю сам,'));
+        expect(a[0], contains('я сам заполняю'));
         expect(a[0], contains('Сам, без вашей просьбы'));
         expect(a[1], contains('Открыл EPK'));
         expect(a[2], 'Закрыл.');

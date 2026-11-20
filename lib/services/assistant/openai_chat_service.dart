@@ -329,6 +329,66 @@ class OpenAIChatService {
       : 'Your voice is male: in Russian always use masculine forms about '
           'yourself (я проверил, я нашёл, я не уверен, я сам).';
 
+  /// What the AI may do in each mode, and what holds in every mode (owner
+  /// decisions of 2026-11-20). Static, so it stays in the cached prompt
+  /// prefix; the current mode and PIN setting come later in the prompt.
+  @visibleForTesting
+  static const String aiModeRules = '''
+━━━ AI MODES: WHAT YOU MAY DO ━━━
+Act by the current AI mode and AI action PIN confirmation (both given below).
+- «Советник» (Advisor): ONLY advise and explain. Return no uiCommands and no
+  action intent: open, fill, prepare or create nothing (no windows, orders,
+  sends, swaps, watchlist entries, price alerts, TP/SL, scans or revokes).
+  Say what the user can do themselves (their own actions work in every
+  mode) or that «Ручной» / «Автономный» lets you do it.
+- «Ручной» (Manual): prepare only (open and fill the window or order); the
+  user checks it and confirms with the PIN.
+- «Автономный» (Autonomous): carry out what the user asks. PIN confirmation
+  ON: every action shows a card (what, amount, to / exchange, network, fee),
+  then «Подтвердить» or a spoken «да», then the PIN. OFF: no card only within
+  the daily trading limit and «AI Мандат», with EPK active, to trusted
+  addresses or the owner's own cards, with a known USD value; otherwise the
+  card + PIN. After each action the notification «ИИ выполнил: …» comes.
+- Every mode: never exceed a limit or go around Policy, «AI Мандат» or EPK.
+  A request over a limit (daily trading limit, max position, a wallet limit)
+  or outside «AI Мандат»: refuse it, name the limit and its value, and say
+  that for more the owner raises it in «Политика» (Security → Policy) with
+  their PIN. Never suggest splitting an order or any other way around it.
+- Never say an operation is done: the app shows the card, asks the PIN and
+  reports the result itself (with the PIN ON, say to confirm on screen).
+''';
+
+  /// The AI action PIN confirmation setting and what it means right now.
+  /// The setting exists only in «Автономный»; elsewhere it is always on.
+  @visibleForTesting
+  static String pinConfirmationLabel(AiControlSettings s) {
+    if (s.mode != AiMode.fullAutonomy) {
+      return 'ON (the setting exists only in «Автономный»; in this mode the AI '
+          'carries out nothing by itself)';
+    }
+    return s.aiPinConfirm
+        ? 'ON (every AI action shows a card and asks the PIN first)'
+        : 'OFF (no card only within the daily trading limit and «AI Мандат», '
+            'with EPK active, to trusted addresses or own cards, with a known '
+            'USD value; otherwise card + PIN; then the «ИИ выполнил» '
+            'notification)';
+  }
+
+  /// One context line: what the AI can do in [mode].
+  static String _aiModeDuty(AiMode mode) => switch (mode) {
+        AiMode.manual =>
+          'advise only: analyse balances, prices, market routes, limits and '
+              'risks; open, fill, create and execute nothing',
+        AiMode.guarded =>
+          'prepare: open screens and windows, fill send / swap / order fields, '
+              'prepare previews, manage watchlist, price alerts and TP/SL; the '
+              'user confirms every money action with the PIN',
+        AiMode.fullAutonomy =>
+          'carry out the exchange orders, sends, swaps and revokes the user '
+              'asks for, within limits, «AI Мандат» and EPK, under the PIN '
+              'setting below; everything «Ручной» does as well',
+      };
+
   Future<void> init() async {
     final settings = SettingsService.instance.settings;
     final isEnabled = settings.isNeuralOperatorEnabled;
@@ -449,10 +509,11 @@ tool results.
   No futures, margin, leverage, staking, lending, earn or copy trading.
 - Security: Safe Scan (token approval check) with Safe review and Panic
   revoke, the System status card, EPK on-chain policy, limits in Policy, AI
-  modes Manual / Guarded / Full Autonomy.
-- Trusted addresses (AI whitelist; Command Center → Trusted addresses): the
-  only addresses you, the AI, may send to (on every wallet network) while
-  the policy is STRICT. Only
+  modes «Советник» (Advisor) / «Ручной» (Manual) / «Автономный» (Autonomous).
+- Trusted addresses (AI whitelist; Command Center → Trusted addresses): in
+  «Автономный» you send WITHOUT the confirmation card only to these, the
+  owner's own cards and wallets; any other (new) address always gets the
+  card + PIN, and while the policy is STRICT AI sends go only to these. Only
   the owner adds them, with the PIN (Address book → ⋯ → Trust for AI, or Add
   on that screen). You can list and explain them (get_trusted_addresses) and
   open the screen (openModal trusted_addresses) but never add or remove
@@ -468,6 +529,7 @@ answer them from the APP GUIDE and the live context. Call a tool only for live
 values (balances, prices, scan results, the status card right now).
 
 ${AppGuide.text}
+$aiModeRules
 ━━━ HOW YOU SOUND ━━━
 Your tone, length and wording come from YOUR PERSONALITY at the end of this
 prompt; follow it. speechText is read aloud by a voice: plain sentences, no
@@ -485,9 +547,11 @@ changed, bought, sold, sent, swapped, scanned, revoked, or executed anything.
 '''}
 ━━━ AI MODE & POLICY ━━━
 Current AI mode: ${_aiModeLabel(aiSettings.mode)}.
+AI action PIN confirmation: ${aiSettings.pinRequiredForAi ? 'ON' : 'OFF'}.
 Permitted AI actions: ${aiSettings.allowedActions.map((e) => e.name).join(", ")}.
 EPK protection: ${epkState.isActive ? 'ACTIVE' : 'PAUSED'} (${epkState.isDeployed ? 'on-chain kernel' : 'local checks'}).
-Limits and the System status are in the live context below.
+Limits, the System status and what this mode allows are in the live context
+below; follow AI MODES: WHAT YOU MAY DO above.
 If an action is blocked by the mode or a limit, say which one and where the
 owner changes it: the AI mode in Security → AI Center (or Policy → AI mode),
 limits in Security → Policy. Raising the mode or a spending limit needs the
@@ -736,13 +800,17 @@ $personalContext
       }
     ];
     // scan_security_risks and get_system_status only read results, so
-    // conversation-only (voice) turns may use them.
+    // conversation-only (voice) turns may use them. In «Советник» the AI
+    // only advises: action tools are not offered at all (and
+    // _isToolAllowedByMode refuses them if the model calls one anyway).
     const actionToolNames = {
       'panic_revoke_all',
       'safe_revoke_review',
       'manage_watchlist',
     };
-    final advertisedTools = allowActionTools
+    final offerActionTools =
+        allowActionTools && aiSettings.mode != AiMode.manual;
+    final advertisedTools = offerActionTools
         ? tools
         : tools.where((tool) {
             final function = tool['function'];
@@ -835,11 +903,14 @@ $personalContext
             }
             String toolResult;
             if (!_isToolAllowedByMode(functionName)) {
+              final mode = AiControlService.instance.settings.mode;
               toolResult = jsonEncode({
                 'error':
-                    'Action "$functionName" is blocked in current AI mode (${AiControlService.instance.settings.mode.name}). '
-                        'Change mode in Security → AI Control.',
-                'mode': AiControlService.instance.settings.mode.name,
+                    'Action "$functionName" is not available in the AI mode '
+                        '${_aiModeLabel(mode)}: the AI only advises there. '
+                        'The owner can switch to «Ручной» or «Автономный» in '
+                        'Security → AI-Центр.',
+                'mode': mode.name,
               });
             } else {
               toolResult = await _executeTool(
@@ -1332,7 +1403,8 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
           'timestamp': ts,
           'message':
               'Panic window opened: it scans the wallet and lists the critical '
-              'approvals; they are revoked only after the user confirms.',
+              'approvals; they are revoked only after the user taps revoke '
+              '(«Ручной»: + PIN; «Автономный»: per the AI PIN setting).',
         });
 
       // Security policy belongs to the user alone. The assistant may explain the
@@ -1614,9 +1686,11 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
     }
   }
 
-  /// Code-level tool permission gate. In Manual mode, only read-only tools are allowed.
-  /// Action tools (panic, safe_revoke) require Guarded or above. They only open a
-  /// confirmation modal for the user and never mutate security policy themselves.
+  /// Code-level tool permission gate. In «Советник» (AiMode.manual) the AI
+  /// only advises: only read-only tools are allowed. Action tools (panic,
+  /// safe_revoke, manage_watchlist) need «Ручной» or «Автономный». Panic and
+  /// safe only open a window where the user confirms; they never mutate
+  /// security policy themselves.
   static bool _isToolAllowedByMode(String toolName) {
     final settings = AiControlService.instance.settings;
     if (settings.mode == AiMode.manual) {
@@ -1645,12 +1719,12 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 
   /// Post-processing gate: strips uiCommands and blocks dangerous explicitIntents
   /// based on the current AI mode. Defense-in-depth — even if the LLM hallucinates
-  /// an action in Manual mode, it won't reach the UI layer.
+  /// an action in «Советник» (AiMode.manual), it won't reach the UI layer.
   static void _enforceModeOnResponse(Map<String, dynamic> decoded) {
     final mode = AiControlService.instance.settings.mode;
 
     if (mode == AiMode.manual) {
-      // Manual mode: no UI mutations allowed
+      // «Советник»: advice only, no UI mutations allowed
       decoded.remove('uiCommands');
 
       final intent = decoded['explicitIntent'];
@@ -1666,7 +1740,8 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
           decoded['explicitIntent'] = {
             'type': 'explainOnly',
             'reason':
-                'Blocked in Manual mode. Switch to Guarded or Full Autonomy in Security → AI Control.',
+                'Blocked in «Советник» (Advisor): the AI only advises. Switch '
+                    'to «Ручной» or «Автономный» in Security → AI-Центр.',
           };
         }
       }
@@ -1853,10 +1928,12 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
     }
   }
 
+  /// The mode names the user sees (code names stay manual / guarded /
+  /// fullAutonomy).
   static String _aiModeLabel(AiMode mode) => switch (mode) {
-        AiMode.manual => 'Manual',
-        AiMode.guarded => 'Guarded',
-        AiMode.fullAutonomy => 'Full Autonomy',
+        AiMode.manual => '«Советник» (Advisor)',
+        AiMode.guarded => '«Ручной» (Manual)',
+        AiMode.fullAutonomy => '«Автономный» (Autonomous)',
       };
 
   /// Makes sure the saved Safe Scan results are loaded (the status card
@@ -1953,9 +2030,11 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 - Saved recipients: ${AddressBookService.instance.entries.length}
 - Trusted addresses (AI whitelist, read-only for AI): ${trustProfile.trustedAddresses.length + trustProfile.trustedContracts.length}; policy mode ${trustProfile.mode.name}${trustProfile.mode == PolicyMode.safe ? ' (STRICT: AI may send only to these)' : ''}
 - System status card: $statusLine
+- AI mode: ${_aiModeLabel(aiSettings.mode)}: ${_aiModeDuty(aiSettings.mode)}
+- AI action PIN confirmation: ${pinConfirmationLabel(aiSettings)}
 - Wallet limits (USD value of ONE operation; Security → Policy): send ${_walletLimitLabel(trustProfile, 'SEND', trustProfile.sendLimitUsd, safeDefaults.sendLimitUsd)}, swap ${_walletLimitLabel(trustProfile, 'SWAP', trustProfile.swapLimitUsd, safeDefaults.swapLimitUsd)}, approve ${_walletLimitLabel(trustProfile, 'APPROVE', trustProfile.approveLimitUsd, safeDefaults.approveLimitUsd)} (unlimited approvals always blocked)
 - Block unknown contracts: ${trustProfile.allowUnknownContracts ? 'OFF (unknown contracts allowed)' : 'ON'}
-- Daily trading limit USD (everything not started in the wallet's own Send/Swap windows: exchange buys, the AI's exchange sells, sends and swaps the AI carries out from chat or voice): ${aiSettings.dailyLimit.toStringAsFixed(0)}
+- Daily trading limit USD (everything not started in the wallet's own Send/Swap windows: exchange buys, the AI's exchange sells, and the sends, swaps and trades the AI carries out itself from chat, voice or «Делегировать AI»): ${aiSettings.dailyLimit.toStringAsFixed(0)}
 - Min trade balance USD (no exchange buy below it): ${aiSettings.minTradeBalance.toStringAsFixed(0)}
 - AI mandate goal: ${mandate.goal.name}
 - AI mandate assets: ${mandate.allowedAssets.isEmpty ? 'any' : mandate.allowedAssets.join(', ')}
@@ -1969,7 +2048,6 @@ Return ONLY a raw JSON object matching this schema, no markdown wrapping, no exp
 - User preferred venue: ${UserMemoryService.instance.preferences.preferredVenue ?? 'not set'}
 - User preferred network: ${UserMemoryService.instance.preferences.preferredNetwork ?? 'not set'}
 - Known app surfaces: wallet, market, security_center, settings, wallet_send, wallet_receive, wallet_swap, wallet_history, wallet_settings, wallet_address_book, trusted_addresses, safe, panic, ai_control, policy_limits, epk_control, audit_history
-- AI can open screens, open modals, fill send/swap fields, prepare preview flows, analyze balances, compare market routes, and explain limits.
 - OKX Spot connected: $okxConnected (Region: $okxRegionStr, Quote Currency: $okxQuoteStr)
 - OKX Quote/Trading Rules: If OKX region is eea, OKX trading is processed in USDC instead of USDT (e.g. BTC-USDC, SOL-USDC) due to MiCA regulations. If global, trading is primarily in USDT. No blind fallback to USDT is permitted. Use USDT only if the exact OKX pair exists and findBestPair selected it; if the resolved pair is not available, trading is blocked. Explain this to the user in their preferred language if they ask.
 - When suggesting swaps, use the user's preferred stablecoin as the default quote token if set.
@@ -2114,8 +2192,8 @@ const Map<SystemProblem, ({String meaning, String fix})> _systemProblemInfo = {
         '«Safe/Panic» (or «Рисков: N») → «Сейф» or «Паника» → revoke them. '
         'Each revoke is an on-chain transaction with a small network fee. '
         'Revoking works in every AI mode when the user opens Safe/Panic; '
-        'only a window the AI opened is review-only while the AI mode is '
-        'Manual.',
+        'a window the AI opened is review-only in «Советник», needs the PIN '
+        'in «Ручной» and follows the AI PIN setting in «Автономный».',
   ),
   SystemProblem.sessionExpired: (
     meaning: 'The sign-in (Privy) session expired: transfers cannot be '

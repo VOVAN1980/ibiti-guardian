@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:ibiti_guardian/screens/vault/vault_unlock_screen.dart';
 import 'package:ibiti_guardian/screens/security/policy_limits_screen.dart';
 import 'package:ibiti_guardian/screens/security/ai_memory_screen.dart';
+import 'package:ibiti_guardian/services/alerts/notification_service.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/assistant/user_memory_service.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
+import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 
@@ -12,7 +14,9 @@ import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 // AIControlScreen — поведение и разрешения AI.
 //
 // Этот экран управляет:
-//   • Режимом AI (Manual / Guarded / Full Autonomy)
+//   • Режимом AI («Советник» / «Ручной» / «Автономный»;
+//     в коде AiMode.manual / guarded / fullAutonomy)
+//   • «Подтверждать действия ИИ ПИН-кодом» (только в «Автономном»)
 //   • Разрешёнными действиями
 //   • Временем жизни разрешений (TTL)
 //   • Экстренными кнопками безопасности
@@ -105,6 +109,184 @@ class _AIControlScreenState extends State<AIControlScreen> {
     await _service.toggleAction(action, enable);
   }
 
+  // ── «Подтверждать действия ИИ ПИН-кодом» ───────────────────────────────────
+
+  bool _pinToggleBusy = false;
+
+  /// ON is free. OFF: PIN / biometrics must be set up, then a warning, a
+  /// notification-permission check (the «ИИ выполнил» notification is the
+  /// only report then) and the PIN / biometrics.
+  Future<void> _onAiPinConfirmChanged(bool on) async {
+    if (on) {
+      await _service.setAiPinConfirm(true);
+      return;
+    }
+    if (_pinToggleBusy) return;
+    setState(() => _pinToggleBusy = true);
+    try {
+      final l = LocalizationService.instance;
+      final vault = IBITIVaultService.instance.state;
+      final hasAuth =
+          (vault?.pinEnabled ?? false) || (vault?.biometricsEnabled ?? false);
+      if (!hasAuth) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
+          content: Text(l.t('aiPinConfirmNeedsPin', {
+            'default': 'Set up a PIN or biometrics first (Settings → '
+                'Security). Without it, PIN confirmation of AI actions '
+                'cannot be turned off.'
+          })),
+        ));
+        return;
+      }
+
+      if (!await _confirmPinOffWarning()) return;
+
+      var notificationsOn = await NotificationService.instance
+          .isPermissionGranted();
+      if (!notificationsOn) {
+        notificationsOn = await NotificationService.instance.requestPermission();
+      }
+      if (!mounted) return;
+      if (!notificationsOn && !await _confirmWithoutNotifications()) return;
+
+      if (!await _authorizeLoosening()) return;
+      // The mode may have changed while the dialogs were open.
+      if (_service.settings.mode != AiMode.fullAutonomy) return;
+      await _service.setAiPinConfirm(false);
+    } finally {
+      if (mounted) setState(() => _pinToggleBusy = false);
+    }
+  }
+
+  Future<bool> _confirmPinOffWarning() async {
+    if (!mounted) return false;
+    final l = LocalizationService.instance;
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: GuardianColors.surface,
+            title: Row(children: [
+              const Icon(Icons.warning_amber_rounded,
+                  color: GuardianColors.warning, size: 22),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  l.t('aiPinConfirmOffWarnTitle',
+                      {'default': 'Let the AI act without your PIN?'}),
+                  style: GuardianTextStyles.headline.copyWith(fontSize: 18),
+                ),
+              ),
+            ]),
+            content: Text(
+              l.t('aiPinConfirmOffWarnBody', {
+                'default': 'In «Autonomous» mode the AI will place orders, '
+                    'swaps and sends by itself, without the card and the PIN. '
+                    'It still stays within the daily limit, the «AI Mandate» '
+                    'and EPK, and sends only to trusted addresses; a new '
+                    'address or an unknown price still asks for your PIN. '
+                    'After each action you get the «AI did: …» notification.'
+              }),
+              style: GuardianTextStyles.bodySecondary,
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(l.t('policyEditCancel', {'default': 'Cancel'})),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                    backgroundColor: GuardianColors.warning),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(
+                    l.t('aiPinConfirmOffAction', {'default': 'Turn off'})),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Future<bool> _confirmWithoutNotifications() async {
+    if (!mounted) return false;
+    final l = LocalizationService.instance;
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: GuardianColors.surface,
+            title: Text(
+              l.t('aiPinConfirmNotifOffTitle',
+                  {'default': 'Notifications are off'}),
+              style: GuardianTextStyles.headline.copyWith(fontSize: 18),
+            ),
+            content: Text(
+              l.t('aiPinConfirmNotifOffBody', {
+                'default': 'Android blocks notifications for the app, so you '
+                    'will not get «AI did: …» after the AI acts. Turn them on '
+                    'in Android settings → Apps → Guardian → Notifications. '
+                    'Every AI action is still written to the audit log.'
+              }),
+              style: GuardianTextStyles.bodySecondary,
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: Text(l.t('policyEditCancel', {'default': 'Cancel'})),
+              ),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                    backgroundColor: GuardianColors.warning),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(l.t('aiPinConfirmNotifOffContinue',
+                    {'default': 'Continue anyway'})),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  Widget _pinConfirmCard(AiControlSettings s) {
+    final l = LocalizationService.instance;
+    final on = s.aiPinConfirm;
+    return _card([
+      SwitchListTile(
+        key: const ValueKey('aiPinConfirmSwitch'),
+        value: on,
+        onChanged: _pinToggleBusy ? null : _onAiPinConfirmChanged,
+        activeThumbColor: GuardianColors.accent,
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        secondary: Icon(
+          on ? Icons.lock_outline : Icons.lock_open_outlined,
+          color: on ? GuardianColors.success : GuardianColors.warning,
+        ),
+        title: Text(
+          l.t('aiPinConfirmTitle',
+              {'default': 'Confirm AI actions with PIN'}),
+          style: GuardianTextStyles.bodyPrimary
+              .copyWith(fontSize: 15, fontWeight: FontWeight.w600),
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Text(
+            on
+                ? l.t('aiPinConfirmOnDesc', {
+                    'default': 'The AI shows a card (what, amount, fee) and '
+                        'asks for your PIN before each action.'
+                  })
+                : l.t('aiPinConfirmOffDesc', {
+                    'default': 'The AI acts by itself — within the daily '
+                        'limit, «AI Mandate» and EPK, and only to trusted '
+                        'addresses. You get a notification after each action.'
+                  }),
+            style: GuardianTextStyles.bodySecondary.copyWith(
+                fontSize: 12, color: GuardianColors.textSecondary),
+          ),
+        ),
+      ),
+    ]);
+  }
+
   // ── Build ──────────────────────────────────────────────────────────────────
 
   @override
@@ -159,6 +341,20 @@ class _AIControlScreenState extends State<AIControlScreen> {
               _divider(),
               _row(LocalizationService.instance.t('aiControlTtl'),
                   _formatExpiry(s.permissionsExpiry)),
+              if (s.mode == AiMode.fullAutonomy) ...[
+                _divider(),
+                _row(
+                    LocalizationService.instance.t(
+                        'aiPinStatusRow', {'default': 'PIN for AI actions'}),
+                    s.aiPinConfirm
+                        ? LocalizationService.instance
+                            .t('aiPinStatusOn', {'default': 'On'})
+                        : LocalizationService.instance
+                            .t('aiPinStatusOff', {'default': 'Off'}),
+                    valueColor: s.aiPinConfirm
+                        ? GuardianColors.success
+                        : GuardianColors.warning),
+              ],
             ]),
             const SizedBox(height: 20),
 
@@ -195,6 +391,11 @@ class _AIControlScreenState extends State<AIControlScreen> {
                   '⚖️ Law', LocalizationService.instance.t('aiControlModeLaw'),
                   active: true, isLaw: true),
             ]),
+            // «Подтверждать действия ИИ ПИН-кодом»: only in «Автономный».
+            if (s.mode == AiMode.fullAutonomy) ...[
+              const SizedBox(height: 12),
+              _pinConfirmCard(s),
+            ],
             const SizedBox(height: 20),
 
             // ── Allowed Actions ───────────────────────────────────────────

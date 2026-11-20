@@ -17,11 +17,11 @@ import 'package:ibiti_guardian/models/assistant_response.dart';
 import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/models/execution_path.dart';
 import 'package:ibiti_guardian/models/rpc_simulation_result.dart';
+import 'package:ibiti_guardian/services/execution/ai_onchain_executor.dart';
 import 'package:ibiti_guardian/services/execution/guardian_execution_controller.dart';
 import 'package:ibiti_guardian/services/execution/tx_status_poller.dart';
 import 'package:ibiti_guardian/screens/vault/vault_unlock_screen.dart';
 import 'package:ibiti_guardian/services/policy/guardian_policy_engine.dart';
-import 'package:ibiti_guardian/services/automation/automation_engine.dart'; // AutomationTelemetryBus
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/assistant/language_detector.dart';
 import 'package:ibiti_guardian/screens/security/guardian_control_screen.dart';
@@ -45,6 +45,10 @@ class _ChatMessage {
   final Stream<TxStatusEvent>? txStatusStream;
   final TxStatusEvent? txInitialEvent;
 
+  /// «Автономный»: the AI runs this preview itself through the AI action
+  /// gate, so its card offers no second Confirm (no double dispatch).
+  final bool aiHandled;
+
   _ChatMessage({
     required this.text,
     required this.role,
@@ -55,6 +59,7 @@ class _ChatMessage {
     this.txChainId,
     this.txStatusStream,
     this.txInitialEvent,
+    this.aiHandled = false,
   });
 
   bool get isPreview =>
@@ -131,7 +136,6 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
         }
       }
     });
-    AutomationTelemetryBus.instance.addListener(_automationListener);
   }
 
   /// Returns the first applicable launch prompt, or null.
@@ -150,20 +154,9 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
 
   @override
   void dispose() {
-    AutomationTelemetryBus.instance.removeListener(_automationListener);
     _controller.dispose();
     _scrollController.dispose();
     super.dispose();
-  }
-
-  void _automationListener(String msg) {
-    if (mounted) {
-      _addMessage(_ChatMessage(
-        text: msg,
-        role: _MessageRole.assistant,
-        responseType: ResponseType.info,
-      ));
-    }
   }
 
   void _addMessage(_ChatMessage msg) {
@@ -304,17 +297,19 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
         }
       });
 
+      final autoExecute = _shouldAutoExecuteResponse(response);
       _addMessage(_ChatMessage(
         text: response.message,
         role: _MessageRole.assistant,
         responseType: response.type,
         detail: response.detail,
         fullResponse: response,
+        aiHandled: autoExecute,
       ));
       HapticFeedback.mediumImpact();
       // Voice output is handled exclusively by the Voice Screen.
       // Text chat does not speak responses.
-      if (_shouldAutoExecuteResponse(response)) {
+      if (autoExecute) {
         Future.microtask(() => _autoExecuteResponse(response));
       }
     }
@@ -328,81 +323,124 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
     // Full Autonomy granted "for 1 hour / 1 day" ends with its TTL.
     if (!AiControlService.instance.settings.isActive) return false;
     if (response.type != ResponseType.preview) return false;
+    if (response.executionPath == null) return false;
     return response.pendingTransaction != null || response.swapPlan != null;
   }
 
   bool get _isGuardedMode =>
       AiControlService.instance.settings.mode == AiMode.guarded;
 
+  /// «Автономный»: the AI carries the preview out itself, always through
+  /// the AI action gate (card + PIN when «Подтверждать действия ИИ
+  /// ПИН-кодом» is on; otherwise only within the limits, «AI Мандат», EPK
+  /// and trusted targets, then a notification). A swap's approve and swap
+  /// steps run under one confirmation. Revoke previews go through it too
+  /// (AiActionKind.revoke).
   Future<void> _autoExecuteResponse(AssistantResponse response) async {
     if (!mounted || !_isFullAutonomyMode) return;
+    final loc = LocalizationService.instance;
 
-    if (response.swapPlan != null && response.executionPath != null) {
-      final plan = response.swapPlan!;
-      final path = response.executionPath!;
-      _addMessage(_ChatMessage(
-        text: 'AI autonomy is active. Executing approved swap flow.',
-        role: _MessageRole.assistant,
-        responseType: ResponseType.info,
-      ));
-      if (plan.approveStep != null) {
-        final approveOk = await _confirmSwapStep(
-          plan.approveStep!,
-          path,
-          policy: response.policy,
-          autoApproved: true,
-        );
-        if (!approveOk) return;
-      }
-      await _confirmSwapStep(
-        plan.swapStep,
-        path,
-        policy: response.policy,
-        rpc: response.rpcSimulation,
-        autoApproved: true,
+    _addMessage(_ChatMessage(
+      text: AiControlService.instance.settings.pinRequiredForAi
+          ? loc.t('chatAiExecConfirm', {
+              'default':
+                  'Autonomous mode: check the operation card and confirm it with your PIN.',
+            })
+          : loc.t('chatAiExecRunning', {
+              'default':
+                  'Autonomous mode: the AI is carrying this out within your limits.',
+            }),
+      role: _MessageRole.assistant,
+      responseType: ResponseType.info,
+    ));
+    setState(() {
+      _isThinking = true;
+      _thinkingText = loc.t('chatAiExecThinking',
+          {'default': 'Carrying out the operation…'});
+      _coreState = AICoreState.thinking;
+    });
+
+    final AiExecResult result;
+    try {
+      result = await AiOnchainExecutor.instance.executePreview(
+        response,
+        source: 'generalChat',
+        context: context,
       );
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isThinking = false;
+        _coreState = AICoreState.danger;
+      });
+      _addMessage(_ChatMessage(
+        text: 'Execution aborted: $e',
+        role: _MessageRole.assistant,
+        responseType: ResponseType.error,
+      ));
       return;
     }
+    if (!mounted) return;
 
-    if (response.pendingTransaction != null && response.executionPath != null) {
-      _addMessage(_ChatMessage(
-        text: 'AI autonomy is active. Executing approved action.',
-        role: _MessageRole.assistant,
-        responseType: ResponseType.info,
-      ));
-      await _confirmTransaction(
-        response.pendingTransaction!,
-        response.executionPath!,
-        policy: response.policy,
-        rpc: response.rpcSimulation,
-        autoApproved: true,
+    setState(() {
+      _isThinking = false;
+      _coreState = result.executed
+          ? AICoreState.safe
+          : (result.cancelled ? AICoreState.idle : AICoreState.danger);
+    });
+    _addMessage(_ChatMessage(
+      text: result.message,
+      role: _MessageRole.assistant,
+      responseType: result.executed
+          ? ResponseType.action
+          : (result.cancelled ? ResponseType.info : ResponseType.error),
+    ));
+
+    final hash = result.txHash;
+    if (result.executed &&
+        hash != null &&
+        hash.startsWith('0x') &&
+        result.chainId != null) {
+      final tx = response.swapPlan?.swapStep ?? response.pendingTransaction!;
+      final isSwap = response.swapPlan != null;
+      _showTxStatus(
+        txHash: hash,
+        chainId: result.chainId!,
+        walletAddress: tx.fromAddress,
+        operationLabel: tx.displaySummary,
+        assetLabel: isSwap
+            ? (tx.targetTokenSymbol ?? '').trim()
+            : (tx.amount == null
+                ? null
+                : '${tx.amount} ${tx.tokenSymbol ?? ''}'.trim()),
       );
     }
   }
 
+  /// The user's own tap on a preview card («Ручной», or a card shown
+  /// outside auto-execution): confirmation dialog, then PIN, always.
   Future<bool> _confirmTransaction(
     TransactionRequest tx,
     ExecutionPath path, {
     PolicyResult? policy,
     RpcSimulationResult? rpc,
-    bool autoApproved = false,
   }) async {
-    if (!autoApproved && _isGuardedMode) {
+    if (_isGuardedMode) {
       _addMessage(_ChatMessage(
-        text:
-            'Guarded mode active. I prepared everything, but final confirmation and signature stay with you.',
+        text: LocalizationService.instance.t('chatManualModePrepared', {
+          'default': 'Manual mode: everything is prepared. The final '
+              'confirmation and signature (PIN) stay with you.',
+        }),
         role: _MessageRole.assistant,
         responseType: ResponseType.info,
       ));
     }
-    final proceed = autoApproved
-        ? true
-        : await _showExecutionGateDialog(
-            tx,
-            path,
-            policy: policy,
-            rpc: rpc,
-          );
+    final proceed = await _showExecutionGateDialog(
+      tx,
+      path,
+      policy: policy,
+      rpc: rpc,
+    );
     if (!proceed) {
       if (!mounted) return false;
       _addMessage(_ChatMessage(
@@ -424,8 +462,8 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
 
     final sessionOk = await ensurePrivySession(context);
     if (!mounted) return false;
-    // Full Autonomy (autoApproved) skips the confirmation dialog, never PIN:
-    // signing always needs the person holding the phone.
+    // A tap on the card always needs the PIN: signing needs the person
+    // holding the phone.
     final authorized = sessionOk &&
         await VaultUnlockScreen.requireAuth(context, forceSetup: true);
     if (!authorized) {
@@ -500,32 +538,36 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
     }
   }
 
-  /// Handles a single step (approve or swap) from a SwapPreviewCard.
+  /// Handles a single step (approve or swap) from a SwapPreviewCard: the
+  /// user's own tap — confirmation dialog, then PIN, always.
   Future<bool> _confirmSwapStep(
     TransactionRequest step,
     ExecutionPath path, {
     PolicyResult? policy,
     RpcSimulationResult? rpc,
-    bool autoApproved = false,
   }) async {
     final isApprove = step.type == TransactionType.approve;
-    if (!autoApproved && _isGuardedMode) {
+    if (_isGuardedMode) {
       _addMessage(_ChatMessage(
         text: isApprove
-            ? 'Guarded mode active. Approval is prepared, but only you can sign it.'
-            : 'Guarded mode active. Swap is prepared, but only you can sign it.',
+            ? LocalizationService.instance.t('chatManualModeApprovalPrepared', {
+                'default': 'Manual mode: the approval is prepared, but only '
+                    'you can sign it.',
+              })
+            : LocalizationService.instance.t('chatManualModeSwapPrepared', {
+                'default': 'Manual mode: the swap is prepared, but only you '
+                    'can sign it.',
+              }),
         role: _MessageRole.assistant,
         responseType: ResponseType.info,
       ));
     }
-    final proceed = autoApproved
-        ? true
-        : await _showExecutionGateDialog(
-            step,
-            path,
-            policy: policy,
-            rpc: rpc,
-          );
+    final proceed = await _showExecutionGateDialog(
+      step,
+      path,
+      policy: policy,
+      rpc: rpc,
+    );
     if (!proceed) {
       if (!mounted) return false;
       _addMessage(_ChatMessage(
@@ -547,8 +589,8 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
 
     final sessionOk = await ensurePrivySession(context);
     if (!mounted) return false;
-    // Full Autonomy (autoApproved) skips the confirmation dialog, never PIN:
-    // signing always needs the person holding the phone.
+    // A tap on the card always needs the PIN: signing needs the person
+    // holding the phone.
     final authorized = sessionOk &&
         await VaultUnlockScreen.requireAuth(context, forceSetup: true);
     if (!authorized) {
@@ -900,6 +942,17 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
               chainId: msg.txChainId ?? 56,
               initialEvent: msg.txInitialEvent!,
               statusStream: msg.txStatusStream!,
+            ),
+          ] else if (msg.aiHandled && msg.isPreview) ...[
+            // The AI runs this one through the AI action gate; its card
+            // must not offer a second Confirm.
+            const SizedBox(height: 8),
+            Text(
+              LocalizationService.instance.t('chatAiHandledCard', {
+                'default':
+                    'The AI is handling this operation; the result appears below.',
+              }),
+              style: GuardianTextStyles.caption,
             ),
           ] else if (msg.isSwapPreview) ...[
             const SizedBox(height: 12),

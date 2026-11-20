@@ -102,8 +102,14 @@ class _WalletSendModalState extends State<WalletSendModal>
     }
     _applySelectedTokenPayload(bus.latestPayload('send_token'));
     _cmdSub = UICommandBus.instance.commands.listen(_handleCommand);
-    final shouldPreview = bus.consumePendingAction('wallet_send_preview') ||
+    // Always consume a pending AI preview, so it cannot fire later in a
+    // window the user opens. It runs only when the AI may prepare windows:
+    // «Советник» (manual) only advises (D2). The preview sheet still needs
+    // the user's Confirm + PIN.
+    final pendingPreview = bus.consumePendingAction('wallet_send_preview') |
         bus.consumePendingAction('send_preview');
+    final shouldPreview = pendingPreview &&
+        AiControlService.instance.settings.mode != AiMode.manual;
     if (shouldPreview) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {

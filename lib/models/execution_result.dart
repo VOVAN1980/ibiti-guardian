@@ -57,6 +57,10 @@ class ExecutionResult {
       );
 
   /// Short string for audit log display.
-  String get auditSummary =>
-      success ? '✓ ${txHash?.substring(0, 10) ?? 'ok'}' : '✗ $message';
+  String get auditSummary {
+    if (!success) return '✗ $message';
+    final hash = txHash;
+    if (hash == null || hash.isEmpty) return '✓ ok';
+    return '✓ ${hash.length > 10 ? hash.substring(0, 10) : hash}';
+  }
 }

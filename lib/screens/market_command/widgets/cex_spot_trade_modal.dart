@@ -5,6 +5,7 @@ import 'package:ibiti_guardian/services/market/market_data_service.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_order_service.dart';
 import 'package:ibiti_guardian/services/exchanges/okx_exchange_service.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
@@ -271,19 +272,26 @@ class _CexSpotTradeModalState extends State<CexSpotTradeModal> {
   }
 
   Widget _buildMainState(bool isRu, AiMode mode) {
-    String modeName = 'Guarded';
-    String modeDesc = isRu ? 'Требуется подтверждение' : 'Requires confirmation';
-    Color modeColor = const Color(0xFFFF9100);
-
-    if (mode == AiMode.manual) {
-      modeName = 'Manual';
-      modeDesc = isRu ? 'Торговля заблокирована' : 'Trading blocked';
-      modeColor = GuardianColors.danger;
-    } else if (mode == AiMode.fullAutonomy) {
-      modeName = 'Full Autonomy';
-      modeDesc = isRu ? 'Авто-выполнение по лимитам' : 'Auto execution within limits';
-      modeColor = GuardianColors.success;
-    }
+    // This window is the user's own order: it works in every AI mode, also
+    // in «Советник» (the AI only advises there), and always asks the PIN.
+    final t = LocalizationService.instance;
+    final (String modeName, Color modeColor) = switch (mode) {
+      AiMode.manual => (
+          t.t('aiControlModeManual', {'default': 'Advisor'}),
+          GuardianColors.textSecondary,
+        ),
+      AiMode.guarded => (
+          t.t('aiControlModeGuarded', {'default': 'Manual'}),
+          const Color(0xFFFF9100),
+        ),
+      AiMode.fullAutonomy => (
+          t.t('aiControlModeFullAutonomy', {'default': 'Autonomous'}),
+          GuardianColors.success,
+        ),
+    };
+    final modeDesc = t.t('cexTradeOwnOrderHint', {
+      'default': 'Your own order: you confirm it here with your PIN.',
+    });
 
     return Form(
       key: _formKey,
@@ -509,7 +517,7 @@ class _CexSpotTradeModalState extends State<CexSpotTradeModal> {
                 children: [
                   Icon(
                     mode == AiMode.manual
-                        ? Icons.block_flipped
+                        ? Icons.lightbulb_outline
                         : mode == AiMode.guarded
                             ? Icons.security_outlined
                             : Icons.bolt,
@@ -522,7 +530,10 @@ class _CexSpotTradeModalState extends State<CexSpotTradeModal> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'JARVIS Mode: $modeName',
+                          t.t('cexTradeAiModeLabel', {
+                            'mode': modeName,
+                            'default': 'AI mode: $modeName',
+                          }),
                           style: GuardianTextStyles.caption.copyWith(
                             color: modeColor,
                             fontWeight: FontWeight.bold,
@@ -595,14 +606,12 @@ class _CexSpotTradeModalState extends State<CexSpotTradeModal> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: (mode == AiMode.manual || _isExecuting) ? null : _handleExecute,
+                    onPressed: _isExecuting ? null : _handleExecute,
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 14),
-                      backgroundColor: mode == AiMode.manual
-                          ? Colors.white10
-                          : _isBuy
-                              ? GuardianColors.success
-                              : GuardianColors.danger,
+                      backgroundColor: _isBuy
+                          ? GuardianColors.success
+                          : GuardianColors.danger,
                       foregroundColor: Colors.white,
                       disabledBackgroundColor: Colors.white10,
                       shape: RoundedRectangleBorder(
@@ -619,11 +628,9 @@ class _CexSpotTradeModalState extends State<CexSpotTradeModal> {
                             ),
                           )
                         : Text(
-                            mode == AiMode.manual
-                                ? (isRu ? 'Заблокировано' : 'Blocked')
-                                : _isBuy
-                                    ? (isRu ? 'Купить' : 'Buy')
-                                    : (isRu ? 'Продать' : 'Sell'),
+                            _isBuy
+                                ? (isRu ? 'Купить' : 'Buy')
+                                : (isRu ? 'Продать' : 'Sell'),
                             style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white),
                           ),
                   ),

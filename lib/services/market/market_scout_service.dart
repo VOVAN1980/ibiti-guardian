@@ -24,8 +24,8 @@ class MarketOpportunity {
   final LiquidityTier liquidityTier;
 
   /// Whether the AI is actually permitted to trade this asset in the current mode/mandate.
-  /// Manual mode → always false (analysis only).
-  /// Guarded/Full → true only if asset passes mandate and limit checks.
+  /// «Советник» (AiMode.manual) → always false (advice only).
+  /// «Ручной» / «Автономный» → true only if asset passes mandate and limit checks.
   final bool executableByAi;
 
   /// Reason execution is blocked, or null if executableByAi is true.
@@ -169,6 +169,14 @@ class MarketScoutService {
   MarketScoutService._();
 
   static final MarketScoutService instance = MarketScoutService._();
+
+  /// Why no signal is executable in «Советник» (AiMode.manual). Kept in
+  /// English and containing "Manual mode": the signal lists classify block
+  /// reasons by that text (priority_signals_list.dart _classifyBlockReason,
+  /// secondary_market_list.dart dot colour).
+  static const String advisorBlockReason =
+      'Advisor mode — advice only. The AI prepares trades in Manual mode and '
+      'carries them out in Autonomous mode.';
 
   /// Returns top [topN] opportunities filtered by [category].
   ///
@@ -318,7 +326,7 @@ class MarketScoutService {
       String? blockReason;
 
       if (mode == AiMode.manual) {
-        blockReason = 'Manual mode — analysis only, no execution.';
+        blockReason = advisorBlockReason;
       } else if (!assetWhitelisted) {
         blockReason = '${asset.symbol} is not in your allowed-assets mandate.';
       } else if (!networkAllowed) {
@@ -397,34 +405,72 @@ class MarketScoutService {
   }
 
   /// Returns a short human-readable summary of what the AI can do right now
-  /// on the market, given its current mode and mandate.
+  /// on the market, given its current mode, mandate and (in «Автономный»)
+  /// the «Подтверждать действия ИИ ПИН-кодом» setting.
+  ///
+  /// Mode names as the user sees them: «Советник» (AiMode.manual) only
+  /// advises, «Ручной» (AiMode.guarded) prepares, «Автономный»
+  /// (AiMode.fullAutonomy) carries out — never over a limit.
   String buildModeCapabilityNote(AiControlSettings settings) {
+    final t = LocalizationService.instance;
     final mode = settings.mode;
     final mandate = settings.mandate;
     final actions = settings.allowedActions.map((a) => a.name).join(', ');
     final assets = mandate.allowedAssets.isEmpty
-        ? 'any asset'
+        ? t.t('marketScoutAnyAsset', {'default': 'any asset'})
         : mandate.allowedAssets.join(', ');
     final networks = mandate.allowedNetworks.isEmpty
-        ? 'any network'
+        ? t.t('marketScoutAnyNetwork', {'default': 'any network'})
         : mandate.allowedNetworks.join(', ');
+    final daily = '\$${settings.dailyLimit.toStringAsFixed(0)}';
+    final args = <String, dynamic>{
+      'assets': assets,
+      'networks': networks,
+      'actions': actions,
+      'daily': daily,
+    };
 
+    // A missing key returns the default as is, so the defaults carry the
+    // values already.
     switch (mode) {
       case AiMode.manual:
-        return 'Manual mode — I can analyse, compare and explain the market. '
-            'No execution. Switch to Guarded or Full Autonomy to trade.';
+        return t.t('marketScoutNoteAdvisor', {
+          'default': '«Advisor» mode: I only advise — I analyse, compare and '
+              'explain the market. I open, prepare and execute nothing (no '
+              'windows, orders, watchlist or alerts). To let me act, switch '
+              'to «Manual» or «Autonomous» in AI Center.',
+        });
       case AiMode.guarded:
-        return 'Guarded — I can build full buy/sell plans and prepare swaps. '
-            'I work with: $assets on $networks. '
-            'Allowed actions: $actions. '
-            'You confirm before anything executes.';
+        return t.t('marketScoutNoteManual', {
+          ...args,
+          'default': '«Manual» mode: I build buy/sell plans and prepare the '
+              'order or swap window for $assets on $networks. Allowed '
+              'actions: $actions. You check it and confirm with your PIN — '
+              'nothing runs without you.',
+        });
       case AiMode.fullAutonomy:
-        return 'Full Autonomy — I carry out the trades you ask for, '
-            'within your mandate: $assets on $networks. '
-            'Allowed actions: $actions. '
-            'Daily limit: \$${settings.dailyLimit.toStringAsFixed(0)}. '
-            'Policy and EPK are enforced on every trade. '
-            'I never trade on my own without your request.';
+        if (settings.aiPinConfirm) {
+          return t.t('marketScoutNoteAutoPin', {
+            ...args,
+            'default': '«Autonomous» mode: I carry out the trades you ask '
+                'for, within your mandate: $assets on $networks. Allowed '
+                'actions: $actions. Daily limit: $daily. PIN confirmation is '
+                'on: each trade first shows a card and asks your PIN. Limits, '
+                'policy and EPK hold on every trade; I never trade on my own '
+                'without your request.',
+          });
+        }
+        return t.t('marketScoutNoteAutoNoPin', {
+          ...args,
+          'default': '«Autonomous» mode: I carry out the trades you ask for, '
+              'within your mandate: $assets on $networks. Allowed actions: '
+              '$actions. Daily limit: $daily. PIN confirmation is off: I '
+              'trade without the card only within the daily limit and the '
+              'mandate, at a known price; anything else gets the card and '
+              'your PIN, and after each trade you get the notification «AI '
+              'did: …». I never go over a limit and never trade on my own '
+              'without your request.',
+        });
     }
   }
 }

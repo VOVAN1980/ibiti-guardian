@@ -3,8 +3,10 @@ import 'dart:math';
 import 'package:crypto/crypto.dart';
 import 'package:http/http.dart' as http;
 import 'package:ibiti_guardian/services/exchanges/exchange_account_store.dart';
+import 'package:ibiti_guardian/services/exchanges/exchange_order_history_store.dart';
 import 'package:ibiti_guardian/services/exchanges/okx_exchange_service.dart';
 import 'package:ibiti_guardian/services/market/market_memory_service.dart';
+import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
@@ -16,13 +18,27 @@ class ExchangeOrderResult {
   final double executedPrice;
   final String? errorMessage;
 
+  /// The entry in [ExchangeOrderHistoryStore] (set by
+  /// [ExchangeOrderService.placeMarketOrder] once the exchange answered).
+  final String? historyId;
+
   ExchangeOrderResult({
     required this.isSuccess,
     this.orderId,
     this.executedQty = 0.0,
     this.executedPrice = 0.0,
     this.errorMessage,
+    this.historyId,
   });
+
+  ExchangeOrderResult withHistoryId(String? id) => ExchangeOrderResult(
+        isSuccess: isSuccess,
+        orderId: orderId,
+        executedQty: executedQty,
+        executedPrice: executedPrice,
+        errorMessage: errorMessage,
+        historyId: id,
+      );
 }
 
 abstract class ExchangeExecutionAdapter {
@@ -63,6 +79,42 @@ class ExchangeOrderService {
     _adapters['gateio'] = GateioSpotExecutionAdapter();
   }
 
+  /// The order source of the trade window (the user's own order, also when
+  /// the AI prepared the window in «Ручной» and the user confirmed it).
+  static const String userSource = 'ui';
+
+  /// Orders the AI places itself (voice / market chat / general chat /
+  /// automation) — everything except the trade window.
+  static bool isAiSource(String source) => source != userSource;
+
+  /// The gate summary of an AI exchange order. The assistant builds the
+  /// confirmation card from it, and [placeMarketOrder] checks that the
+  /// confirmation it is given was issued for exactly this order
+  /// ([AiGateDecision.matches]): same exchange, coin, side and (at most) the
+  /// confirmed value.
+  static AiActionSummary aiOrderSummary({
+    required String exchangeId,
+    required String symbol,
+    required bool isBuy,
+    required double valueUsd,
+    String title = '',
+    String amountLabel = '',
+    String? feeLabel,
+    String source = 'unknown',
+  }) {
+    return AiActionSummary(
+      kind: AiActionKind.cexOrder,
+      title: title,
+      amountLabel: amountLabel,
+      valueUsd: valueUsd,
+      isBuy: isBuy,
+      feeLabel: feeLabel,
+      venue: exchangeId.trim().toLowerCase(),
+      assetSymbol: _baseAsset(symbol),
+      source: source,
+    );
+  }
+
   /// Why the AI may not place this order on its own, or null if it may.
   String? _aiMandateBlock({
     required AiControlSettings settings,
@@ -99,14 +151,24 @@ class ExchangeOrderService {
     return s;
   }
 
-  /// Places a spot market order on a connected CEX
+  /// Places a spot market order on a connected CEX.
+  ///
+  /// [source] 'ui' is the user's own order from the trade window: it works
+  /// in every AI mode, also in «Советник» (the PIN is asked in the window).
+  /// Any other source is the AI's own order: it needs [aiGate], a live
+  /// decision from [AiActionGate.confirm] issued for this very order, and
+  /// stays within the AI permissions, «AI Мандат» and the daily limit.
+  ///
+  /// Every order the exchange answered is saved to
+  /// [ExchangeOrderHistoryStore]; the result carries its `historyId`.
   Future<ExchangeOrderResult> placeMarketOrder({
     required String exchangeId,
     required String symbol,
     required bool isBuy,
     required double amount,
     required double price,
-    String source = 'ui',
+    String source = userSource,
+    AiGateDecision? aiGate,
   }) async {
     final id = exchangeId.toLowerCase();
     final adapter = _adapters[id];
@@ -118,8 +180,12 @@ class ExchangeOrderService {
             ? 'guarded'
             : 'fullAutonomy';
 
-    if (mode == AiMode.manual) {
-      const msg = 'Blocked: JARVIS is in Manual Mode.';
+    // Orders the AI places itself (voice / chat / automation — the trade
+    // window passes 'ui') are bound by the AI rules below.
+    final isAiOrder = isAiSource(source);
+    final txValueUsdt = isBuy ? amount : amount * price;
+
+    Future<ExchangeOrderResult> blocked(String msg) async {
       await MarketMemoryService.instance.record(
         action: isBuy ? 'buy' : 'sell',
         symbol: symbol,
@@ -132,6 +198,27 @@ class ExchangeOrderService {
         rawInput: 'CEX spot order on $exchangeId',
       );
       return ExchangeOrderResult(isSuccess: false, errorMessage: msg);
+    }
+
+    if (isAiOrder) {
+      // «Советник»: the AI only advises. The user's own orders still work.
+      if (mode == AiMode.manual) {
+        return blocked('Blocked: the AI only advises in «Advisor» mode.');
+      }
+      // Defense in depth: no AI order without the gate's confirmation for
+      // exactly this order (the card + PIN, or the no-PIN rules).
+      final summary = aiOrderSummary(
+        exchangeId: id,
+        symbol: symbol,
+        isBuy: isBuy,
+        valueUsd: txValueUsdt,
+        source: source,
+      );
+      final gate = aiGate;
+      if (gate == null || !gate.mayExecute || !gate.matches(summary)) {
+        return blocked(
+            'Blocked: AI order without a matching confirmation (AI action gate).');
+      }
     }
 
     if (adapter == null) {
@@ -183,30 +270,18 @@ class ExchangeOrderService {
       // 2. Normalize Symbol (e.g., VIM/USDT -> VIMUSDT)
       final normSymbol = normalizeSpotSymbol(symbol, quote: quoteAsset);
 
-      // 3. Policy Limit Gate Check (Kill Switch, Daily Limit, Per-Tx Limit)
-      if (!settings.isActive) {
-        const msg = 'Blocked by AI Policy: JARVIS trading is disabled (Kill Switch active or permissions expired).';
-        await MarketMemoryService.instance.record(
-          action: isBuy ? 'buy' : 'sell',
-          symbol: symbol,
-          source: source,
-          aiMode: modeStr,
-          result: 'blocked',
-          amount: amount,
-          priceThen: price,
-          reason: msg,
-          rawInput: 'CEX spot order on $exchangeId',
-        );
-        return ExchangeOrderResult(isSuccess: false, errorMessage: msg);
+      // 3. Policy Limit Gate Check (Kill Switch, Daily Limit, Per-Tx Limit).
+      // AI permissions (mode, kill switch, expiry) bind the AI's own orders
+      // only: the user's own window order works in every mode.
+      if (isAiOrder && !settings.isActive) {
+        return blocked(
+            'Blocked by AI Policy: JARVIS trading is disabled (Kill Switch active or permissions expired).');
       }
 
-      final txValueUsdt = isBuy ? amount : amount * price;
       final delegation = DelegationController.instance;
 
-      // Orders the AI places itself (voice/chat/automation — the trade window
-      // passes 'ui') are bound by the AI mandate, which the assistant presents
-      // as active. It used to be checked nowhere on this path.
-      final isAiOrder = source != 'ui';
+      // The AI's own orders are bound by the AI mandate, which the
+      // assistant presents as active.
       if (isAiOrder) {
         final mandateBlock = _aiMandateBlock(
           settings: settings,
@@ -215,41 +290,16 @@ class ExchangeOrderService {
           isBuy: isBuy,
           valueUsdt: txValueUsdt,
         );
-        if (mandateBlock != null) {
-          await MarketMemoryService.instance.record(
-            action: isBuy ? 'buy' : 'sell',
-            symbol: symbol,
-            source: source,
-            aiMode: modeStr,
-            result: 'blocked',
-            amount: amount,
-            priceThen: price,
-            reason: mandateBlock,
-            rawInput: 'CEX spot order on $exchangeId',
-          );
-          return ExchangeOrderResult(isSuccess: false, errorMessage: mandateBlock);
-        }
+        if (mandateBlock != null) return blocked(mandateBlock);
       }
 
       // Daily budget: buys always; the AI's own sells too (selling the whole
       // balance used to be unlimited).
       if (isBuy || isAiOrder) {
         if (!delegation.canSpend(txValueUsdt)) {
-          final msg = 'Blocked by AI Policy: Order value (\$${txValueUsdt.toStringAsFixed(2)}) exceeds remaining daily budget. ${delegation.usageSummary()}';
-          await MarketMemoryService.instance.record(
-            action: isBuy ? 'buy' : 'sell',
-            symbol: symbol,
-            source: source,
-            aiMode: modeStr,
-            result: 'blocked',
-            amount: amount,
-            priceThen: price,
-            reason: msg,
-            rawInput: 'CEX spot order on $exchangeId',
-          );
-          return ExchangeOrderResult(isSuccess: false, errorMessage: msg);
+          return blocked(
+              'Blocked by AI Policy: Order value (\$${txValueUsdt.toStringAsFixed(2)}) exceeds remaining daily budget. ${delegation.usageSummary()}');
         }
-
       }
 
       // 4. Check Symbol Rules & Existence
@@ -389,11 +439,60 @@ class ExchangeOrderService {
         rawInput: 'CEX spot order on $exchangeId',
       );
 
-      return result;
+      // 8. The order goes into the common transaction history («Биржа»).
+      final historyId = await _recordHistory(
+        exchangeId: id,
+        baseAsset: baseAsset.isNotEmpty ? baseAsset : _baseAsset(symbol),
+        quoteAsset: quoteAsset,
+        isBuy: isBuy,
+        amount: amount,
+        price: price,
+        byAi: isAiOrder,
+        result: result,
+      );
+
+      return result.withHistoryId(historyId);
     } catch (e) {
       final msg = 'Execution error: $e';
       _log.e(msg);
       return ExchangeOrderResult(isSuccess: false, errorMessage: msg);
+    }
+  }
+
+  Future<String?> _recordHistory({
+    required String exchangeId,
+    required String baseAsset,
+    required String quoteAsset,
+    required bool isBuy,
+    required double amount,
+    required double price,
+    required bool byAi,
+    required ExchangeOrderResult result,
+  }) async {
+    try {
+      final entry = await ExchangeOrderHistoryStore.instance.record(
+        exchange: exchangeId,
+        symbol: baseAsset,
+        quote: quoteAsset,
+        isBuy: isBuy,
+        amount: amount,
+        price: result.isSuccess && result.executedPrice > 0
+            ? result.executedPrice
+            : price,
+        executedQty: result.isSuccess ? result.executedQty : 0,
+        status: !result.isSuccess
+            ? ExchangeOrderRecord.statusFailed
+            : (result.executedQty > 0
+                ? ExchangeOrderRecord.statusFilled
+                : ExchangeOrderRecord.statusPlaced),
+        byAi: byAi,
+        orderId: result.orderId,
+        error: result.isSuccess ? null : result.errorMessage,
+      );
+      return entry.id;
+    } catch (e) {
+      _log.w('Order history write failed: $e');
+      return null;
     }
   }
 }

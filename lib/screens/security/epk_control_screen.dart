@@ -5,6 +5,7 @@ import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/screens/security/policy_limits_screen.dart';
+import 'package:ibiti_guardian/screens/vault/vault_unlock_screen.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 
@@ -87,6 +88,51 @@ class _EPKControlScreenState extends State<EPKControlScreen> {
     if (address.isEmpty) return 'Not initialized';
     if (address.length <= 12) return address;
     return '${address.substring(0, 6)}...${address.substring(address.length - 4)}';
+  }
+
+  /// Pausing EPK switches protection off, so it needs PIN / biometrics (as
+  /// in Policy). Resuming, creating and revoking the agent tighten: no PIN.
+  Future<bool> _authorizeLoosening() async {
+    if (!mounted) return false;
+    return VaultUnlockScreen.requireAuth(context, forceSetup: true);
+  }
+
+  Future<void> _pauseWithPin() async {
+    if (await _authorizeLoosening()) {
+      await _epkService.emergencyPause();
+    }
+  }
+
+  Future<bool> _confirmDanger(String title, String body) async {
+    final t = LocalizationService.instance;
+    return await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            backgroundColor: GuardianColors.surface,
+            title: Row(children: [
+              const Icon(Icons.warning_amber_rounded,
+                  color: GuardianColors.danger, size: 22),
+              const SizedBox(width: 8),
+              Expanded(
+                  child: Text(title,
+                      style:
+                          GuardianTextStyles.headline.copyWith(fontSize: 18))),
+            ]),
+            content: Text(body, style: GuardianTextStyles.bodySecondary),
+            actions: [
+              TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: Text(t.t('policyEditCancel'))),
+              FilledButton(
+                style: FilledButton.styleFrom(
+                    backgroundColor: GuardianColors.danger),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: Text(t.t('aiControlConfirm')),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────
@@ -177,11 +223,15 @@ class _EPKControlScreenState extends State<EPKControlScreen> {
                   color: epk.isActive
                       ? GuardianColors.warning
                       : GuardianColors.success,
-                  onTap: () => epk.isDeployed
-                      ? (epk.isActive
-                          ? _epkService.emergencyPause()
-                          : _epkService.resumeProtection())
-                      : _epkService.createPolicy(),
+                  onTap: () async {
+                    if (!epk.isDeployed) {
+                      await _epkService.createPolicy();
+                    } else if (!epk.isActive) {
+                      await _epkService.resumeProtection();
+                    } else {
+                      await _pauseWithPin();
+                    }
+                  },
                 ),
               ],
             ),
@@ -294,7 +344,14 @@ class _EPKControlScreenState extends State<EPKControlScreen> {
                       LocalizationService.instance.t('epkPauseActionDesc'),
                       style: GuardianTextStyles.bodySecondary
                           .copyWith(fontSize: 12)),
-                  onTap: () => _epkService.emergencyPause(),
+                  onTap: () async {
+                    final t = LocalizationService.instance;
+                    final ok = await _confirmDanger(
+                      t.t('epkDangerPauseTitle'),
+                      t.t('epkDangerPauseDesc'),
+                    );
+                    if (ok) await _pauseWithPin();
+                  },
                 ),
                 if (epk.agentAddress != null) ...[
                   Divider(
@@ -311,7 +368,16 @@ class _EPKControlScreenState extends State<EPKControlScreen> {
                         LocalizationService.instance.t('epkRevokeAgentDesc'),
                         style: GuardianTextStyles.bodySecondary
                             .copyWith(fontSize: 12)),
-                    onTap: () => _epkService.revokeAgent(),
+                    // Tightens protection: a confirmation, no PIN (as in
+                    // Policy).
+                    onTap: () async {
+                      final t = LocalizationService.instance;
+                      final ok = await _confirmDanger(
+                        t.t('epkDangerRevokeTitle'),
+                        t.t('epkDangerRevokeConfirmDesc'),
+                      );
+                      if (ok) await _epkService.revokeAgent();
+                    },
                   ),
                 ],
               ]),

@@ -16,9 +16,10 @@ import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 ///
 /// SAFETY CONTRACT (never violated):
 /// - All trigger results are evaluated against current [AiMode] and [AutonomyMandate].
-/// - Manual mode → notifyOnly regardless of [AutomationTrigger.requestedAction].
-/// - Guarded mode → max [TriggerAction.preparePlan].
-/// - Full Autonomy → execution allowed, but always routes through
+/// - «Советник» (Advisor, AiMode.manual) → notifyOnly regardless of
+///   [AutomationTrigger.requestedAction].
+/// - «Ручной» (Manual, AiMode.guarded) → max [TriggerAction.preparePlan].
+/// - «Автономный» (Autonomous) → execution allowed, but always routes through
 ///   [MarketPolicyGate] → [GuardianPolicyEngine] → EPK (same path as manual trades).
 /// - This engine NEVER creates its own execution path.
 /// - All decisions (fired, blocked, skipped) are logged as [ExecutionSource.automation].
@@ -378,9 +379,9 @@ class AutomationEngine extends ChangeNotifier {
 
   /// Caps the requested action to what the current mode permits.
   ///
-  /// Manual → notifyOnly always.
-  /// Guarded → max preparePlan.
-  /// Full → execute allowed.
+  /// «Советник» (manual) → notifyOnly always.
+  /// «Ручной» (guarded) → max preparePlan.
+  /// «Автономный» (fullAutonomy) → execute allowed.
   TriggerAction _capAction(TriggerAction requested, AiMode mode) {
     return switch (mode) {
       AiMode.manual => TriggerAction.notifyOnly,
@@ -408,13 +409,13 @@ class AutomationEngine extends ChangeNotifier {
           'AUTOMATION_PLAN',
           'automation_plan',
           '[${result.trigger.label}] ${result.reason} '
-              '\u2192 Plan prepared (Guarded mode).',
+              '\u2192 Plan prepared for your confirmation.',
         ),
       TriggerAction.execute => (
           'AUTOMATION_EXEC_QUEUED',
           'automation_exec_queued',
           '[${result.trigger.label}] ${result.reason} '
-              '\u2192 Dispatched to execution queue (Full Autonomy).',
+              '\u2192 Dispatched to execution queue (Autonomous mode).',
         ),
     };
 

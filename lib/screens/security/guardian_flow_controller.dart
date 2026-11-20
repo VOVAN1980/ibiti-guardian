@@ -145,6 +145,10 @@ class GuardianFlowController extends ChangeNotifier {
   int _scanGeneration = 0;
   bool _disposed = false;
 
+  /// Called once when the queue started by [confirmAction] has an answer for
+  /// every job (submitted or failed).
+  void Function(RevokeProgress result)? _onFinished;
+
   bool isCritical(ApprovalData a) {
     final isUnlimited = a.allowance > BigInt.from(1000000000);
     return a.assessment.shouldRevoke ||
@@ -190,6 +194,7 @@ class GuardianFlowController extends ChangeNotifier {
     _disposed = true;
     _scanGeneration++;
     _progressSub?.cancel();
+    _onFinished = null;
     super.dispose();
   }
 
@@ -295,15 +300,32 @@ class GuardianFlowController extends ChangeNotifier {
     notifyListeners();
   }
 
-  void confirmAction() {
-    if (model.state != GuardianFlowState.readyReview) return;
-    if (model.mode == GuardianMode.safe && model.selected.isEmpty) return;
-    if (model.mode == GuardianMode.panic && model.critical.isEmpty) return;
+  /// Starts revoking the reviewed approvals. [onFinished] runs once, when
+  /// every job of the queue has an answer (an AI-opened window reports the
+  /// result to AiActionGate with it). Returns false when nothing started
+  /// (not in review, or nothing to revoke).
+  bool confirmAction({void Function(RevokeProgress result)? onFinished}) {
+    if (_disposed) return false;
+    if (model.state != GuardianFlowState.readyReview) return false;
+    if (model.mode == GuardianMode.safe && model.selected.isEmpty) {
+      return false;
+    }
+    if (model.mode == GuardianMode.panic && model.critical.isEmpty) {
+      return false;
+    }
 
+    _onFinished = onFinished;
     model = model.copyWith(state: GuardianFlowState.queuePrepared);
     notifyListeners();
 
     _startQueue();
+    return true;
+  }
+
+  void _finish(RevokeProgress result) {
+    final callback = _onFinished;
+    _onFinished = null;
+    callback?.call(result);
   }
 
   void _startQueue() {
@@ -344,6 +366,7 @@ class GuardianFlowController extends ChangeNotifier {
 
       if (p.completed == p.total && p.total > 0) {
         _recordAfterRevoke();
+        _finish(p);
         Future.delayed(const Duration(milliseconds: 600), () {
           model = model.copyWith(state: GuardianFlowState.completed);
           notifyListeners();
@@ -358,6 +381,12 @@ class GuardianFlowController extends ChangeNotifier {
           state: GuardianFlowState.failed,
           error: 'Failed to start transaction queue: $e');
       notifyListeners();
+      _finish(RevokeProgress(
+        total: queue.length,
+        completed: 0,
+        successCount: 0,
+        failedCount: queue.length,
+      ));
     }
   }
 }

@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:ibiti_guardian/screens/vault/vault_unlock_screen.dart';
+import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 import 'package:ibiti_guardian/theme/guardian_colors.dart';
 import 'package:ibiti_guardian/theme/guardian_text_styles.dart';
 import 'package:ibiti_guardian/widgets/guardian_glass_card.dart';
@@ -33,6 +36,21 @@ class GuardianControlScreen extends StatefulWidget {
     final opMode = mode == 'panic' ? GuardianMode.panic : GuardianMode.safe;
     return _openLiveModal(context, opMode, triggeredByAi: true);
   }
+
+  /// Opened by the user's own voice macro («эвакуация»): the user's window,
+  /// with the normal revoke button, in every AI mode.
+  static Future<void> showUserModal(
+    BuildContext context, {
+    required String mode,
+  }) {
+    final opMode = mode == 'panic' ? GuardianMode.panic : GuardianMode.safe;
+    return _openLiveModal(context, opMode);
+  }
+
+  /// Tests: stands for the PIN / biometrics prompt of a revoke in a window
+  /// the AI opened (true = confirmed).
+  @visibleForTesting
+  static Future<bool> Function()? debugAuthOverride;
 
   @override
   State<GuardianControlScreen> createState() => _GuardianControlScreenState();
@@ -229,6 +247,19 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
   int _visualStep = 0;
   bool _isCatchingUp = false;
 
+  // ── Revoke in a window the AI opened (owner decision D11) ──────────────────
+  /// A revoke tap is waiting for the PIN or the AI card.
+  bool _confirmingRevoke = false;
+
+  /// Why an AI-opened revoke did not start (shown above the button).
+  String? _revokeNote;
+
+  /// «Автономный»: the gate's decision for the running revoke queue. It is
+  /// reported to AiActionGate when the queue finishes, and released if the
+  /// window closes first.
+  AiActionSummary? _gateSummary;
+  AiGateDecision? _gateDecision;
+
   @override
   void initState() {
     super.initState();
@@ -279,6 +310,10 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
 
   @override
   void dispose() {
+    final pending = _gateDecision;
+    _gateDecision = null;
+    _gateSummary = null;
+    if (pending != null) AiActionGate.instance.release(pending);
     _controller.removeListener(_updateVisualStep);
     AiControlService.instance.removeListener(_onAiModeChanged);
     _pulseCtrl.dispose();
@@ -310,13 +345,155 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
     };
   }
 
+  /// «Советник» (AiMode.manual): a window the AI opened is review only.
   bool get _isAiManualMode =>
       widget.triggeredByAi &&
       AiControlService.instance.settings.mode == AiMode.manual;
 
-  bool get _isAiGuardedMode =>
-      widget.triggeredByAi &&
-      AiControlService.instance.settings.mode == AiMode.guarded;
+  /// A revoke in a window the AI opened asks the PIN: always in «Ручной»
+  /// (AiMode.guarded), in «Автономный» while «Подтверждать действия ИИ
+  /// ПИН-кодом» is on.
+  bool get _aiRevokeAsksPin {
+    if (!widget.triggeredByAi) return false;
+    final s = AiControlService.instance.settings;
+    return s.mode == AiMode.guarded ||
+        (s.mode == AiMode.fullAutonomy && s.pinRequiredForAi);
+  }
+
+  /// The revoke button. Opened by the user: the tap is the confirmation, as
+  /// always. Opened by the AI (D11): «Советник» = review only (the button is
+  /// off); «Ручной» = the tap + PIN; «Автономный» = AiActionGate (the card +
+  /// PIN, or no PIN when the AI PIN setting is off). An EPK pause, expired AI
+  /// permissions, limits and the mandate never block it: revoking only
+  /// lowers allowances.
+  Future<void> _onRevokePressed() async {
+    if (!widget.triggeredByAi) {
+      _controller.confirmAction();
+      return;
+    }
+    if (_confirmingRevoke) return;
+    setState(() {
+      _confirmingRevoke = true;
+      _revokeNote = null;
+    });
+    try {
+      await _confirmAiRevoke();
+    } finally {
+      if (mounted) setState(() => _confirmingRevoke = false);
+    }
+  }
+
+  Future<void> _confirmAiRevoke() async {
+    switch (AiControlService.instance.settings.mode) {
+      case AiMode.manual:
+        return;
+      case AiMode.guarded:
+        if (await _requirePin() && mounted) _controller.confirmAction();
+        return;
+      case AiMode.fullAutonomy:
+        break;
+    }
+
+    final gate = AiActionGate.instance;
+    final summary = _revokeSummary();
+    final d = await gate.confirm(summary, context: context);
+    if (!mounted) {
+      gate.release(d);
+      return;
+    }
+    switch (d.outcome) {
+      case AiGateOutcome.execute:
+        if (!d.matches(summary)) {
+          gate.release(d);
+          setState(() => _revokeNote = LocalizationService.instance.t(
+              'aiGateCardTimeout',
+              {'default': 'The confirmation expired. Nothing was done.'}));
+          return;
+        }
+        _gateSummary = summary;
+        _gateDecision = d;
+        if (!_controller.confirmAction(onFinished: _reportAiRevoke)) {
+          _gateSummary = null;
+          _gateDecision = null;
+          gate.release(d);
+        }
+      case AiGateOutcome.prepareOnly:
+      case AiGateOutcome.busy:
+      case AiGateOutcome.unavailable:
+        // The mode dropped to «Ручной» meanwhile, another AI operation holds
+        // the lock, or the card could not be shown. The user is here and
+        // tapped revoke, so the PIN decides, as in «Ручной».
+        if (await _requirePin() && mounted) _controller.confirmAction();
+      case AiGateOutcome.adviseOnly:
+      case AiGateOutcome.blocked:
+      case AiGateOutcome.cancelled:
+        setState(() => _revokeNote = d.reason);
+    }
+  }
+
+  Future<bool> _requirePin() async {
+    final hook = GuardianControlScreen.debugAuthOverride;
+    if (hook != null) return hook();
+    if (!mounted) return false;
+    return VaultUnlockScreen.requireAuth(context, forceSetup: true);
+  }
+
+  /// What the AI card shows for this revoke.
+  AiActionSummary _revokeSummary() {
+    final m = _controller.model;
+    final n =
+        (widget.mode == GuardianMode.safe ? m.selected : m.critical).length;
+    final t = LocalizationService.instance;
+    String? network;
+    try {
+      network = WalletAdapter.instance.chainKey;
+    } catch (_) {
+      network = null;
+    }
+    return AiActionSummary(
+      kind: AiActionKind.revoke,
+      title: t.t('aiRevokeTitle',
+          {'count': '$n', 'default': 'Revoke approvals ($n)'}),
+      amountLabel:
+          t.t('aiRevokeAmount', {'count': '$n', 'default': '$n approvals'}),
+      valueUsd: 0,
+      feeLabel: t.t('aiRevokeFee',
+          {'default': 'A small network fee for each revoke'}),
+      network: network,
+      source: 'ui',
+    );
+  }
+
+  /// The queue of an AI-gated revoke finished: audit + «ИИ выполнил: …».
+  /// The System status card is updated by the flow controller, as before.
+  void _reportAiRevoke(RevokeProgress result) {
+    final s = _gateSummary;
+    final d = _gateDecision;
+    _gateSummary = null;
+    _gateDecision = null;
+    if (s == null || d == null) return;
+    String? hash;
+    for (final job in TransactionQueue().currentJobs) {
+      final h = job.txHash;
+      if (h != null && h.isNotEmpty) {
+        hash = h;
+        break;
+      }
+    }
+    final done = '${result.successCount}';
+    final failed = '${result.failedCount}';
+    unawaited(AiActionGate.instance.reportExecuted(
+      s,
+      d,
+      success: result.successCount > 0,
+      detail: LocalizationService.instance.t('aiRevokeResult', {
+        'done': done,
+        'failed': failed,
+        'default': 'revoked $done, failed $failed',
+      }),
+      historyId: hash,
+    ));
+  }
 
   List<String> _stepLabels(BuildContext context) {
     final t = LocalizationProvider.of(context);
@@ -478,17 +655,23 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
                     ),
                     if (widget.triggeredByAi) ...[
                       const SizedBox(width: 10),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: GuardianColors.accent.withOpacity(0.15),
-                          borderRadius: BorderRadius.circular(10),
+                      // Flexible: «AI · Автономный» must not push the row off
+                      // a narrow phone screen.
+                      Flexible(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: GuardianColors.accent.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text('AI · ${_aiModeLabel(context)}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GuardianTextStyles.titleMedium.copyWith(
+                                  color: GuardianColors.accent,
+                                  fontWeight: FontWeight.bold)),
                         ),
-                        child: Text('AI · ${_aiModeLabel(context)}',
-                            style: GuardianTextStyles.titleMedium.copyWith(
-                                color: GuardianColors.accent,
-                                fontWeight: FontWeight.bold)),
                       ),
                     ],
                   ],
@@ -691,44 +874,60 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
 
     if (state == GuardianFlowState.readyReview) {
       final bool manualReviewOnly = _isAiManualMode;
-      final bool guardedReview = _isAiGuardedMode;
+      final bool asksPin = _aiRevokeAsksPin;
+      final selectedCount = m.selected.length.toString();
+      final criticalCount = m.critical.length.toString();
       final btnColor = manualReviewOnly
           ? GuardianColors.glassBorder
           : (m.hasActionableItems ? _modeColor : GuardianColors.glassBorder);
       final btnText = manualReviewOnly
-          ? t.t('guardianBtnManualReview')
-          : guardedReview
+          ? t.t('guardianBtnAdvisorReview',
+              {'default': 'Advisor: review only'})
+          : asksPin
               ? (widget.mode == GuardianMode.safe
-                  ? t.t('guardianBtnGuardedSafe',
-                      {'count': m.selected.length.toString()})
-                  : t.t('guardianBtnGuardedPanic',
-                      {'count': m.critical.length.toString()}))
+                  ? t.t('guardianBtnPinRevokeSafe', {
+                      'count': selectedCount,
+                      'default': 'Revoke selected with PIN ($selectedCount)',
+                    })
+                  : t.t('guardianBtnPinRevokePanic', {
+                      'count': criticalCount,
+                      'default': 'Revoke critical with PIN ($criticalCount)',
+                    }))
               : widget.mode == GuardianMode.safe
-                  ? t.t('guardianBtnRevokeSelected',
-                      {'count': m.selected.length.toString()})
-                  : t.t('guardianBtnRevokeCritical',
-                      {'count': m.critical.length.toString()});
+                  ? t.t('guardianBtnRevokeSelected', {'count': selectedCount})
+                  : t.t('guardianBtnRevokeCritical', {'count': criticalCount});
+      final note = _revokeNote;
 
       return SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-          child: ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: btnColor,
-              padding: const EdgeInsets.symmetric(vertical: 20),
-              shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(16)),
-            ),
-            onPressed: manualReviewOnly
-                ? null
-                : (m.hasActionableItems
-                    ? () => _controller.confirmAction()
-                    : null),
-            child: Text(btnText,
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18)),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (note != null) ...[
+                Text(note,
+                    textAlign: TextAlign.center,
+                    style: GuardianTextStyles.bodySecondary
+                        .copyWith(fontSize: 14)),
+                const SizedBox(height: 12),
+              ],
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: btnColor,
+                  padding: const EdgeInsets.symmetric(vertical: 20),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16)),
+                ),
+                onPressed: manualReviewOnly || _confirmingRevoke
+                    ? null
+                    : (m.hasActionableItems ? _onRevokePressed : null),
+                child: Text(btnText,
+                    style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18)),
+              ),
+            ],
           ),
         ),
       );

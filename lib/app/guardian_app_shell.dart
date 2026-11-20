@@ -37,6 +37,12 @@ import 'package:ibiti_guardian/screens/dapp/dapp_browser_screen.dart';
 class GuardianAppShell extends StatefulWidget {
   final int initialIndex;
   const GuardianAppShell({super.key, this.initialIndex = 0});
+
+  /// How many main screens are mounted (normally one). Notification taps
+  /// wait for it, so they never open anything over the unlock screen.
+  static int _mountedCount = 0;
+  static bool get isMounted => _mountedCount > 0;
+
   @override
   State<GuardianAppShell> createState() => _GuardianAppShellState();
 }
@@ -84,6 +90,7 @@ class _GuardianAppShellState extends State<GuardianAppShell>
   @override
   void initState() {
     super.initState();
+    GuardianAppShell._mountedCount++;
     _currentIndex = widget.initialIndex.clamp(0, _screens.length - 1);
     ScreenContextService.instance.setScreen(_screenNames[_currentIndex]);
     AutomationEngine.instance.start();
@@ -134,6 +141,7 @@ class _GuardianAppShellState extends State<GuardianAppShell>
 
   @override
   void dispose() {
+    GuardianAppShell._mountedCount--;
     DappLinkService.instance.detach();
     _cmdSub?.cancel();
     _bubbleOverlay?.remove();
@@ -208,7 +216,7 @@ class _GuardianAppShellState extends State<GuardianAppShell>
           }
 
         case UICommandType.openModal:
-          _openModal(cmd.target ?? '');
+          _openModal(cmd.target ?? '', cmdPayload: cmd.payload);
           _updateBubbleVisibility();
 
         case UICommandType.dismiss:
@@ -266,10 +274,12 @@ class _GuardianAppShellState extends State<GuardianAppShell>
   }
 
   /// Opens the correct modal / screen for the given [target] string.
+  /// [cmdPayload] is the payload of THIS command (not the latest one on the
+  /// bus, which another command may already have replaced).
   ///
   /// Uses `useRootNavigator: true` so the sheet always appears on top of the
   /// current tab, regardless of which screen is active.
-  void _openModal(String target) {
+  void _openModal(String target, {Map<String, dynamic>? cmdPayload}) {
     if (!mounted) return;
     final ctx = context;
 
@@ -277,11 +287,15 @@ class _GuardianAppShellState extends State<GuardianAppShell>
     AssistantSessionContext.instance.setOpenModal(target);
 
     switch (target) {
+      // A window opened by the user's own macro is the user's window; the
+      // model can't set 'byUserMacro' (stripped from its commands).
       case 'safe':
-        GuardianControlScreen.showAiModal(ctx, mode: 'safe');
-
       case 'panic':
-        GuardianControlScreen.showAiModal(ctx, mode: 'panic');
+        if (cmdPayload?['byUserMacro'] == true) {
+          GuardianControlScreen.showUserModal(ctx, mode: target);
+        } else {
+          GuardianControlScreen.showAiModal(ctx, mode: target);
+        }
 
       case 'wallet_receive':
         // Navigate to wallet tab first, then open receive modal.
@@ -304,7 +318,11 @@ class _GuardianAppShellState extends State<GuardianAppShell>
         });
 
       case 'cex_trade':
-        final payload = UICommandBus.instance.latestPayload('cex_trade');
+        // The command's own payload: commands run after the frame, so two
+        // cex_trade commands in one frame (e.g. a gated order's result and
+        // another order window) used to both open with the last payload.
+        final payload =
+            cmdPayload ?? UICommandBus.instance.latestPayload('cex_trade');
         if (payload != null) {
           final symbol = payload['symbol']?.toString().toUpperCase() ?? 'SOL';
           final isBuy = payload['isBuy'] as bool? ?? true;
@@ -369,6 +387,23 @@ class _GuardianAppShellState extends State<GuardianAppShell>
             Navigator.of(context, rootNavigator: true).push(
               MaterialPageRoute(
                 builder: (_) => const WalletTransactionHistoryScreen(),
+              ),
+            );
+          }
+        });
+
+      case 'ai_action':
+        // Tap on «ИИ выполнил: …»: every AI operation (exchange orders too)
+        // is in the transaction history. cmdPayload['historyId'] names the
+        // entry (an exchange order id or a tx hash); the history opens it.
+        final historyId = cmdPayload?['historyId']?.toString();
+        if (_currentIndex != 3) setState(() => _currentIndex = 3);
+        Future.delayed(const Duration(milliseconds: 120), () {
+          if (mounted) {
+            Navigator.of(context, rootNavigator: true).push(
+              MaterialPageRoute(
+                builder: (_) =>
+                    WalletTransactionHistoryScreen(focusId: historyId),
               ),
             );
           }

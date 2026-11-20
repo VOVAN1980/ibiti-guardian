@@ -28,8 +28,9 @@ import 'package:ibiti_guardian/services/swap/jupiter_swap_provider.dart';
 import 'package:ibiti_guardian/services/swap/sunswap_provider.dart';
 import 'package:ibiti_guardian/services/audit_log_service.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
-import 'package:ibiti_guardian/services/execution/tx_status_poller.dart';
-import 'package:ibiti_guardian/models/tx_status.dart';
+import 'package:ibiti_guardian/services/execution/ai_onchain_executor.dart';
+import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
+import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/config/privy_chain_registry.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/policy/tx_usd_valuer.dart';
@@ -216,55 +217,29 @@ class GuardianExecutionController {
         policy: policy,
       );
 
-      switch (decision.verdict) {
-        case SandboxVerdict.approvedForAuto:
-          // Reserve daily budget BEFORE execution (atomic lock).
-          final reservationKey = _delegation.generateReservationKey(tx);
-          final txAmount = tx.amount ?? 0.0;
-          if (txAmount > 0) {
-            final reserved = _delegation.reserveSpend(reservationKey, txAmount);
-            if (reserved == null) {
-              return AssistantResponse.error(
-                'Daily limit would be exceeded. ${_delegation.usageSummary()}',
-                intent: intent,
-              );
-            }
-          }
-
-          // Dispatch the transaction.
-          final executionResult =
-              await _executor.dispatchConfiguredPath(tx, path);
-
-          // If dispatch itself failed (no hash returned), rollback.
-          if (executionResult.type == ResponseType.error) {
-            _delegation.rollbackReservation(reservationKey);
-          } else if (txAmount > 0) {
-            // Wire TxStatusPoller: commit on confirmed, rollback on failed/timeout.
-            _wireReservationToReceipt(
-                reservationKey, executionResult.detail, tx);
-          }
-
-          return AssistantResponse(
-            message:
-                '🤖 Automated Action Succeeded:\n${executionResult.message}\n(Sandbox: ${decision.reason})',
-            type: ResponseType.action,
-            sourceIntent: intent,
-            executionPath: path,
-          );
-
-        case SandboxVerdict.requireManualReview:
-          // Agent attempted action, but sandbox deemed it too risky for auto.
-          // Demote back to the standard User Preview.
-          final explanation = TransactionExplainer.explainV3(
-              tx, staticSim, rpcSim, policy, profile, path);
-          return AssistantResponse.preview(
+      // Agent attempted the action but it needs the user's eyes: demote back
+      // to the standard user preview (no block, just UI confirmation).
+      AssistantResponse demoteToPreview() => AssistantResponse.preview(
             transaction: tx,
-            explanation: explanation,
-            policy:
-                policy, // We explicitly don't block, we just require UI confirm
+            explanation: TransactionExplainer.explainV3(
+                tx, staticSim, rpcSim, policy, profile, path),
+            policy: policy,
             rpcSimulation: rpcSim,
             executionPath: path,
           );
+
+      switch (decision.verdict) {
+        case SandboxVerdict.approvedForAuto:
+          return _runApprovedAutomation(
+            tx: tx,
+            path: path,
+            intent: intent,
+            sandboxReason: decision.reason,
+            demote: demoteToPreview,
+          );
+
+        case SandboxVerdict.requireManualReview:
+          return demoteToPreview();
 
         case SandboxVerdict.blocked:
           // Hard block. Do not even show preview.
@@ -308,6 +283,130 @@ class GuardianExecutionController {
       );
     }
   }
+
+  /// Test seam: replaces the dispatch of a sandbox-approved automation.
+  @visibleForTesting
+  Future<AssistantResponse> Function(TransactionRequest tx, ExecutionPath path)?
+      automationDispatchOverride;
+
+  /// A sandbox-approved automated (non-swap) transaction. The AI action gate
+  /// comes FIRST (C2), then the budget reservation, the dispatch and
+  /// [AiActionGate.reportExecuted]. When the gate does not allow it (card
+  /// declined, nobody to ask, another AI action pending) the user reviews
+  /// the [demote]d preview instead.
+  Future<AssistantResponse> _runApprovedAutomation({
+    required TransactionRequest tx,
+    required ExecutionPath path,
+    required IntentData intent,
+    required String sandboxReason,
+    required AssistantResponse Function() demote,
+  }) async {
+    // The AI action gate comes FIRST (C2): a card left open must not
+    // hold a budget reservation, whose TTL would silently free it.
+    // The gate holds the one AI money-action lock until reportExecuted.
+    final summary =
+        AiOnchainExecutor.summaryForTx(tx, source: 'automation');
+    final gate = AiActionGate.instance;
+    final aiDecision = await gate.confirm(summary);
+    if (!aiDecision.mayExecute) {
+      if (aiDecision.outcome == AiGateOutcome.blocked) {
+        return AssistantResponse.error(
+          aiDecision.reason ?? 'Automated task blocked by AI Control.',
+          intent: intent,
+        );
+      }
+      // Cancelled, nobody to ask, another AI action pending, or the
+      // mode only prepares: the user reviews it instead.
+      return demote();
+    }
+    if (!aiDecision.matches(summary)) {
+      gate.release(aiDecision);
+      return AssistantResponse.error(
+        'The AI confirmation does not match this transaction.',
+        intent: intent,
+      );
+    }
+    if (aiDecision.withoutPin) {
+      final noPinBlock = _aiNoPinBlock(tx);
+      if (noPinBlock != null) {
+        gate.release(aiDecision);
+        return AssistantResponse.error(noPinBlock, intent: intent);
+      }
+    }
+
+    // Reserve daily budget BEFORE execution (atomic lock), in dollars
+    // like every other daily-limit check (a token quantity is not $).
+    final reservationKey = _delegation.generateReservationKey(tx);
+    final txAmount = TxUsdValuer.limitAmount(tx);
+    if (txAmount > 0) {
+      final reserved = _delegation.reserveSpend(reservationKey, txAmount);
+      if (reserved == null) {
+        gate.release(aiDecision);
+        return AssistantResponse.error(
+          'Daily limit would be exceeded. ${_delegation.usageSummary()}',
+          intent: intent,
+        );
+      }
+    }
+
+    // Dispatch the transaction.
+    AssistantResponse executionResult;
+    try {
+      executionResult = await (automationDispatchOverride ??
+          _executor.dispatchConfiguredPath)(tx, path);
+    } catch (e) {
+      executionResult =
+          AssistantResponse.error('Send failed: $e', intent: intent);
+    }
+    final dispatched = executionResult.type != ResponseType.error;
+
+    // If dispatch itself failed (no hash returned), rollback.
+    if (!dispatched) {
+      _delegation.rollbackReservation(reservationKey);
+    } else if (txAmount > 0) {
+      // Commit on a confirmed receipt, rollback on failure/timeout.
+      _wireReservationToReceipt(
+          reservationKey, executionResult.detail, tx);
+    }
+
+    try {
+      await gate.reportExecuted(
+        summary,
+        aiDecision,
+        success: dispatched,
+        detail: dispatched
+            ? (executionResult.detail ?? '')
+            : executionResult.message,
+        historyId: dispatched ? executionResult.detail : null,
+      );
+    } catch (e) {
+      _log.w('reportExecuted failed: $e');
+      gate.release(aiDecision);
+    }
+
+    if (!dispatched) return executionResult;
+    return AssistantResponse(
+      message:
+          '🤖 Automated Action Succeeded:\n${executionResult.message}\n(Sandbox: $sandboxReason)',
+      type: ResponseType.action,
+      sourceIntent: intent,
+      executionPath: path,
+    );
+  }
+
+  @visibleForTesting
+  Future<AssistantResponse> runApprovedAutomationForTest(
+    TransactionRequest tx,
+    ExecutionPath path, {
+    required AssistantResponse Function() demote,
+  }) =>
+      _runApprovedAutomation(
+        tx: tx,
+        path: path,
+        intent: tx.sourceIntent,
+        sandboxReason: 'test',
+        demote: demote,
+      );
 
   Future<AssistantResponse> previewTransaction(TransactionRequest tx) async {
     final staticSim = TransactionSimulator.analyze(tx);
@@ -377,9 +476,16 @@ class GuardianExecutionController {
         policy.severity == PolicySeverity.danger;
   }
 
-  /// Execution trigger called ONLY after the UI manual confirmation screen.
+  /// Execution trigger called ONLY after the UI manual confirmation screen,
+  /// or by [AiOnchainExecutor] after [AiActionGate] allowed it.
+  ///
+  /// [requireTrustedTarget]: the AI runs this with no PIN. Right before
+  /// signing, the target must then be trusted (or the user's own address /
+  /// an official swap router), EPK must be on, the network unchanged and the
+  /// USD value known — whatever the policy profile (D6, C4).
   Future<AssistantResponse> orchestrateConfirmation(
-      TransactionRequest tx, ExecutionPath path) async {
+      TransactionRequest tx, ExecutionPath path,
+      {bool requireTrustedTarget = false}) async {
     // ── P0 Safety: Double-execution guard ──────────────────────────────────
     final key = _executionKey(tx);
     if (!_inFlightKeys.add(key)) {
@@ -427,6 +533,13 @@ class GuardianExecutionController {
               '(${expectedPath.name} -> ${resolvedPath.name}). '
               'Please review and confirm again.',
         );
+      }
+
+      if (requireTrustedTarget) {
+        final noPinBlock = _aiNoPinBlock(tx);
+        if (noPinBlock != null) {
+          return _stopBeforeDispatch(tx, 'ai_no_pin', noPinBlock);
+        }
       }
 
       final result = await _executor.dispatchConfiguredPath(tx, resolvedPath);
@@ -780,8 +893,10 @@ class GuardianExecutionController {
   ///
   /// [step] is either [plan.approveStep] or [plan.swapStep].
   /// The UI decides which step to pass based on progression state.
+  /// [requireTrustedTarget]: see [orchestrateConfirmation].
   Future<AssistantResponse> orchestrateSwapStep(
-      TransactionRequest step, ExecutionPath path) async {
+      TransactionRequest step, ExecutionPath path,
+      {bool requireTrustedTarget = false}) async {
     // ── P0 Safety: Double-execution guard ──────────────────────────────────
     final key = _executionKey(step);
     if (!_inFlightKeys.add(key)) {
@@ -863,6 +978,13 @@ class GuardianExecutionController {
         );
       }
 
+      if (requireTrustedTarget) {
+        final noPinBlock = _aiNoPinBlock(step);
+        if (noPinBlock != null) {
+          return _stopBeforeDispatch(step, 'ai_no_pin', noPinBlock);
+        }
+      }
+
       final result =
           await _executor.dispatchConfiguredPath(step, resolvedPath);
       _commitDailyUsage(step, result);
@@ -873,14 +995,18 @@ class GuardianExecutionController {
   }
 
   // ── Reservation → Receipt wiring ─────────────────────────────────────────
-  // Connects TxStatusPoller to DelegationController commit/rollback.
+  // Connects the receipt to DelegationController commit/rollback.
   // On confirmed → commit. On failed/timeout → rollback.
   // This ensures daily limit accurately reflects real on-chain outcomes.
   //
   // Fallback: if we can't poll (no hash / non-EVM), we ROLLBACK to be safe.
   // Reason: committing without proof means the budget is lost on a tx that
-  // may never have reached the chain. The 120s reservation TTL in
+  // may never have reached the chain. The reservation TTL in
   // DelegationController acts as a second safety net.
+  //
+  // The wait is the executor's own receipt loop, not the shared
+  // TxStatusPoller: the next transaction anywhere in the app restarts that
+  // poller, which used to drop the commit (C7).
   void _wireReservationToReceipt(
     String reservationKey,
     String? txHash,
@@ -903,29 +1029,25 @@ class GuardianExecutionController {
       return;
     }
 
-    // EVM: poll for real on-chain receipt.
-    TxStatusPoller.instance.start(
-      txHash: txHash,
-      chainId: tx.chainId,
-      operationLabel: 'Automation: ${tx.typeLabel}',
-      assetLabel: tx.displaySummary,
-      walletAddress: tx.fromAddress,
-      onStatus: (event) {
-        if (!event.isTerminal) {
-          // Heartbeat: keep reservation alive while poller is running.
-          // This prevents adaptive TTL from false-rollback during chain
-          // congestion. As long as poller ticks → reservation lives.
-          _delegation.touchReservation(reservationKey);
-          return;
-        }
-        if (event.status == TxStatus.confirmed) {
-          _delegation.commitReservation(reservationKey);
-        } else {
-          // failed or timeout → return budget
-          _delegation.rollbackReservation(reservationKey);
-        }
-      },
-    );
+    // EVM: wait for the real on-chain receipt. Heartbeats keep the
+    // reservation alive during chain congestion.
+    AiOnchainExecutor.instance
+        .waitForReceipt(
+          tx,
+          txHash,
+          onTick: () => _delegation.touchReservation(reservationKey),
+        )
+        .then((confirmed) {
+      if (confirmed) {
+        _delegation.commitReservation(reservationKey);
+      } else {
+        // failed or timeout → return budget
+        _delegation.rollbackReservation(reservationKey);
+      }
+    }).catchError((Object e) {
+      _log.w('reservation receipt wait failed: $e');
+      _delegation.rollbackReservation(reservationKey);
+    });
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
@@ -1002,9 +1124,10 @@ class GuardianExecutionController {
     final settings = AiControlService.instance.settings;
     if (settings.mode == AiMode.manual) {
       return AssistantResponse(
-        message:
-            'AI execution is locked in Manual mode. Enable Guarded or Full Autonomy in AI Control first.',
-        speechText: 'AI execution is locked. Open AI Control to enable it.',
+        message: 'Advisor mode is on: the AI only advises and will not act. '
+            'To let it act, switch to Manual or Autonomous in AI Control.',
+        speechText: 'Advisor mode: I only advise. Open AI Control to change '
+            'the mode.',
         type: ResponseType.error,
         sourceIntent: intent,
         uiCommands: const [
@@ -1045,6 +1168,109 @@ class GuardianExecutionController {
     if (usd > 0) _delegation.commitUsage(usd);
   }
 
+  // ── AI execution checks (public for AiOnchainExecutor) ─────────────────────
+
+  /// The controller's AI checks for [tx] before anything is shown or signed:
+  /// the daily trading limit, then AI Control (permissions, actions,
+  /// «AI Мандат», trusted scope). Null when the AI may go on.
+  AssistantResponse? aiPreflight(TransactionRequest tx) {
+    return _checkDailyLimit(tx) ??
+        _checkAiTransactionControl(tx, TransactionSimulator.analyze(tx));
+  }
+
+  /// Why the AI may NOT run [tx] without the PIN, or null when it may (D6,
+  /// C4). Applied right before signing, whatever the policy profile:
+  /// - a revoke only lowers an allowance and is never stopped (D11);
+  /// - the network must still be the active one;
+  /// - EPK protection must be on;
+  /// - a send goes only to a trusted address / contract or the user's own
+  ///   address (self, own cards);
+  /// - an approve / swap targets only a trusted contract or an official
+  ///   swap router ([AiActionGate.isOfficialSwapRouter], D12 — one list);
+  /// - a send / swap needs a known USD value (C10).
+  @visibleForTesting
+  static String? aiNoPinBlockReason(
+    TransactionRequest tx, {
+    required PolicyProfile profile,
+    required bool epkActive,
+    required String activeChainKey,
+    Iterable<String> ownAddresses = const [],
+  }) {
+    if (tx.type == TransactionType.revoke) return null;
+    final loc = LocalizationService.instance;
+
+    if (tx.chainKey != activeChainKey) {
+      return loc.t('aiNoPinWrongNetwork', {
+        'default': 'The active network changed. Ask the AI again.',
+      });
+    }
+    if (!epkActive) {
+      return loc.t('aiNoPinEpkPaused', {
+        'default':
+            'EPK protection is paused, so the AI cannot act without the PIN.',
+      });
+    }
+
+    bool listed(List<String> list, String address) =>
+        address.isNotEmpty && list.any((a) => AddressKey.same(a, address));
+    bool trustedContract(String? address) =>
+        address != null &&
+        address.isNotEmpty &&
+        (AiActionGate.isOfficialSwapRouter(address) ||
+            listed(profile.trustedContracts, address));
+    final untrustedContract = loc.t('aiNoPinUntrustedContract', {
+      'default':
+          'Without the PIN the AI works only with trusted contracts and official swap routers.',
+    });
+    final noPrice = loc.t('aiNoPinNoPrice', {
+      'default':
+          'The USD value is unknown, so the AI cannot act without the PIN.',
+    });
+
+    switch (tx.type) {
+      case TransactionType.send:
+        final to = tx.toAddress;
+        final own = AddressKey.same(to, tx.fromAddress) ||
+            ownAddresses.any((a) => a.isNotEmpty && AddressKey.same(a, to));
+        if (!own &&
+            !listed(profile.trustedAddresses, to) &&
+            !listed(profile.trustedContracts, to)) {
+          return loc.t('aiNoPinUntrusted', {
+            'default':
+                'Without the PIN the AI sends only to trusted addresses. Add this address to trusted addresses or confirm with the PIN.',
+          });
+        }
+        if (TxUsdValuer.usdValue(tx) == null) return noPrice;
+        return null;
+      case TransactionType.approve:
+        return trustedContract(tx.spenderAddress) ? null : untrustedContract;
+      case TransactionType.swap:
+        if (!trustedContract(tx.routerAddress ?? tx.toAddress)) {
+          return untrustedContract;
+        }
+        if (TxUsdValuer.usdValue(tx) == null) return noPrice;
+        return null;
+      case TransactionType.revoke:
+        return null;
+      case TransactionType.unknown:
+        return untrustedContract;
+    }
+  }
+
+  String? _aiNoPinBlock(TransactionRequest tx) {
+    final vault = IBITIVaultService.instance;
+    return aiNoPinBlockReason(
+      tx,
+      profile: _profileStore.current,
+      epkActive: EPKPolicyManager.instance.state.isActive,
+      activeChainKey: vault.chainKey,
+      ownAddresses: [
+        vault.addressForChain(tx.chainKey),
+        ...vault.evmCardAddresses,
+      ],
+    );
+  }
+
   AssistantResponse? _checkAiTransactionControl(
     TransactionRequest tx,
     SimulationResult staticSim,
@@ -1055,6 +1281,14 @@ class GuardianExecutionController {
     if (tx.sourceIntent.origin == IntentOrigin.wallet) return null;
 
     final settings = AiControlService.instance.settings;
+
+    // A revoke only lowers an allowance (it moves no money and every
+    // whitelist passes it). Expired AI permissions, the mandate and the
+    // limits never stand between the user and a revoke (D11). A card tap
+    // still needs the dialog + PIN; an AI run goes through AiActionGate,
+    // which asks for the card + PIN when the AI revoke permission is off.
+    if (tx.type == TransactionType.revoke) return null;
+
     if (!settings.isActive) {
       return AssistantResponse.error(
         'AI permissions are off or have expired. Renew them in Security → AI Control.',
@@ -1117,7 +1351,7 @@ class GuardianExecutionController {
         mandate.requireHumanForUnknown &&
         staticSim.flags.contains(SimulationFlag.unknownContract)) {
       return AssistantResponse.error(
-        'Full autonomy is blocked for unknown contracts under the current AI mandate.',
+        'Autonomous mode is blocked for unknown contracts under the current AI mandate.',
         intent: tx.sourceIntent,
       );
     }

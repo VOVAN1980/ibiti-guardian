@@ -693,11 +693,7 @@ class _AiMemoryScreenState extends State<AiMemoryScreen> {
                   runSpacing: 6,
                   children: AiMode.values.map((mode) {
                     final isOn = selectedModes.contains(mode);
-                    final mLabel = switch (mode) {
-                      AiMode.manual => 'Manual',
-                      AiMode.guarded => 'Guarded',
-                      AiMode.fullAutonomy => 'Full Auto',
-                    };
+                    final mLabel = _aiModeName(mode);
                     return FilterChip(
                       label: Text(mLabel,
                           style: TextStyle(
@@ -1137,6 +1133,19 @@ class _VocabTile extends StatelessWidget {
   }
 }
 
+/// The mode names the user sees: «Советник» / «Ручной» / «Автономный»
+/// (EN Advisor / Manual / Autonomous). The code names stay manual /
+/// guarded / fullAutonomy.
+String _aiModeName(AiMode mode) {
+  final l = LocalizationService.instance;
+  return switch (mode) {
+    AiMode.manual => l.t('aiControlModeManual', {'default': 'Advisor'}),
+    AiMode.guarded => l.t('aiControlModeGuarded', {'default': 'Manual'}),
+    AiMode.fullAutonomy =>
+      l.t('aiControlModeFullAutonomy', {'default': 'Autonomous'}),
+  };
+}
+
 class _MacroTile extends StatelessWidget {
   final VoiceMacro macro;
   final bool isDefault;
@@ -1148,20 +1157,19 @@ class _MacroTile extends StatelessWidget {
       this.onDelete,
       this.onDuplicate});
 
-  String _modeShortLabel(AiMode mode) => switch (mode) {
-        AiMode.manual => 'M',
-        AiMode.guarded => 'G',
-        AiMode.fullAutonomy => 'A',
-      };
-
   @override
   Widget build(BuildContext context) {
     final l = LocalizationService.instance;
     final isRisky = macro.isRisky;
     final allModes = macro.allowedModes.length == AiMode.values.length;
+    // Full names: the old one-letter badges (M/G/A) no longer fit the
+    // «Советник» / «Ручной» / «Автономный» names.
     final modesLabel = allModes
         ? l.t('memoryMacroModesAll')
-        : macro.allowedModes.map(_modeShortLabel).join('/');
+        : AiMode.values
+            .where(macro.allowedModes.contains)
+            .map(_aiModeName)
+            .join(' / ');
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),

@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' show AppLifecycleState, WidgetsBinding;
+import 'package:ibiti_guardian/config/privy_chain_registry.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 import 'package:ibiti_guardian/models/assistant_response.dart';
 import 'package:ibiti_guardian/models/audit_log_entry.dart';
@@ -8,7 +10,9 @@ import 'package:ibiti_guardian/models/dispatch_item.dart';
 import 'package:ibiti_guardian/models/execution_result.dart';
 import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/services/audit_log_service.dart';
+import 'package:ibiti_guardian/services/execution/ai_onchain_executor.dart';
 import 'package:ibiti_guardian/services/execution/guardian_execution_controller.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/market/automation_intent_builder.dart';
 import 'package:ibiti_guardian/services/market/market_data_service.dart';
 import 'package:ibiti_guardian/services/market/market_policy_gate.dart';
@@ -31,8 +35,11 @@ import 'package:ibiti_guardian/services/adapters/wallet_adapter.dart';
 ///   → EPK / execution controller
 /// ```
 ///
-/// No item ever executes by jumping straight to the chain.
+/// No item ever executes by jumping straight to the chain: the swap preview
+/// goes through [AiOnchainExecutor] and so through [AiActionGate] (card + PIN,
+/// or no PIN within the daily limit, «AI Мандат», EPK and trusted targets).
 /// If the mode changed since enqueueing, the item is blocked immediately.
+/// The user's Cancel wins, also while the confirmation card is open.
 /// All transitions are logged as [ExecutionSource.automation].
 ///
 /// ## Queue rules
@@ -52,9 +59,27 @@ class AutomationDispatchService extends ChangeNotifier {
   static const int _historySize = 30;
   static const int _processingIntervalSeconds = 5;
 
+  /// Pause after the gate could not ask anybody (app in the background) or
+  /// another AI operation held the lock, so a waiting item is not re-quoted
+  /// every tick.
+  static const Duration _deferDelay = Duration(seconds: 30);
+
   final List<DispatchItem> _queue = [];
   Timer? _processorTimer;
   bool _isProcessing = false;
+  DateTime? _deferredUntil;
+
+  /// Test seam: replaces the controller's orchestrate call.
+  @visibleForTesting
+  Future<AssistantResponse> Function(IntentAction action)? orchestrateOverride;
+
+  /// Test seam: replaces [AiOnchainExecutor.executePreview].
+  @visibleForTesting
+  Future<AiExecResult> Function(
+    AssistantResponse preview, {
+    required String source,
+    bool Function()? stillWanted,
+  })? executeOverride;
 
   // ── Public accessors ────────────────────────────────────────────────────────
 
@@ -112,17 +137,17 @@ class AutomationDispatchService extends ChangeNotifier {
     required String reason,
     required double currentPrice,
   }) {
-    // Hard guard: only Full Autonomy mode gets real queue execution.
+    // Hard guard: only «Автономный» (fullAutonomy) gets real queue execution.
     final mode = AiControlService.instance.settings.mode;
     if (mode != AiMode.fullAutonomy) {
       _logAudit(
         label: 'DISPATCH_REJECTED_MODE',
         summary: 'Enqueue rejected for ${trigger.assetSymbol}: '
-            'mode is ${mode.name}, Full Autonomy required.',
+            'mode is ${_modeName(mode)}, Autonomous mode required.',
         status: DispatchStatus.blocked,
         trigger: trigger,
-        reason:
-            'Mode is ${mode.name} — execution enqueue requires Full Autonomy.',
+        reason: 'Mode is ${_modeName(mode)} — execution enqueue requires '
+            'Autonomous mode.',
       );
       return null;
     }
@@ -193,10 +218,72 @@ class AutomationDispatchService extends ChangeNotifier {
     if (_isProcessing) return; // serial — only one at a time
     _expireOldItems();
 
+    // A trade waits for the user: the confirmation card and the PIN need
+    // the app on screen. In the background the item simply stays pending.
+    if (!_appInForeground) return;
+    final deferredUntil = _deferredUntil;
+    if (deferredUntil != null && DateTime.now().isBefore(deferredUntil)) {
+      return;
+    }
+
     final nextIndex = _queue.indexWhere((i) => i.isPending);
     if (nextIndex < 0) return; // nothing to do
 
     _processItem(nextIndex);
+  }
+
+  /// Runs the next pending item now (tests; no timer needed).
+  @visibleForTesting
+  Future<void> processNextForTest() async {
+    final nextIndex = _queue.indexWhere((i) => i.isPending);
+    if (nextIndex < 0) return;
+    await _processItem(nextIndex);
+  }
+
+  @visibleForTesting
+  void resetForTest() {
+    stop();
+    _queue.clear();
+    _isProcessing = false;
+    _deferredUntil = null;
+    orchestrateOverride = null;
+    executeOverride = null;
+  }
+
+  static bool get _appInForeground {
+    final state = WidgetsBinding.instance.lifecycleState;
+    return state == null ||
+        state == AppLifecycleState.resumed ||
+        state == AppLifecycleState.inactive;
+  }
+
+  /// The item is still the one being processed — false once the user
+  /// cancelled it (cancelItem marks it blocked).
+  bool _stillProcessing(String id) {
+    final i = _queue.indexWhere((item) => item.id == id);
+    return i >= 0 && _queue[i].isProcessing;
+  }
+
+  /// Puts a processing item back in the queue (nobody could be asked).
+  void _requeue(String id, String why) {
+    final i = _queue.indexWhere((item) => item.id == id);
+    if (i < 0 || !_queue[i].isProcessing) return;
+    _queue[i] = _queue[i].copyWith(status: DispatchStatus.pending);
+    _deferredUntil = DateTime.now().add(_deferDelay);
+    _log.d('Deferred ${_queue[i].id}: $why');
+    notifyListeners();
+  }
+
+  /// [_resolveItem] by id, unless the user's Cancel already resolved it.
+  void _resolveById(
+    String id,
+    DispatchStatus status,
+    String? blockReason, {
+    String? doneMessage,
+  }) {
+    final i = _queue.indexWhere((item) => item.id == id);
+    if (i < 0 || !_queue[i].isProcessing) return; // cancel won
+    _resolveItem(i, status, blockReason, doneMessage: doneMessage);
   }
 
   Future<void> _processItem(int index) async {
@@ -266,26 +353,48 @@ class AutomationDispatchService extends ChangeNotifier {
       _isProcessing = false;
       return;
     }
-    final intent = (intentResult as AutomationIntentReady).intent;
+    final ready = intentResult as AutomationIntentReady;
+    final intent = ready.intent;
 
-    // ── Hand off to GuardianExecutionController ───────────────────────────────
-    // This goes through the full hardened path:
-    //   intent.isAutomated == true
-    //     → _orchestrateSwap() → GuardianPolicyEngine → SandboxGuard
-    //     → approvedForAuto → _executor.dispatchConfiguredPath()
-    // All policy and EPK checks happen inside the controller — no bypass.
-    AssistantResponse response;
-    try {
-      response = await GuardianExecutionController.instance.orchestrate(
-        IntentAction(
-          intent: intent,
-          requiresExecution: true,
-          requiresConfirmation: false, // Full Autonomy: no user confirmation
-        ),
-      );
-    } catch (e) {
+    // C8: the trade is quoted and signed on the active network only.
+    final activeChain = WalletAdapter.instance.chainKey;
+    final tradeChain = ready.chainKey;
+    if (tradeChain != null && tradeChain != activeChain) {
+      final tradeNet = PrivyChainRegistry.getChain(tradeChain).displayName;
+      final activeNet = PrivyChainRegistry.getChain(activeChain).displayName;
       _resolveItem(
         index,
+        DispatchStatus.blocked,
+        _t(
+          'dispatchWrongNetwork',
+          '${item.assetSymbol}: the AI would trade on $tradeNet, but the wallet '
+              'is on $activeNet. Switch the network and delegate again.',
+          {
+            'asset': item.assetSymbol,
+            'chain': tradeNet,
+            'active': activeNet,
+          },
+        ),
+      );
+      _isProcessing = false;
+      return;
+    }
+
+    // ── Hand off to GuardianExecutionController ───────────────────────────────
+    // The swap intent comes back as a preview (quote + policy + AI checks);
+    // nothing has moved yet.
+    AssistantResponse response;
+    try {
+      final action = IntentAction(
+        intent: intent,
+        requiresExecution: true,
+        requiresConfirmation: false,
+      );
+      response = await (orchestrateOverride ??
+          GuardianExecutionController.instance.orchestrate)(action);
+    } catch (e) {
+      _resolveById(
+        item.id,
         DispatchStatus.failed,
         'Execution controller threw: $e',
       );
@@ -293,34 +402,103 @@ class AutomationDispatchService extends ChangeNotifier {
       return;
     }
 
+    // The user may have cancelled while the quote was fetched.
+    if (!_stillProcessing(item.id)) {
+      _isProcessing = false;
+      return;
+    }
+
     // ── Map response to dispatch status ───────────────────────────────────────
     if (response.type == ResponseType.error) {
-      _resolveItem(
-        index,
+      _resolveById(
+        item.id,
         DispatchStatus.failed,
         'Execution failed: ${response.message}',
       );
     } else if (response.type == ResponseType.action) {
-      _resolveItem(
-        index,
+      _resolveById(
+        item.id,
         DispatchStatus.done,
         null,
         doneMessage: '[${item.trigger.label}] Executed via automation path. '
             '${response.message}',
       );
+    } else if (response.type == ResponseType.preview &&
+        (response.swapPlan != null || response.pendingTransaction != null)) {
+      // ── Execute through the AI action gate ──────────────────────────────────
+      final override = executeOverride;
+      final AiExecResult result;
+      try {
+        result = override != null
+            ? await override(
+                response,
+                source: 'delegate',
+                stillWanted: () => _stillProcessing(item.id),
+              )
+            : await AiOnchainExecutor.instance.executePreview(
+                response,
+                source: 'delegate',
+                stillWanted: () => _stillProcessing(item.id),
+              );
+      } catch (e) {
+        _resolveById(item.id, DispatchStatus.failed, 'Execution threw: $e');
+        _isProcessing = false;
+        return;
+      }
+
+      if (result.executed) {
+        final hash = result.txHash;
+        _resolveById(
+          item.id,
+          DispatchStatus.done,
+          null,
+          doneMessage: '[${item.trigger.label}] ${result.message}'
+              '${hash != null && hash.isNotEmpty ? ' tx $hash' : ''}',
+        );
+      } else if (result.deferred) {
+        // Nobody could be asked (app in the background) or another AI
+        // operation held the lock: try again later, do not burn the item.
+        _requeue(item.id, result.message);
+      } else if (result.cancelled) {
+        _resolveById(
+          item.id,
+          DispatchStatus.blocked,
+          _t('dispatchDeclined', 'Declined by user.'),
+        );
+      } else if (result.failed) {
+        _resolveById(item.id, DispatchStatus.failed, result.message);
+      } else {
+        _resolveById(item.id, DispatchStatus.blocked, result.message);
+      }
     } else {
-      // requireManualReview or preview — sandbox demoted to user review.
-      // This is NOT an error — it means the trade is safe but needs eyes.
-      _resolveItem(
-        index,
+      // Info / warning: the controller explained why there is no trade.
+      _resolveById(
+        item.id,
         DispatchStatus.blocked,
-        'Sandbox requires manual review — trade demoted to user queue. '
-        'Check the Assistant tab for preview.',
+        _t(
+          'dispatchNoPlan',
+          'The AI could not build a trade for ${item.assetSymbol}: '
+              '${response.message}',
+          {'asset': item.assetSymbol, 'reason': response.message},
+        ),
       );
     }
 
     _isProcessing = false;
   }
+
+  static String _t(String key, String fallback,
+          [Map<String, dynamic> args = const {}]) =>
+      LocalizationService.instance.t(key, {...args, 'default': fallback});
+
+  /// The English mode names the user sees (code names stay manual /
+  /// guarded / fullAutonomy): «Советник» Advisor, «Ручной» Manual,
+  /// «Автономный» Autonomous.
+  static String _modeName(AiMode mode) => switch (mode) {
+        AiMode.manual => 'Advisor',
+        AiMode.guarded => 'Manual',
+        AiMode.fullAutonomy => 'Autonomous',
+      };
 
   // ── Safety re-check ─────────────────────────────────────────────────────────
 
@@ -329,10 +507,10 @@ class AutomationDispatchService extends ChangeNotifier {
   String? _reCheckSafety(DispatchItem item) {
     final settings = AiControlService.instance.settings;
 
-    // 1. Mode must still be Full Autonomy.
+    // 1. Mode must still be «Автономный» (fullAutonomy).
     if (settings.mode != AiMode.fullAutonomy) {
-      return 'Mode changed to ${settings.mode.name} since enqueue — '
-          'execution blocked. Only Full Autonomy can execute automatically.';
+      return 'Mode changed to ${_modeName(settings.mode)} since enqueue — '
+          'execution blocked. Only Autonomous mode carries out queued trades.';
     }
 
     // 2. Wallet must still be connected.

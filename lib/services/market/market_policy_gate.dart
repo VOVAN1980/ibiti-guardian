@@ -82,8 +82,9 @@ class MarketGateResult {
 /// Ensures the Market screen cannot bypass Mode / Mandate / Wallet checks.
 ///
 /// Contract:
-/// - Manual mode → always blocked (AI explains, no execution UI opens)
-/// - Guarded / Full Autonomy → mandate checks run
+/// - «Советник» (Advisor, AiMode.manual) → always blocked (AI explains, no
+///   execution UI opens)
+/// - «Ручной» (Manual) / «Автономный» (Autonomous) → mandate checks run
 /// - If mandate doesn't cover asset/network → blocked with AI explanation
 /// - All blocks AND passes recorded to [AuditLogService] with [ExecutionSource.market]
 ///
@@ -114,20 +115,22 @@ class MarketPolicyGate {
       return MarketGateResult.noWallet();
     }
 
-    // ── 2. Mode check: Manual → always blocked ────────────────────────────────
+    // ── 2. Mode check: «Советник» (Advisor) → always blocked ─────────────────
     if (mode == AiMode.manual) {
-      const reason = 'Manual mode is active — live swap form is not available. '
-          'The AI will explain the opportunity instead.';
+      const reason = 'Advisor mode is active — the AI only advises, so the '
+          'live swap form is not opened. The AI will explain the opportunity '
+          'instead.';
       _logBlock(asset, reason);
       return MarketGateResult.blockedByMode(
         reason: reason,
-        aiPrompt:
-            'Current AI mode is Manual. Do NOT execute or prepare a trade. '
+        aiPrompt: 'Current AI mode is «Советник» (Advisor): advice only. '
+            'Do NOT execute or prepare a trade. '
             'The user wants to trade ${asset.symbol} (${asset.networkGroup}, '
             'price $priceStr). Explain what this trade would involve, '
             'what the current market context is, what risks exist, '
-            'and what the user needs to do to enable execution '
-            '(switch to Guarded or Full Autonomy in AI Control).',
+            'and what the user needs to do to let the AI act '
+            '(switch to «Ручной» (Manual: the AI prepares, the user confirms '
+            'with PIN) or «Автономный» (Autonomous) in AI Control).',
       );
     }
 
@@ -174,6 +177,14 @@ class MarketPolicyGate {
 
   // ─── Private helpers ────────────────────────────────────────────────────────
 
+  /// The English mode names the user sees (the audit log is shown in the
+  /// app); the code names stay manual / guarded / fullAutonomy.
+  static String _modeName(AiMode mode) => switch (mode) {
+        AiMode.manual => 'Advisor',
+        AiMode.guarded => 'Manual',
+        AiMode.fullAutonomy => 'Autonomous',
+      };
+
   void _logBlock(MarketAsset asset, String reason) {
     AuditLogService.instance.recordMarketPolicyBlock(
       assetSymbol: asset.symbol,
@@ -186,7 +197,7 @@ class MarketPolicyGate {
       intentType: IntentType.swapAsset,
       actionLabel: 'MARKET_SWAP_ALLOWED',
       summary: 'Market swap for ${asset.symbol} passed pre-check '
-          '(mode: ${mode.name}, network: $chainKey).',
+          '(mode: ${_modeName(mode)}, network: $chainKey).',
       executionSource: ExecutionSource.market,
       result: ExecutionResult.success(
         txHash: '',

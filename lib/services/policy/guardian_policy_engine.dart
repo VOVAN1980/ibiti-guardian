@@ -99,14 +99,14 @@ class GuardianPolicyEngine {
     final aiSettings = AiControlService.instance.settings;
 
     // ── AI Mode Gate (Check 0) ───────────────────────────────────────────────
-    // Manual mode means the AI may NOT execute anything.
-    // This is enforced here so changing the mode in AI Center
+    // «Советник» (Advisor, AiMode.manual) means the AI may NOT execute
+    // anything. This is enforced here so changing the mode in AI Center
     // immediately closes the execution path for ALL transaction types.
     if (aiSettings.mode == AiMode.manual) {
       rules.add('AI_MODE_MANUAL_BLOCK');
       return PolicyResult.block(
-        'AI mode is set to Manual. Execution is disabled. '
-        'Switch to Guarded or Full Autonomy to proceed.',
+        'AI mode is Advisor: the AI only advises and will not act. '
+        'Switch to Manual or Autonomous in AI Control to let it act.',
         rules: rules,
         severity: PolicySeverity.warning,
         epkAvailable: epkAvail,

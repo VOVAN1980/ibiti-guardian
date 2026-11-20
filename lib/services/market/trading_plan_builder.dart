@@ -74,7 +74,9 @@ class TradingPlanBuilder {
     String? blockReason;
 
     if (mode == AiMode.manual) {
-      blockReason = 'Manual mode — analysis only. No execution.';
+      blockReason = 'Advisor mode — advice only, the AI will not act. '
+          'Switch to Manual (the AI prepares, you confirm) or Autonomous '
+          'in AI Control.';
     } else if (exposure.action == ExposureAction.blockedByExposure &&
         (direction == TradingDirection.buy ||
             direction == TradingDirection.swing)) {
@@ -93,7 +95,7 @@ class TradingPlanBuilder {
           sizeResult.blockReason ?? 'Trade size not viable vs gas cost.';
     } else if (risk == TradingRisk.excessive) {
       blockReason = 'Risk level is excessive (volatility too high). '
-          'Manual review recommended.';
+          'Review it yourself before trading.';
     } else {
       executableByAi = true;
     }

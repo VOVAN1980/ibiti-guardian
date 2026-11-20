@@ -7,9 +7,13 @@ import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz;
 import 'package:ibiti_guardian/main.dart'; // Import navigatorKey
 import 'package:ibiti_guardian/app/guardian_app_shell.dart';
+import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/screens/market_command/market_token_detail_screen.dart';
+import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/market/market_data_service.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
+import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/models/sound_settings.dart';
 
 class NotificationService {
@@ -105,11 +109,16 @@ class NotificationService {
   }
 
   Future<bool> isPermissionGranted() async {
-    final status = await _notifications
-        .resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>()
-        ?.areNotificationsEnabled();
-    return status ?? false;
+    try {
+      final status = await _notifications
+          .resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>()
+          ?.areNotificationsEnabled();
+      return status ?? false;
+    } catch (e) {
+      _log.e('Notification permission check failed', e);
+      return false;
+    }
   }
 
   void _onTap(NotificationResponse response) {
@@ -124,39 +133,109 @@ class NotificationService {
     }
   }
 
+  // ── Tap routing ────────────────────────────────────────────────────────────
+  //
+  // A tap must never remove the unlock screen. It used to reset the stack to
+  // the main screen (pushAndRemoveUntil), and on a cold start that removed
+  // the boot PIN screen. Now a tap waits until the vault is unlocked and the
+  // main screen is up, then opens its screen ON TOP of the current one.
+
+  /// A tap that arrived while the app was still locked.
+  Map<String, dynamic>? _pendingRoute;
+  DateTime? _pendingSince;
+  bool _waitingForUnlock = false;
+
+  /// A tap older than this is dropped instead of opening later.
+  static const Duration _pendingTtl = Duration(minutes: 10);
+
+  /// Whether the app is past its own lock: the vault exists, the Privy
+  /// session is alive, and the PIN / biometrics (if set up) were passed.
+  static bool _appUnlocked() {
+    final vault = IBITIVaultService.instance;
+    if (!vault.isVaultCreated || vault.privySessionExpired) return false;
+    final needsAuth =
+        (vault.state?.biometricsEnabled ?? false) || vault.pinEnabled;
+    return !needsAuth || vault.isUnlocked;
+  }
+
   void _handleRouting(Map<String, dynamic> data) {
-    final type = data['type'];
+    if (!_appUnlocked()) {
+      _log.d('Notification tap deferred until the app is unlocked');
+      _deferUntilUnlocked(data);
+      return;
+    }
+    _routeWhenShellReady(data);
+  }
+
+  void _deferUntilUnlocked(Map<String, dynamic> data) {
+    _pendingRoute = data;
+    _pendingSince = DateTime.now();
+    if (_waitingForUnlock) return;
+    _waitingForUnlock = true;
+    IBITIVaultService.instance.addListener(_onVaultChanged);
+  }
+
+  void _onVaultChanged() {
+    if (!_appUnlocked()) return;
+    IBITIVaultService.instance.removeListener(_onVaultChanged);
+    _waitingForUnlock = false;
+    final data = _pendingRoute;
+    final since = _pendingSince;
+    _pendingRoute = null;
+    _pendingSince = null;
+    if (data == null || since == null) return;
+    if (DateTime.now().difference(since) > _pendingTtl) {
+      _log.d('Deferred notification tap expired');
+      return;
+    }
+    _routeWhenShellReady(data);
+  }
+
+  /// The unlock screen opens the main screen right after unlocking; wait for
+  /// it (up to 5 s), then route on top of it. Without the main screen the
+  /// tap is dropped — never wipe whatever screen is up.
+  Future<void> _routeWhenShellReady(Map<String, dynamic> data) async {
+    for (var i = 0; i < 25 && !GuardianAppShell.isMounted; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    if (!_appUnlocked()) {
+      _deferUntilUnlocked(data);
+      return;
+    }
     final state = navigatorKey.currentState;
-    if (state == null) {
-      _log.w('Navigator state is null, cannot route');
+    if (state == null || !GuardianAppShell.isMounted) {
+      _log.w('Main screen not ready, notification tap dropped');
       return;
     }
 
-    switch (type) {
+    switch (data['type']) {
       case 'price_alert':
         // Deep-link directly to the token's detail screen.
         final symbol = data['symbol'] as String?;
         if (symbol != null && symbol.isNotEmpty) {
           _log.d('Price alert tap — routing to detail: $symbol');
           _goToTokenDetail(state, symbol);
-        } else {
-          _goHome(state);
         }
         break;
+      case 'ai_action':
+        // «ИИ выполнил: …» → the operation in the transaction history.
+        UICommandBus.instance.dispatch(UICommand(
+          type: UICommandType.openModal,
+          target: 'ai_action',
+          payload: Map<String, dynamic>.from(data),
+        ));
+        // The shell handles commands after the next frame.
+        WidgetsBinding.instance.ensureVisualUpdate();
+        break;
       default:
-        _goHome(state);
+        // The app is already open on the main screen.
+        break;
     }
   }
 
-  void _goHome(NavigatorState state) {
-    state.pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const GuardianAppShell()),
-      (route) => false,
-    );
-  }
-
   /// Deep-link to token detail from a price alert notification tap.
-  /// Resolves the asset from the market cache by symbol.
+  /// Resolves the asset from the market cache by symbol and opens it on top
+  /// of the current screen.
   void _goToTokenDetail(NavigatorState state, String symbol) {
     // Find the asset in the cached market list
     final markets = MarketDataService.instance.cachedMarkets;
@@ -170,25 +249,16 @@ class NotificationService {
     }
 
     if (asset == null) {
-      // Asset not in cache — go home, user can search manually
-      _log.w('Price alert tap: $symbol not in cache, going home');
-      _goHome(state);
+      // Asset not in cache — the user can search manually.
+      _log.w('Price alert tap: $symbol not in cache');
       return;
     }
 
-    // Navigate: clear stack to home, then push detail on top
-    state.pushAndRemoveUntil(
-      MaterialPageRoute(builder: (_) => const GuardianAppShell()),
-      (route) => false,
+    state.push(
+      MaterialPageRoute(
+        builder: (_) => MarketTokenDetailScreen(asset: asset!),
+      ),
     );
-    // Small delay to let shell settle before pushing detail
-    Future.delayed(const Duration(milliseconds: 300), () {
-      navigatorKey.currentState?.push(
-        MaterialPageRoute(
-          builder: (_) => MarketTokenDetailScreen(asset: asset!),
-        ),
-      );
-    });
   }
 
   /// Channels created by older builds, removed at start-up.
@@ -240,6 +310,7 @@ class NotificationService {
     'price_alerts_v4',
     'warning_v4',
     'api_key_reminders_v2',
+    'ai_actions_v1',
   ];
 
   /// Top-up channel for the current settings: with the chosen coin sound, or
@@ -456,6 +527,68 @@ class NotificationService {
     try {
       await _notifications.cancel(id: id);
     } catch (_) {}
+  }
+
+  // ── «ИИ выполнил: …» ───────────────────────────────────────────────────────
+
+  int _aiActionIdCounter = 7000;
+
+  /// Title of the AI-action notification: «ИИ выполнил: <what>».
+  static String aiActionDoneTitle(String what) =>
+      LocalizationService.instance.t(
+          'aiActionDoneTitle', {'what': what, 'default': 'AI did: $what'});
+
+  /// Shown after the AI carried out a money action (exchange order, send,
+  /// swap, revoke) — with or without the PIN. It reports a money event, so
+  /// quiet hours do not hide it. No sound; one vibration when "Single
+  /// vibration" is on. Tapping it opens the transaction history.
+  ///
+  /// Returns false when Android blocks notifications (or showing failed), so
+  /// the caller can say it inside the app instead.
+  Future<bool> showAiActionDone({
+    required String what,
+    String? detail,
+    String? historyId,
+    String? kind,
+  }) async {
+    final permitted = await isPermissionGranted();
+    final id = _aiActionIdCounter++;
+    final vibrate = _singleOn;
+    try {
+      final androidDetails = AndroidNotificationDetails(
+        _ordinaryChannel('ai_actions_v1'),
+        'AI actions',
+        channelDescription: 'Operations the AI carried out for you',
+        importance: Importance.high,
+        priority: Priority.high,
+        playSound: false,
+        enableVibration: vibrate,
+        vibrationPattern: vibrate ? _singleBuzz : null,
+        autoCancel: true,
+      );
+      await _notifications.show(
+        id: id,
+        title: aiActionDoneTitle(what),
+        body: detail ?? '',
+        notificationDetails: NotificationDetails(
+          android: androidDetails,
+          iOS: const DarwinNotificationDetails(
+            presentSound: false,
+            presentAlert: true,
+            presentBadge: true,
+          ),
+        ),
+        payload: json.encode({
+          'type': 'ai_action',
+          if (historyId != null && historyId.isNotEmpty) 'historyId': historyId,
+          if (kind != null && kind.isNotEmpty) 'kind': kind,
+        }),
+      );
+      return permitted;
+    } catch (e) {
+      _log.e('AI action notification failed', e);
+      return false;
+    }
   }
 
   // ── Wallet top-up notification ─────────────────────────────────────────────

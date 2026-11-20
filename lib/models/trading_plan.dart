@@ -121,9 +121,11 @@ class TradingPlan {
       TradingDirection.swing => 'SWING TRADE',
     };
     final modeLabel = switch (mode) {
-      AiMode.manual => 'Manual (analysis only)',
-      AiMode.guarded => 'Guarded (prepare, user confirms)',
-      AiMode.fullAutonomy => 'Full Autonomy (execute within limits)',
+      AiMode.manual => '«Советник» (Advisor): advice only, no execution',
+      AiMode.guarded =>
+        '«Ручной» (Manual): AI prepares, user confirms with PIN',
+      AiMode.fullAutonomy =>
+        '«Автономный» (Autonomous): executes within limits',
     };
 
     final sizeLine = sizeViable

@@ -1,4 +1,7 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/models/automation_trigger.dart';
 import 'package:ibiti_guardian/models/autonomy_mandate.dart';
 import 'package:ibiti_guardian/screens/security/ai_control_screen.dart'
@@ -7,11 +10,14 @@ import 'package:ibiti_guardian/screens/security/policy_limits_screen.dart';
 import 'package:ibiti_guardian/screens/wallet/components/wallet_swap_modal.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
+import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
 import 'package:ibiti_guardian/services/market/automation_dispatch_service.dart';
+import 'package:ibiti_guardian/services/market/automation_intent_builder.dart';
 import 'package:ibiti_guardian/services/market/market_policy_gate.dart';
 import 'package:ibiti_guardian/services/market/market_scout_service.dart';
 import 'package:ibiti_guardian/services/market/wallet_exposure_service.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
+import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/models/wallet_asset.dart';
 import 'package:ibiti_guardian/utils/price_formatter.dart';
 
@@ -46,10 +52,18 @@ enum _BlockType {
 }
 
 /// Derives the semantic block type from a raw [blockReason] string.
+///
+/// Held back by the mode alone: the scout's «Советник» reason
+/// ([MarketScoutService.advisorBlockReason]), or any signal while the AI is
+/// in «Советник» (AiMode.manual) — it acts on nothing there, whatever an
+/// older scan said. Other reasons are matched by their text.
 _BlockType _classifyBlockReason(String? reason) {
-  if (reason == null) return _BlockType.modeRestricted;
+  if (reason == null ||
+      reason == MarketScoutService.advisorBlockReason ||
+      AiControlService.instance.settings.mode == AiMode.manual) {
+    return _BlockType.modeRestricted;
+  }
   final r = reason.toLowerCase();
-  if (r.contains('manual mode')) return _BlockType.modeRestricted;
   if (r.contains('allowed-assets') || r.contains('allowed-networks')) {
     return _BlockType.outsideMandate;
   }
@@ -181,8 +195,10 @@ class PrioritySignalsList extends StatelessWidget {
 
 // ─── Mode-Restricted Panel ─────────────────────────────────────────────────────
 
-/// Shown when AI is in Manual mode — all signals are restricted by user choice.
-/// Not an error. The tone must be calm and informative, never alarming.
+/// Shown when every signal is held back by the AI mode alone — «Советник»
+/// (AiMode.manual): by the user's choice the AI only advises and executes
+/// nothing. Not an error. The tone must be calm and informative, never
+/// alarming.
 class _ModeRestrictedPanel extends StatelessWidget {
   final AiMode mode;
   const _ModeRestrictedPanel({required this.mode});
@@ -736,16 +752,14 @@ class _SignalCard extends StatelessWidget {
                     ),
                     const SizedBox(width: 8),
                     Expanded(
+                      // The user's own swap window: works in every mode
+                      // (D2) — the user confirms and enters the PIN there.
                       child: _SignalActionButton(
                         icon: Icons.swap_horiz_rounded,
                         label:
                             LocalizationService.instance.t('marketActionSwap'),
-                        color: mode == AiMode.manual
-                            ? theme.colorScheme.onSurface.withOpacity(0.25)
-                            : Colors.cyan,
-                        onTap: mode == AiMode.manual
-                            ? null
-                            : () => _openSwapForSignal(context, signal),
+                        color: Colors.cyan,
+                        onTap: () => _openSwapForSignal(context, signal),
                       ),
                     ),
                   ],
@@ -770,6 +784,13 @@ class _SignalCard extends StatelessWidget {
       };
     }
     if (mode == AiMode.guarded) return l.t('signalAiGuarded');
+    // «Автономный» with «Подтверждать действия ИИ ПИН-кодом» on: the AI
+    // shows the trade and asks for the PIN first.
+    if (AiControlService.instance.settings.pinRequiredForAi) {
+      return l.t('signalAiCanTradePin', {
+        'default': 'AI can carry out this trade after you confirm it with your PIN.',
+      });
+    }
     final action = opp.action.toLowerCase();
     if (action.contains('buy') || action.contains('pullback')) {
       return l.t('signalAiCanBuy');
@@ -1039,11 +1060,15 @@ class _AssetActionSheet extends StatelessWidget {
       );
     }
 
-    // Mode-restricted (Manual) — calm, no alarm.
+    // Mode-restricted («Советник») — calm, no alarm.
     if (isBlocked && blockType == _BlockType.modeRestricted) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          if (mode == AiMode.manual) ...[
+            ..._advisorDelegateDisabled(context),
+            const SizedBox(height: 8),
+          ],
           OutlinedButton.icon(
             onPressed: () {
               Navigator.pop(context);
@@ -1064,12 +1089,18 @@ class _AssetActionSheet extends StatelessWidget {
     }
 
     return switch (mode) {
-      AiMode.manual => SizedBox(
-          width: double.infinity,
-          child: OutlinedButton(
-            onPressed: () => Navigator.pop(context),
-            child: Text(LocalizationService.instance.t('sheetAnalysisOnly')),
-          ),
+      // «Советник»: the AI only advises — «Делегировать AI» is shown but
+      // disabled, with the reason (D14).
+      AiMode.manual => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            ..._advisorDelegateDisabled(context),
+            const SizedBox(height: 8),
+            OutlinedButton(
+              onPressed: () => Navigator.pop(context),
+              child: Text(LocalizationService.instance.t('sheetDismiss')),
+            ),
+          ],
         ),
       AiMode.guarded => Row(
           children: [
@@ -1109,6 +1140,32 @@ class _AssetActionSheet extends StatelessWidget {
     };
   }
 
+  /// «Делегировать AI» in «Советник»: visible, disabled, and why.
+  List<Widget> _advisorDelegateDisabled(BuildContext context) {
+    final theme = Theme.of(context);
+    final l = LocalizationService.instance;
+    return [
+      FilledButton(
+        onPressed: null,
+        child: Text(l.t('sheetDelegateToAi')),
+      ),
+      const SizedBox(height: 6),
+      Text(
+        l.t('sheetDelegateManualHint', {
+          'default':
+              'In «Advisor» mode the AI only advises. Switch to «Manual» or «Autonomous» to let it prepare or carry out trades.',
+        }),
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurface.withOpacity(0.6),
+          height: 1.4,
+        ),
+      ),
+    ];
+  }
+
+  /// «Ручной»: the AI prepares — the swap window opens with the paying
+  /// token (FROM), the amount the AI sized for it and a fresh quote. The
+  /// user confirms and enters the PIN in the window.
   void _prepareBuy(BuildContext context) {
     final gate = MarketPolicyGate.instance.checkSwap(signal.asset);
     if (!gate.isAllowed) return;
@@ -1120,10 +1177,8 @@ class _AssetActionSheet extends StatelessWidget {
           (a) => a.symbol.toLowerCase() == signal.asset.symbol.toLowerCase(),
         )
         .firstOrNull;
-
-    if (context.mounted) {
-      if (holdingsMatch == null) {
-        final targetAsset = WalletAsset(
+    final targetAsset = holdingsMatch ??
+        WalletAsset(
           name: signal.asset.name,
           symbol: signal.asset.symbol,
           address: '',
@@ -1133,31 +1188,99 @@ class _AssetActionSheet extends StatelessWidget {
           decimals: 18,
           chainId: 1,
         );
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(LocalizationService.instance
-                .t('sheetSearchToken', {'asset': signal.asset.symbol})),
-            duration: const Duration(seconds: 4),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        WalletSwapModal.show(context,
-            initialToAsset: targetAsset, additionalAssets: [targetAsset]);
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(LocalizationService.instance
-                .t('sheetOpeningPreview', {'asset': signal.asset.symbol})),
-            duration: const Duration(seconds: 2),
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-        WalletSwapModal.show(context,
-            initialToAsset: holdingsMatch, additionalAssets: [holdingsMatch]);
-      }
+
+    // Size the buy the same way the delegate queue would (max position,
+    // remaining exposure, source balance) — only on the active network,
+    // where the window quotes.
+    final sized = AutomationIntentBuilder.buildBuyForSymbol(
+      signal.asset.symbol,
+      label: 'Prepare: ${signal.asset.symbol}',
+    );
+    final activeChain = IBITIVaultService.instance.chainKey;
+    final AutomationIntentReady? ready = sized is AutomationIntentReady &&
+            sized.chainKey == activeChain &&
+            sized.sourceAsset != null &&
+            (sized.intent.amount ?? 0) > 0
+        ? sized
+        : null;
+
+    if (!context.mounted) return;
+
+    if (ready != null) {
+      final source = ready.sourceAsset!;
+      final amount = _amountText(ready.intent.amount!, source.decimals);
+      // The window reads these on open: FROM token, TO token, amount, and
+      // the pending quote action (C14: the amount is on the FROM token).
+      UICommandBus.instance.dispatchAll([
+        UICommand(
+          type: UICommandType.selectToken,
+          target: 'swap_from_token',
+          payload: {'symbol': source.symbol},
+        ),
+        UICommand(
+          type: UICommandType.selectToken,
+          target: 'swap_to_token',
+          payload: {'symbol': signal.asset.symbol},
+        ),
+        UICommand(
+          type: UICommandType.fillField,
+          target: 'swap_amount',
+          payload: {'value': amount},
+        ),
+        const UICommand(
+          type: UICommandType.executeAction,
+          target: 'wallet_swap_quote',
+        ),
+      ]);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(LocalizationService.instance
+              .t('sheetOpeningPreview', {'asset': signal.asset.symbol})),
+          duration: const Duration(seconds: 2),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      WalletSwapModal.show(context,
+          initialFromAsset: source,
+          initialToAsset: targetAsset,
+          additionalAssets: [targetAsset]);
+      return;
     }
+
+    // Could not size it here (no stablecoin on this network, unknown
+    // token…): open the window with the target, as before.
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(holdingsMatch == null
+            ? LocalizationService.instance
+                .t('sheetSearchToken', {'asset': signal.asset.symbol})
+            : LocalizationService.instance
+                .t('sheetOpeningPreview', {'asset': signal.asset.symbol})),
+        duration: Duration(seconds: holdingsMatch == null ? 4 : 2),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+    WalletSwapModal.show(context,
+        initialToAsset: targetAsset, additionalAssets: [targetAsset]);
   }
 
+  /// Amount text for the window: at most 6 decimals (never more than the
+  /// token has), rounded down so it never exceeds the sized amount.
+  static String _amountText(double amount, int decimals) {
+    final places = decimals.clamp(0, 6);
+    final factor = math.pow(10, places).toDouble();
+    final floored = (amount * factor).floorToDouble() / factor;
+    var text = floored.toStringAsFixed(places);
+    if (text.contains('.')) {
+      text = text.replaceFirst(RegExp(r'0+$'), '');
+      if (text.endsWith('.')) text = text.substring(0, text.length - 1);
+    }
+    return text;
+  }
+
+  /// «Автономный»: the item goes to the queue; the AI then runs it through
+  /// the AI action gate — card + PIN when «Подтверждать действия ИИ
+  /// ПИН-кодом» is on, otherwise by itself within the limits.
   void _delegateToAi(BuildContext context) {
     Navigator.pop(context);
     final trigger = AutomationTrigger(
@@ -1168,17 +1291,37 @@ class _AssetActionSheet extends StatelessWidget {
       createdAt: DateTime.now(),
       label: 'Manual: ${signal.asset.symbol} — ${signal.action}',
     );
-    AutomationDispatchService.instance.enqueue(
+    final queued = AutomationDispatchService.instance.enqueue(
       trigger: trigger,
       reason: 'User delegated from Market Command Center: ${signal.thesis}',
       currentPrice: signal.asset.price,
     );
     if (context.mounted) {
+      final l = LocalizationService.instance;
+      final asset = signal.asset.symbol;
+      final String text;
+      if (queued == null) {
+        text = l.t('sheetDelegateNotQueued', {
+          'asset': asset,
+          'default': '$asset was not queued. Check the AI mode and the queue.',
+        });
+      } else if (AiControlService.instance.settings.pinRequiredForAi) {
+        text = l.t('sheetDelegatePinHint', {
+          'asset': asset,
+          'default':
+              '$asset is queued. The AI will show the trade and ask for your PIN.',
+        });
+      } else {
+        text = l.t('sheetDelegateNoPinHint', {
+          'asset': asset,
+          'default':
+              '$asset is queued. The AI will buy it by itself within your limits and notify you.',
+        });
+      }
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(LocalizationService.instance
-              .t('sheetQueuedOk', {'asset': signal.asset.symbol})),
-          duration: const Duration(seconds: 3),
+          content: Text(text),
+          duration: const Duration(seconds: 4),
           behavior: SnackBarBehavior.floating,
         ),
       );

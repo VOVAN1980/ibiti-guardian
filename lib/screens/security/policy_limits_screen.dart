@@ -726,19 +726,31 @@ class _PolicyLimitsScreenState extends State<PolicyLimitsScreen> {
                 value: mode,
                 groupValue: selected,
                 onChanged: (v) => setSt(() => selected = v),
+                // «Советник» / «Ручной» / «Автономный» (same keys as AI Center).
                 title: Text(
                   switch (mode) {
-                    AiMode.manual => 'Manual',
-                    AiMode.guarded => 'Guarded',
-                    AiMode.fullAutonomy => 'Full Autonomy',
+                    AiMode.manual => t.t('aiControlModeManual'),
+                    AiMode.guarded => t.t('aiControlModeGuarded'),
+                    AiMode.fullAutonomy => t.t('aiControlModeFullAutonomy'),
                   },
                   style: GuardianTextStyles.bodyPrimary,
                 ),
                 subtitle: Text(
                   switch (mode) {
-                    AiMode.manual => t.t('aiModeManualDesc'),
-                    AiMode.guarded => t.t('aiModeGuardedDesc'),
-                    AiMode.fullAutonomy => t.t('aiModeFullDesc'),
+                    AiMode.manual => t.t('aiModeManualDesc', {
+                        'default': 'The AI only advises and explains. It '
+                            'opens, prepares and executes nothing.'
+                      }),
+                    AiMode.guarded => t.t('aiModeGuardedDesc', {
+                        'default': 'The AI opens and fills the windows; you '
+                            'confirm every operation with your PIN.'
+                      }),
+                    AiMode.fullAutonomy => t.t('aiModeFullDesc', {
+                        'default': 'The AI fills and executes within the '
+                            'limits, «AI Mandate» and EPK. By default every '
+                            'action shows a card and asks for your PIN '
+                            '(setting in AI Center).'
+                      }),
                   },
                   style:
                       GuardianTextStyles.bodySecondary.copyWith(fontSize: 12),

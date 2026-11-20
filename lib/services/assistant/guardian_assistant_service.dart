@@ -1,10 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/material.dart'
+    show ScaffoldMessenger, SnackBar, SnackBarBehavior, Text;
 import 'package:ibiti_guardian/models/assistant_response.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/models/trading_plan.dart';
-import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/models/intent_data.dart';
-import 'package:ibiti_guardian/models/execution_path.dart';
 import 'package:ibiti_guardian/services/intents/intent_parser.dart';
 import 'package:ibiti_guardian/services/intents/intent_router.dart';
 import 'package:ibiti_guardian/services/execution/guardian_execution_controller.dart';
@@ -32,6 +34,7 @@ import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/services/wallet/address_book_service.dart';
 import 'package:ibiti_guardian/services/assistant/user_memory_service.dart';
 import 'package:ibiti_guardian/models/user_memory.dart';
+import 'package:ibiti_guardian/models/wallet_asset.dart';
 import 'package:ibiti_guardian/utils/token_symbol_normalizer.dart';
 import 'package:ibiti_guardian/services/assistant/swap_voice_orchestrator.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
@@ -49,6 +52,13 @@ import 'package:ibiti_guardian/services/policy/trusted_address_directory.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
 import 'package:ibiti_guardian/services/assistant/market_voice_brain.dart';
 import 'package:ibiti_guardian/services/voice/ai_voice.dart';
+import 'package:ibiti_guardian/services/execution/ai_onchain_executor.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
+import 'package:ibiti_guardian/services/market/automation_intent_builder.dart';
+import 'package:ibiti_guardian/services/market/token_registry_service.dart';
+import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
+import 'package:ibiti_guardian/services/swap/zerox_swap_provider.dart';
+import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
 
 enum AssistantInputSource { voice, marketChat, generalChat, automated }
@@ -65,6 +75,8 @@ class GuardianAssistantService {
 
   final _controller = GuardianExecutionController.instance;
   final _openai = OpenAIChatService.instance;
+
+  static const _log = GuardianLogger('Assistant');
 
   /// Resets all session-scoped state.
   ///
@@ -225,63 +237,108 @@ class GuardianAssistantService {
     return AssistantResponse.info(text, speechText: speech);
   }
 
+  /// What the AI does in the current mode, with the state of «Подтверждать
+  /// действия ИИ ПИН-кодом» in «Автономный» (checked in code: exchange
+  /// orders and on-chain operations go through AiActionGate — card + PIN,
+  /// or with the setting OFF only within the daily limit, «AI Мандат», EPK
+  /// and to trusted addresses; selling a balance share keeps the window).
   AssistantResponse _modeContractResponse(String languageCode) {
-    final mode = AiControlService.instance.settings.mode;
+    final settings = AiControlService.instance.settings;
+    final pinOn = settings.aiPinConfirm;
     if (languageCode == 'ru') {
-      switch (mode) {
+      switch (settings.mode) {
         case AiMode.manual:
           return AssistantResponse.info(
-            'Сейчас активен режим Manual. Я могу подсказывать, показывать баланс, активы, рынок, историю и риски, но не готовлю боевые send/swap действия. Для подготовки операций нужен Guarded, для самостоятельного исполнения Full Autonomy.',
+            'Сейчас режим «Советник». Я только советую и объясняю: '
+            'рассказываю о балансе, активах, рынке, истории, лимитах и '
+            'рисках. ${AiVoice.ru('Сам', 'Сама')} я ничего не открываю, не '
+            'готовлю и не выполняю: ни переводов и обменов, ни ордеров на '
+            'биржах, ни алертов, стоп-лоссов и избранного. Ваши собственные '
+            'действия работают как обычно. Чтобы я '
+            '${AiVoice.ru('готовил', 'готовила')} операции, включите '
+            '«Ручной», чтобы ${AiVoice.ru('выполнял', 'выполняла')} — '
+            '«Автономный» (в AI-Центре, с ПИН-кодом).',
           );
         case AiMode.guarded:
           return AssistantResponse.info(
-            'Сейчас активен режим Guarded. Я могу открыть окна, заполнить формы, собрать preview и маршрут, но финальная подпись и подтверждение остаются за вами.',
+            'Сейчас режим «Ручной». Я готовлю операции: открываю и заполняю '
+            'окна перевода, обмена и ордера на бирже, собираю превью и '
+            'маршрут. Подтверждаете их вы, кнопкой и ПИН-кодом; без вас '
+            'ничего не выполняется.',
           );
         case AiMode.fullAutonomy:
-          // Checked in code: exchange orders (voice / market chat only) go
-          // straight to ExchangeOrderService.placeMarketOrder within the
-          // daily limit and mandate, selling a balance share opens the window
-          // (_handleCexTradeIntent); «Делегировать AI» runs through the
-          // automation queue without confirmation (AutomationDispatchService);
-          // wallet buys, sells, swaps and sends open a prefilled window or a
-          // chat confirmation card, both ask for the PIN
-          // (VaultUnlockScreen.requireAuth).
+          final common = 'Продажу всего баланса монеты или его доли вы '
+              'подтверждаете в окне. Всегда действуют дневной лимит, «AI '
+              'Мандат», политика и EPK, превысить их я не могу: хотите '
+              'больше — поднимите порог в «Политике» (нужен ПИН). '
+              '${AiVoice.ru('Сам', 'Сама')}, без вашей просьбы, я не торгую.';
+          if (pinOn) {
+            return AssistantResponse.info(
+              'Сейчас режим «Автономный», подтверждение действий ИИ '
+              'ПИН-кодом включено. Операции, о которых вы просите голосом '
+              'или в чате, я ${AiVoice.ru('сам', 'сама')} заполняю и '
+              'выполняю: ордера на биржах (MEXC, Binance, Gate.io, OKX), '
+              'переводы, обмены и сделки по «Делегировать AI». Перед каждой '
+              'показываю карточку: что, сколько, куда и комиссия. Вы '
+              'подтверждаете её кнопкой или словом «да» и вводите ПИН-код; '
+              'после выполнения приходит уведомление «ИИ выполнил». $common',
+            );
+          }
           return AssistantResponse.info(
-            'Сейчас активен режим Full Autonomy. Ордера на биржах (MEXC, '
-            'Binance, Gate.io, OKX), о которых вы просите голосом или в чате '
-            'на экране рынка, я выставляю ${AiVoice.ru('сам', 'сама')}, без '
-            'ПИН-кода, в рамках дневного лимита торговли и mandate; продажу '
-            'всего баланса монеты или его доли вы подтверждаете в окне. '
-            'Сделку по сигналу рынка, который вы передали кнопкой '
-            '«Делегировать AI», я тоже исполняю без ПИН-кода, в рамках '
-            'лимитов, mandate, policy и EPK. Покупки, продажи и обмены в '
-            'кошельке и переводы я готовлю в заполненном окне или карточке '
-            'подтверждения, а подтверждаете их вы, ПИН-кодом или биометрией. '
-            '${AiVoice.ru('Сам', 'Сама')}, без вашей просьбы, я не торгую.',
+            'Сейчас режим «Автономный», подтверждение действий ИИ ПИН-кодом '
+            'выключено. Операции, о которых вы просите голосом или в чате, '
+            'я ${AiVoice.ru('сам', 'сама')} заполняю и выполняю без '
+            'карточки и ПИН-кода, но только в рамках дневного лимита, «AI '
+            'Мандат» и EPK и только на доверенные адреса; после каждой '
+            'приходит уведомление «ИИ выполнил». Перевод на новый адрес или '
+            'операцию без известной цены я показываю карточкой и прошу '
+            'ПИН-код. $common',
           );
       }
     }
-    switch (mode) {
+    switch (settings.mode) {
       case AiMode.manual:
         return AssistantResponse.info(
-          'Manual mode is active. I can explain and show balances, assets, market, history and risks, but I do not prepare live send or swap actions. Use Guarded for prepared actions or Full Autonomy for self-execution.',
+          'The "Advisor" mode is active. I only advise and explain: '
+          'balances, assets, market, history, limits and risks. I open, '
+          'prepare and carry out nothing myself: no transfers or swaps, no '
+          'exchange orders, no alerts, stop-losses or watchlist changes. '
+          'Your own actions work as usual. Choose "Manual" for me to '
+          'prepare operations or "Autonomous" for me to carry them out (in '
+          'AI Center, with your PIN).',
         );
       case AiMode.guarded:
         return AssistantResponse.info(
-          'Guarded mode is active. I can open screens, fill forms, build previews and routes, but final signing stays with you.',
+          'The "Manual" mode is active. I prepare operations: I open and '
+          'fill the send, swap and exchange order windows and build previews '
+          'and routes. You confirm them with the button and your PIN; '
+          'nothing runs without you.',
         );
       case AiMode.fullAutonomy:
+        const common = 'Selling all or a share of a coin balance still '
+            'opens a window for you to confirm. The daily limit, the "AI '
+            'Mandate", policy and EPK always apply and I cannot exceed them: '
+            'to allow more, raise the threshold in Policy (PIN needed). I '
+            'never trade on my own without your request.';
+        if (pinOn) {
+          return AssistantResponse.info(
+            'The "Autonomous" mode is active, AI action PIN confirmation is '
+            'ON. The operations you ask for by voice or in chat I fill in '
+            'and carry out myself: exchange orders (MEXC, Binance, Gate.io, '
+            'OKX), transfers, swaps and "Delegate to AI" trades. Before each '
+            'one I show a card (what, how much, where, fee); you confirm it '
+            'with the button or by saying "yes" and enter your PIN. '
+            'Afterwards an "AI did" notification arrives. $common',
+          );
+        }
         return AssistantResponse.info(
-          'Full Autonomy is active. Exchange orders (MEXC, Binance, Gate.io, '
-          'OKX) that you ask for by voice or in the market screen chat I '
-          'place myself, without your PIN, within the daily trading limit and '
-          'the mandate; selling all or a share of a coin balance still opens '
-          'a window for you to confirm. A trade on a Market signal you hand '
-          'me with "Delegate to AI" also runs without your PIN, within your '
-          'limits, mandate, policy and EPK. Wallet buys, sells, swaps and '
-          'transfers I prepare in a filled-in window or confirmation card, '
-          'and you confirm them with your PIN or biometrics. I never trade on '
-          'my own without your request.',
+          'The "Autonomous" mode is active, AI action PIN confirmation is '
+          'OFF. The operations you ask for by voice or in chat I carry out '
+          'myself without a card or PIN, but only within the daily limit, '
+          'the "AI Mandate" and EPK, and only to trusted addresses; an "AI '
+          'did" notification follows each one. A transfer to a new address '
+          'or an operation with an unknown price still gets a card and the '
+          'PIN. $common',
         );
     }
   }
@@ -327,7 +384,9 @@ class GuardianAssistantService {
         'Разрешённые активы: $assets. '
         'Разрешённые сети: $networks. '
         'Разрешённые площадки: $venues. '
-        'Неизвестные контракты: ${policy.allowUnknownContracts ? 'разрешены' : 'запрещены'}.',
+        'Неизвестные контракты: ${policy.allowUnknownContracts ? 'разрешены' : 'запрещены'}. '
+        '${s.mode == AiMode.fullAutonomy ? 'Подтверждение действий ИИ ПИН-кодом: ${s.aiPinConfirm ? 'включено' : 'выключено'}. ' : ''}'
+        'Превысить лимиты я не могу; менять их можете только вы, в «Политике», с ПИН-кодом.',
       );
     }
     return AssistantResponse.info(
@@ -345,7 +404,9 @@ class GuardianAssistantService {
       'Allowed assets: $assets. '
       'Allowed networks: $networks. '
       'Allowed venues: $venues. '
-      'Unknown contracts: ${policy.allowUnknownContracts ? 'allowed' : 'blocked'}.',
+      'Unknown contracts: ${policy.allowUnknownContracts ? 'allowed' : 'blocked'}. '
+      '${s.mode == AiMode.fullAutonomy ? 'AI action PIN confirmation: ${s.aiPinConfirm ? 'ON' : 'OFF'}. ' : ''}'
+      'I cannot exceed these limits; only you change them, in Policy, with your PIN.',
     );
   }
 
@@ -359,18 +420,20 @@ class GuardianAssistantService {
     return values.join(', ');
   }
 
-  String _aiModeLabel(AiMode mode, {required bool isRu}) {
+  /// «Советник» / «Ручной» / «Автономный»; EN Advisor / Manual /
+  /// Autonomous (the code names stay manual / guarded / fullAutonomy).
+  static String _aiModeLabel(AiMode mode, {required bool isRu}) {
     if (!isRu) {
       return switch (mode) {
-        AiMode.manual => 'Manual',
-        AiMode.guarded => 'Guarded',
-        AiMode.fullAutonomy => 'Full Autonomy',
+        AiMode.manual => 'Advisor',
+        AiMode.guarded => 'Manual',
+        AiMode.fullAutonomy => 'Autonomous',
       };
     }
     return switch (mode) {
-      AiMode.manual => 'ручной',
-      AiMode.guarded => 'с подтверждением',
-      AiMode.fullAutonomy => 'полная автономия',
+      AiMode.manual => '«Советник»',
+      AiMode.guarded => '«Ручной»',
+      AiMode.fullAutonomy => '«Автономный»',
     };
   }
 
@@ -416,24 +479,40 @@ class GuardianAssistantService {
     };
   }
 
-  // Manual mode contract: verbal explanation only, zero UI navigation.
-  // The navigate:security_center that used to live here has been removed —
-  // it bypassed _applyWindowPermissions and created an inconsistent special path.
-  // In Manual mode the AI simply explains and the user acts themselves.
+  // «Советник» (AiMode.manual): the AI only advises — zero UI navigation,
+  // nothing prepared or run. The user acts themselves.
   AssistantResponse _manualExecutionBlockedResponse(String languageCode) {
     return AssistantResponse(
       message: languageCode == 'ru'
-          ? 'Сейчас у вас режим Manual. Я могу объяснить действие и показать, что для него нужно, '
-              'но не буду открывать боевой перевод или обмен. '
-              'Для этого включите Guarded или Full Autonomy.'
-          : 'Manual mode is active. I can explain the action and tell you what is needed, '
-              'but I will not open a live send or swap flow. '
-              'Enable Guarded or Full Autonomy for that.',
+          ? 'Сейчас режим «Советник»: я только советую. Могу объяснить, что '
+              'нужно для этого действия, а сделать его можете вы сами. Чтобы '
+              'я ${AiVoice.ru('готовил', 'готовила')} операции, включите '
+              '«Ручной», чтобы ${AiVoice.ru('выполнял', 'выполняла')} — '
+              '«Автономный».'
+          : 'The "Advisor" mode is active: I only advise. I can explain what '
+              'this action needs, and you can do it yourself. Choose "Manual" '
+              'for me to prepare operations or "Autonomous" for me to carry '
+              'them out.',
       speechText: languageCode == 'ru'
-          ? 'Режим Manual. Для действий нужен Guarded или Full Autonomy.'
-          : 'Manual mode. Enable Guarded or Full Autonomy for actions.',
+          ? 'Режим «Советник»: я только советую. Для действий нужен «Ручной» '
+              'или «Автономный».'
+          : 'Advisor mode: I only advise. Choose Manual or Autonomous for '
+              'actions.',
       type: ResponseType.info,
     );
+  }
+
+  /// «Советник»: the AI sets and changes no alerts, stop-losses,
+  /// take-profits or watchlist entries — the user does that in the coin card.
+  AssistantResponse _advisorMarketRefusal(String languageCode) {
+    final msg = languageCode == 'ru'
+        ? 'Сейчас режим «Советник»: я только советую и не ставлю и не меняю '
+            'алерты, стоп-лоссы, тейк-профиты и избранное. Сделайте это сами '
+            'в карточке монеты или включите «Ручной».'
+        : 'The "Advisor" mode is active: I only advise and do not set or '
+            'change alerts, stop-losses, take-profits or the watchlist. Do it '
+            'yourself in the coin card, or choose "Manual".';
+    return AssistantResponse.info(msg, speechText: msg);
   }
 
   AssistantResponse _untrustedExecutionBlockedResponse(String languageCode) {
@@ -506,6 +585,8 @@ class GuardianAssistantService {
     'orderId',
     'executedQty',
     'executedPrice',
+    // Only the user's own macros may mark a window as the user's.
+    'byUserMacro',
   };
 
   UICommand _withoutResultPayload(UICommand c) {
@@ -519,29 +600,6 @@ class GuardianAssistantService {
       payload: Map<String, dynamic>.from(payload)
         ..removeWhere((k, _) => _resultPayloadKeys.contains(k)),
     );
-  }
-
-  String _executionOpenMessage(String languageCode, String actionLabel) {
-    final mode = AiControlService.instance.settings.mode;
-    if (languageCode == 'ru') {
-      switch (mode) {
-        case AiMode.manual:
-          return 'Сейчас режим Manual. Для боевых действий нужен Guarded или Full Autonomy.';
-        case AiMode.guarded:
-          return '$actionLabel подготовлю, но финальная подпись будет за вами.';
-        case AiMode.fullAutonomy:
-          return '$actionLabel открываю. В Full Autonomy я могу провести '
-              'действие ${AiVoice.ru('сам', 'сама')} в рамках лимитов.';
-      }
-    }
-    switch (mode) {
-      case AiMode.manual:
-        return 'Manual mode is active. Guarded or Full Autonomy is required for live actions.';
-      case AiMode.guarded:
-        return 'I will prepare $actionLabel, but final signing stays with you.';
-      case AiMode.fullAutonomy:
-        return 'Opening $actionLabel. In Full Autonomy I can execute it myself within your limits.';
-    }
   }
 
   /// Full descriptive message for UI/chat display.
@@ -560,10 +618,10 @@ class GuardianAssistantService {
       return languageCode == 'ru'
           ? 'Открыть $surfaceRu ${AiVoice.ru('сам', 'сама')} не могу: в AI '
               'Control выключено '
-              '«Открытие окон и экранов» (в режиме Manual оно всегда '
+              '«Открытие окон и экранов» (в режиме «Советник» оно всегда '
               'выключено). Откройте вручную.'
           : 'I cannot open the $surfaceEn myself: "Open windows & screens" '
-              'is off in AI Control (always off in Manual mode). '
+              'is off in AI Control (always off in the Advisor mode). '
               'Please open it yourself.';
     }
     return languageCode == 'ru'
@@ -588,10 +646,10 @@ class GuardianAssistantService {
     final msg = languageCode == 'ru'
         ? 'Открывать окна ${AiVoice.ru('сам', 'сама')} сейчас не могу: в AI '
             'Control выключено '
-            '«Открытие окон и экранов» (в режиме Manual оно всегда '
+            '«Открытие окон и экранов» (в режиме «Советник» оно всегда '
             'выключено). Откройте нужный экран вручную.'
         : 'I cannot open windows right now: "Open windows & screens" is off '
-            'in AI Control (always off in Manual mode). Please open the '
+            'in AI Control (always off in the Advisor mode). Please open the '
             'screen yourself.';
     return AssistantResponse.info(msg, speechText: msg);
   }
@@ -624,6 +682,364 @@ class GuardianAssistantService {
       return true;
     }).toList();
   }
+
+  /// Window commands for one window, all or nothing: when the window may not
+  /// open («Открытие окон» off — always so in «Советник»), its fills and
+  /// auto-actions are dropped too, so nothing stays pending on the bus for
+  /// a window the user opens later.
+  List<UICommand> _windowBundle(List<UICommand> commands) {
+    final allowed = _applyWindowPermissions(commands);
+    bool opens(UICommand c) =>
+        c.type == UICommandType.openModal || c.type == UICommandType.navigate;
+    if (commands.any(opens) && !allowed.any(opens)) return const [];
+    return allowed;
+  }
+
+  /// Dispatches one prepared window; false when «Открытие окон» is off.
+  bool _dispatchWindow(UICommand command) {
+    final allowed = _windowBundle([command]);
+    if (allowed.isEmpty) return false;
+    UICommandBus.instance.dispatchAll(allowed);
+    return true;
+  }
+
+  // ── «Автономный»: the AI carries the operation out (D4–D6) ─────────────────
+
+  /// Voice and the market chat in «Автономный»: the AI runs an operation
+  /// itself through [AiActionGate] instead of opening its window. The general
+  /// chat gets a preview card instead, which carries it out the same way.
+  static bool _runsHeadless(AssistantInputSource source) =>
+      AiControlService.instance.settings.mode == AiMode.fullAutonomy &&
+      (source == AssistantInputSource.voice ||
+          source == AssistantInputSource.marketChat);
+
+  /// A transfer with a recipient and an amount, or a swap with both tokens
+  /// and an amount. Never a revoke (C12) — that stays in Panic / Safe.
+  static bool _isHeadlessCandidate(IntentData intent) {
+    final amount = intent.amount;
+    if (amount == null || amount <= 0 || !amount.isFinite) return false;
+    switch (intent.type) {
+      case IntentType.sendAsset:
+        return (intent.toAddress?.trim().isNotEmpty ?? false);
+      case IntentType.swapAsset:
+        return (intent.sourceTokenSymbol?.trim().isNotEmpty ?? false) &&
+            (intent.targetTokenSymbol?.trim().isNotEmpty ?? false);
+      default:
+        return false;
+    }
+  }
+
+  /// A swap side on the ACTIVE network, resolved the way the swap window
+  /// does: the native coin, a token held on this network, or the built-in
+  /// registry. Null when it cannot be resolved reliably — then the
+  /// prefilled window opens instead (D17).
+  ({String address, int decimals})? _resolveSwapSide(String symbol) {
+    final upper = TokenSymbolNormalizer.normalize(symbol).trim().toUpperCase();
+    if (upper.isEmpty) return null;
+    final chainKey = IBITIVaultService.instance.chainKey;
+    final chain = PrivyChainRegistry.getChain(chainKey);
+    if (upper == (chain.nativeSymbol ?? '').toUpperCase()) {
+      return switch (chainKey) {
+        'solana' => (
+            address: 'So11111111111111111111111111111111111111112',
+            decimals: 9,
+          ),
+        'tron' => (address: upper, decimals: 6),
+        _ => (address: ZeroXSwapProvider.nativeTokenSentinel, decimals: 18),
+      };
+    }
+    final evmId = chain.evmChainId;
+    WalletAsset? held;
+    for (final a in VaultPortfolioListener.instance.summary?.allAssets ??
+        const <WalletAsset>[]) {
+      final onChain = a.chainKey.isNotEmpty
+          ? a.chainKey == chainKey
+          : (evmId != null && a.chainId == evmId);
+      if (!onChain || a.symbol.toUpperCase() != upper) continue;
+      if (a.isNative || a.address.isEmpty) continue;
+      if (a.address.toLowerCase() == 'native') continue;
+      if (held == null || a.valueUsd > held.valueUsd) held = a;
+    }
+    if (held != null) return (address: held.address, decimals: held.decimals);
+    final entry = TokenRegistryService.instance
+        .resolveFromRegistry(symbol: upper, chainKey: chainKey);
+    final address = entry?.address;
+    if (entry == null || address == null || address.isEmpty) return null;
+    return (address: address, decimals: entry.decimals);
+  }
+
+  /// The controller's swap preview for [intent] on the active network, or
+  /// null when a token cannot be resolved reliably.
+  Future<AssistantResponse?> _buildSwapPreview(IntentData intent) async {
+    final src = intent.sourceTokenSymbol;
+    final tgt = intent.targetTokenSymbol;
+    if (src == null || tgt == null) return null;
+    final from = _resolveSwapSide(src);
+    final to = _resolveSwapSide(tgt);
+    if (from == null || to == null) return null;
+    final swapIntent = IntentData(
+      type: IntentType.swapAsset,
+      rawInput: intent.rawInput,
+      amount: intent.amount,
+      amountMode: intent.amountMode ?? AmountMode.exactIn,
+      slippageBps: intent.slippageBps,
+      sourceTokenSymbol: TokenSymbolNormalizer.normalize(src).toUpperCase(),
+      targetTokenSymbol: TokenSymbolNormalizer.normalize(tgt).toUpperCase(),
+      sourceTokenAddress: from.address,
+      targetTokenAddress: to.address,
+      sourceTokenDecimals: from.decimals,
+      targetTokenDecimals: to.decimals,
+    );
+    return _controller.requestSwapPreview(swapIntent);
+  }
+
+  /// A preview the AI may run itself, or the reason it cannot. A refusal
+  /// (limits, policy, mandate, no route) never opens a window instead: that
+  /// would be a way around the limit (D6).
+  AssistantResponse _headlessFromPreview(
+    AssistantResponse preview, {
+    required AssistantInputSource source,
+    required String lang,
+    String? preface,
+  }) {
+    final ready = preview.type == ResponseType.preview &&
+        preview.executionPath != null &&
+        preview.policy?.blocked != true &&
+        (preview.pendingTransaction != null || preview.swapPlan != null);
+    if (!ready) {
+      final isRu = lang.startsWith('ru');
+      final reason = preview.message.trim().isNotEmpty
+          ? preview.message.trim()
+          : (isRu
+              ? 'Эту операцию я выполнить не могу.'
+              : 'I cannot carry out this operation.');
+      final msg = _withRaiseHint(reason, isRu);
+      return AssistantResponse(
+        message: _withPreface(preface, msg),
+        speechText: msg,
+        type: preview.type == ResponseType.error
+            ? ResponseType.error
+            : ResponseType.info,
+      );
+    }
+    return _executeHeadless(preview,
+        source: source, lang: lang, preface: preface);
+  }
+
+  /// Hands [preview] to [AiOnchainExecutor] without waiting: the card + PIN
+  /// may take longer than the 30 s voice turn (D15). The executor reports
+  /// the result itself (snack bar, «ИИ выполнил: …»). A refusal known now
+  /// (limits, mandate, EPK, permissions) is said right away, with the hint
+  /// how to allow more (D6).
+  AssistantResponse _executeHeadless(
+    AssistantResponse preview, {
+    required AssistantInputSource source,
+    required String lang,
+    String? preface,
+  }) {
+    final isRu = lang.startsWith('ru');
+    final summary = AiOnchainExecutor.summaryFor(preview, source: source.name);
+    final gate = AiActionGate.instance;
+
+    final pre = gate.precheck(summary);
+    if (!pre.mayExecute) {
+      final msg = pre.reason ??
+          (isRu
+              ? 'Эту операцию я выполнить не могу.'
+              : 'I cannot carry out this operation.');
+      return AssistantResponse.info(_withPreface(preface, msg),
+          speechText: msg);
+    }
+    final plan = preview.swapPlan;
+    final steps = [
+      if (plan?.approveStep != null) plan!.approveStep!,
+      if (plan != null) plan.swapStep else preview.pendingTransaction!,
+    ];
+    for (final step in steps) {
+      final stop = _controller.aiPreflight(step);
+      if (stop != null) {
+        final msg = _withRaiseHint(stop.message, isRu);
+        return AssistantResponse.info(_withPreface(preface, msg),
+            speechText: msg);
+      }
+    }
+    if (gate.hasOpenCard) return _busyResponse(isRu, preface: preface);
+
+    _trackPending(AiOnchainExecutor.instance
+        .executePreview(preview, source: source.name)
+        .then((r) {
+      // Nothing ran because another AI operation holds the lock or nobody
+      // could be asked: the executor stays silent then, so say it here.
+      if (r.deferred) _notifyInApp(r.message);
+    }));
+
+    final what = '${summary.title}, ${summary.amountLabel}';
+    final pinOn = AiControlService.instance.settings.pinRequiredForAi;
+    final String msg;
+    final String speech;
+    if (pinOn) {
+      msg = isRu
+          ? 'Карточка операции на экране: $what. Подтвердите её кнопкой или '
+              'словом «да» и введите ПИН-код.'
+          : 'The operation card is on the screen: $what. Confirm it with the '
+              'button or by saying "yes", then enter your PIN.';
+      speech = isRu
+          ? 'Подтвердите на экране: кнопкой или словом «да», затем ПИН-код.'
+          : 'Please confirm on the screen, then enter your PIN.';
+    } else {
+      msg = isRu
+          ? 'Выполняю: $what. Если адрес новый или цена неизвестна, покажу '
+              'карточку и попрошу ПИН-код. Результат придёт уведомлением.'
+          : 'Carrying it out: $what. For a new address or an unknown price I '
+              'show a card and ask for your PIN. The result comes as a '
+              'notification.';
+      speech = isRu ? 'Выполняю.' : 'On it.';
+    }
+    return AssistantResponse.info(_withPreface(preface, msg),
+        speechText: speech);
+  }
+
+  AssistantResponse _busyResponse(bool isRu, {String? preface}) {
+    final msg = isRu
+        ? 'Сначала ответьте на открытую карточку операции: одновременно я '
+            'выполняю только одно действие с деньгами.'
+        : 'Please answer the open operation card first: I run only one money '
+            'action at a time.';
+    return AssistantResponse.info(_withPreface(preface, msg), speechText: msg);
+  }
+
+  static String _withPreface(String? preface, String msg) {
+    final p = preface?.trim() ?? '';
+    return p.isEmpty ? msg : '$p\n\n$msg';
+  }
+
+  static final _limitWords = RegExp(
+    r'limit|budget|mandate|position cap|лимит|бюджет|мандат|позици',
+    caseSensitive: false,
+  );
+
+  /// Over a limit or outside «AI Мандат»: say how to allow more — never
+  /// prepare a way around it (D6).
+  static String _withRaiseHint(String msg, bool isRu) {
+    final lower = msg.toLowerCase();
+    if (!_limitWords.hasMatch(msg) ||
+        lower.contains('поднимите порог') ||
+        lower.contains('raise the')) {
+      return msg;
+    }
+    return '$msg ${_raiseHint(isRu)}';
+  }
+
+  static String _raiseHint(bool isRu) => isRu
+      ? 'Хотите больше — поднимите порог в «Политике» (нужен ПИН).'
+      : 'Want more? Raise the threshold in Policy (PIN needed).';
+
+  /// The last AI money action started without waiting (card + PIN). Tests
+  /// await it; the app does not.
+  Future<void>? _pendingAiAction;
+
+  void _trackPending(Future<void> job) {
+    _pendingAiAction = job.catchError((Object e) {
+      _log.e('AI action failed', e);
+    });
+  }
+
+  /// Completes when the AI money action started by the last [process] call
+  /// (card + PIN, then the order or transaction) has finished.
+  @visibleForTesting
+  Future<void> pendingAiActionForTest() =>
+      _pendingAiAction ?? Future<void>.value();
+
+  /// A short line at the bottom of the screen (the voice turn has already
+  /// ended when a confirmed order or a refusal comes back).
+  void _notifyInApp(String text) {
+    if (text.trim().isEmpty) return;
+    try {
+      final ctx = AiActionGate.instance.resolveContext();
+      if (ctx == null || !ctx.mounted) return;
+      ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(SnackBar(
+        content: Text(text),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 5),
+      ));
+    } catch (e) {
+      _log.w('in-app note failed: $e');
+    }
+  }
+
+  static final _cardYes = RegExp(
+    r'^(да|ага|угу|давай|подтверждаю|подтверди|подтвердить|верно|ок|окей|'
+    r'хорошо|конечно|выполняй|yes|yeah|yep|sure|confirm|ok|okay|go ahead|'
+    r'do it|proceed)'
+    r'([\s,]+(да|давай|подтверждаю|подтверди|подтвердить|выполняй|конечно|'
+    r'пожалуйста|yes|confirm|please|go ahead|do it))*$',
+  );
+
+  static final _cardNo = RegExp(
+    r'^(нет|не надо|не нужно|не делай|отмена|отмени|отменить|отменяй|стоп|'
+    r'стой|no|nope|cancel|stop|do not|dont)'
+    r'([\s,]+(нет|не надо|не нужно|отмена|отмени|отменить|стоп|пожалуйста|'
+    r'no|cancel|stop|please))*$',
+  );
+
+  /// «да» / «нет» while an AI confirmation card is open, else null.
+  static bool? _cardAnswerFor(String lower, AssistantInputSource source) {
+    if (source == AssistantInputSource.automated) return null;
+    if (!AiActionGate.instance.hasOpenCard) return null;
+    final text = lower
+        .replaceAll(RegExp('[.!?…«»"\'’]'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (text.isEmpty) return null;
+    if (_cardYes.hasMatch(text)) return true;
+    if (_cardNo.hasMatch(text)) return false;
+    return null;
+  }
+
+  /// «А можешь купить…?» — what the AI does in the current mode.
+  static String _canTradeAnswer(bool isRu) {
+    final settings = AiControlService.instance.settings;
+    switch (settings.mode) {
+      case AiMode.manual:
+        return isRu
+            ? 'В режиме «Советник» я только советую: купить можете вы сами, '
+                'в окне биржи или кошелька. Чтобы я '
+                '${AiVoice.ru('готовил', 'готовила')} покупки, включите '
+                '«Ручной».'
+            : 'In the "Advisor" mode I only advise: you can buy yourself in '
+                'the exchange or wallet window. Choose "Manual" for me to '
+                'prepare purchases.';
+      case AiMode.guarded:
+        return isRu
+            ? 'Да. В режиме «Ручной» я открою заполненное окно покупки, а '
+                'подтвердите его вы ПИН-кодом. Скажите монету и сумму.'
+            : 'Yes. In the "Manual" mode I open a filled-in trade window and '
+                'you confirm it with your PIN. Tell me the coin and amount.';
+      case AiMode.fullAutonomy:
+        if (settings.aiPinConfirm) {
+          return isRu
+              ? 'Да. В режиме «Автономный» я куплю '
+                  '${AiVoice.ru('сам', 'сама')} в рамках лимитов и «AI '
+                  'Мандат»: покажу карточку, а вы подтвердите её ПИН-кодом. '
+                  'Скажите монету и сумму.'
+              : 'Yes. In the "Autonomous" mode I buy myself within your '
+                  'limits and mandate: I show a card and you confirm it with '
+                  'your PIN. Tell me the coin and amount.';
+        }
+        return isRu
+            ? 'Да. В режиме «Автономный» я куплю ${AiVoice.ru('сам', 'сама')} '
+                'в рамках лимитов и «AI Мандат», без ПИН-кода, и пришлю '
+                'уведомление. Скажите монету и сумму.'
+            : 'Yes. In the "Autonomous" mode I buy myself within your limits '
+                'and mandate, without the PIN, and send a notification. Tell '
+                'me the coin and amount.';
+    }
+  }
+
+  static String _advisorPlanNote(String lang) => lang.startsWith('ru')
+      ? '\n\n💡 Режим «Советник»: это только совет, сделку вы делаете сами.'
+      : '\n\n💡 Advisor mode: this is advice only; you make the trade '
+          'yourself.';
 
   IntentData _resolveAddressBookRecipient(IntentData intent) {
     if (intent.type != IntentType.sendAsset || intent.toAddress != null) {
@@ -1023,8 +1439,11 @@ class GuardianAssistantService {
     if (isCloseIntent && !norm.isMarketCommand(lower)) {
       if (!canCloseWindows) {
         final msg = effectiveLang == 'ru'
-            ? 'Закрытие окон не разрешено в режиме Manual.'
-            : 'Closing windows is not permitted in Manual mode.';
+            ? 'Закрывать окна ${AiVoice.ru('сам', 'сама')} сейчас не могу: в '
+                'AI-Центре выключено «Закрытие окон» (в режиме «Советник» оно '
+                'всегда выключено).'
+            : 'I cannot close windows right now: "Close windows" is off in '
+                'AI Center (always off in the Advisor mode).';
         return info(
           msg,
           const [],
@@ -1050,57 +1469,61 @@ class GuardianAssistantService {
         lower.contains('help me') ||
         (lower.contains('помог') && lower.contains('команд'))) {
       final mode = AiControlService.instance.settings.mode;
+      final s = AiControlService.instance.settings;
+      final daily = '\$${s.dailyLimit.toStringAsFixed(0)}';
       final String capText;
       if (effectiveLang == 'ru') {
         switch (mode) {
           case AiMode.manual:
-            // Accurate: Manual has window permissions BLOCKED by _applyWindowPermissions.
-            // AI can only describe, explain and read data — it cannot open any screen.
-            capText = 'Я в режиме Manual. '
-                'Могу рассказать ваш баланс, активы, адрес, историю, рынок и лимиты. '
-                'Не могу открывать окна, модалки или переходить на экраны — управление интерфейсом заблокировано. '
-                'Выполнять транзакции также не могу. '
-                'Переключитесь в Guarded или Full Autonomy чтобы я '
-                '${AiVoice.ru('начал', 'начала')} действовать.';
+            // «Советник»: window permissions are off (_applyWindowPermissions);
+            // the AI only explains and reads data.
+            capText = 'Я в режиме «Советник»: только советую. Могу '
+                'рассказать о балансе, активах, адресе, истории, рынке и '
+                'лимитах и объяснить, что и как сделать. Окна не открываю, '
+                'операции не готовлю и не выполняю, алерты и стоп-лоссы не '
+                'ставлю. Чтобы я ${AiVoice.ru('начал', 'начала')} '
+                'действовать, включите «Ручной» или «Автономный».';
             break;
           case AiMode.guarded:
-            capText = 'Я в режиме Guarded. '
-                'Знаю ваш баланс, активы, лимиты, рынок. '
-                'Могу открыть и заполнить форму отправки, обмена, получения. '
-                'Могу открыть Safe, Panic, EPK, AI центр, политики. '
-                'Финальное подтверждение всегда остаётся за вами.';
+            capText = 'Я в режиме «Ручной». Знаю ваш баланс, активы, лимиты '
+                'и рынок. Открываю и заполняю окна отправки, обмена, '
+                'получения и ордера на бирже; могу открыть Safe, Panic, EPK, '
+                'AI-Центр и политики. Подтверждаете всегда вы — кнопкой и '
+                'ПИН-кодом.';
             break;
           case AiMode.fullAutonomy:
-            final s = AiControlService.instance.settings;
-            capText = 'Я в режиме Full Autonomy. '
-                'Могу по вашей просьбе подготовить и исполнить транзакции '
-                'в рамках дневного лимита \$${s.dailyLimit.toStringAsFixed(0)}. '
-                'Знаю баланс, активы, рынок. Могу открыть любой экран или модальное окно.';
+            capText = 'Я в режиме «Автономный». По вашей просьбе заполняю и '
+                'выполняю операции в рамках дневного лимита $daily, «AI '
+                'Мандат» и EPK${s.aiPinConfirm ? ': перед каждой показываю '
+                    'карточку и прошу ПИН-код' : ': без ПИН-кода, только на '
+                    'доверенные адреса, с уведомлением после каждой'}. Знаю '
+                'баланс, активы и рынок, могу открыть любой экран.';
             break;
         }
       } else {
         switch (mode) {
           case AiMode.manual:
-            // Accurate: in Manual mode window permissions are blocked.
-            capText = 'I am in Manual mode. '
-                'I can tell you your balance, assets, address, history, market data and limits verbally. '
-                'I cannot open any windows, modals or navigate to screens — UI control is locked. '
-                'I also cannot execute transactions. '
-                'Switch to Guarded or Full Autonomy to unlock those capabilities.';
+            capText = 'I am in the Advisor mode: I only advise. I can tell '
+                'you your balance, assets, address, history, market data and '
+                'limits and explain what to do. I open no windows and '
+                'prepare or run no operations, alerts or stop-losses. Choose '
+                'Manual or Autonomous for me to act.';
             break;
           case AiMode.guarded:
-            capText = 'I am in Guarded mode. '
-                'I know your balance, assets, limits and market. '
-                'I can open and fill send, swap, receive forms. '
-                'I can open Safe, Panic, EPK, AI center, policy limits. '
-                'Final confirmation always stays with you.';
+            capText = 'I am in the Manual mode. I know your balance, assets, '
+                'limits and market. I open and fill the send, swap, receive '
+                'and exchange order windows, and can open Safe, Panic, EPK, '
+                'AI Center and policy limits. You always confirm, with the '
+                'button and your PIN.';
             break;
           case AiMode.fullAutonomy:
-            final s = AiControlService.instance.settings;
-            capText = 'I am in Full Autonomy mode. '
-                'I can prepare and execute the transactions you ask for '
-                'within a daily limit of \$${s.dailyLimit.toStringAsFixed(0)}. '
-                'I know your balance, assets and market. I can open any screen or modal.';
+            capText = 'I am in the Autonomous mode. On your request I fill '
+                'in and carry out operations within the daily limit of '
+                '$daily, the AI Mandate and EPK${s.aiPinConfirm ? ', with a '
+                    'card and your PIN before each one' : ', without the PIN, '
+                    'only to trusted addresses, with a notification after '
+                    'each one'}. I know your balance, assets and market and '
+                'can open any screen.';
             break;
         }
       }
@@ -1654,8 +2077,30 @@ class GuardianAssistantService {
             return await _handleCexTradeIntent(intent, source, effectiveLang);
           }
 
-          final aiSettings = AiControlService.instance.settings;
           final direction = _extractTradingDirection(lower);
+          // A buy or a sell of a wallet (non-exchange) coin: the same rules
+          // for voice, market chat and general chat (prepare in «Ручной»,
+          // the gate in «Автономный», advice in «Советник»).
+          if (direction != TradingDirection.swap) {
+            final parsed = IntentParser.parse(input);
+            final tradeIntent = IntentData(
+              type: direction == TradingDirection.sell
+                  ? IntentType.sellAsset
+                  : IntentType.buyAsset,
+              tokenSymbol: symbol,
+              amount: parsed.amount ?? _extractAmount(lower),
+              isQuantity: parsed.isQuantity,
+              rawInput: input,
+            );
+            return await _handleOnChainTradeIntent(
+              tradeIntent,
+              effectiveLang,
+              source: source,
+              asset: asset,
+            );
+          }
+
+          final aiSettings = AiControlService.instance.settings;
           final plan = TradingPlanBuilder.build(
             asset: asset,
             direction: direction,
@@ -1669,13 +2114,11 @@ class GuardianAssistantService {
               _buildTradingPlanBriefing(plan, effectiveLang, short: true);
 
           if (currentMode == AiMode.manual) {
-            final manualNote = effectiveLang == 'ru'
-                ? '\n\n⚠️ Режим Manual. Это только анализ.'
-                : '\n\n⚠️ Manual mode. Analysis only.';
-            return info(fullPlan + manualNote, const [], speech: voicePlan);
+            return info(fullPlan + _advisorPlanNote(effectiveLang), const [],
+                speech: voicePlan);
           }
 
-          // Guarded / Full Autonomy: show plan + open swap modal with prefill
+          // «Ручной» / «Автономный»: show plan + open swap modal with prefill
           final commands = <UICommand>[
             UICommand(
               type: UICommandType.showTradingPlan,
@@ -1790,17 +2233,24 @@ class GuardianAssistantService {
 
     if (isPanicIntent) {
       if (!canOpenWindows) {
+        if (currentMode == AiMode.manual) {
+          return info(
+            effectiveLang == 'ru'
+                ? 'Сейчас режим «Советник»: Panic я '
+                    '${AiVoice.ru('сам', 'сама')} не запускаю. Откройте его '
+                    'вручную в разделе «Защита» или включите «Ручной».'
+                : 'The "Advisor" mode is active: I do not start Panic '
+                    'myself. Open it in the Security tab, or choose "Manual".',
+            const [],
+            speech: effectiveLang == 'ru'
+                ? 'Режим «Советник»: Panic запускается вручную.'
+                : 'Advisor mode: open Panic yourself.',
+          );
+        }
         return info(
-          effectiveLang == 'ru'
-              ? 'В режиме Manual я не могу запустить Panic '
-                  '${AiVoice.ru('сам', 'сама')} — это исполнительное действие. '
-                  'Переключитесь в Guarded или Full Autonomy.'
-              : 'In Manual mode I cannot trigger Panic myself — it is an execution action. '
-                  'Switch to Guarded or Full Autonomy.',
+          _surfaceOpenMessage(effectiveLang,
+              surfaceRu: 'Panic', surfaceEn: 'Panic'),
           const [],
-          speech: effectiveLang == 'ru'
-              ? 'Режим Manual: Panic запускается вручную. Переключитесь в Guarded.'
-              : 'Manual mode: open Panic manually or switch to Guarded mode.',
         );
       }
       return info(
@@ -1837,18 +2287,26 @@ class GuardianAssistantService {
 
     if (isSafeIntent) {
       if (!canOpenWindows) {
+        if (currentMode == AiMode.manual) {
+          return info(
+            effectiveLang == 'ru'
+                ? 'Сейчас режим «Советник»: я могу рассказать о рисках, но '
+                    'сканирование ${AiVoice.ru('сам', 'сама')} не запускаю. '
+                    'Запустите Safe Scan в разделе «Защита» или включите '
+                    '«Ручной».'
+                : 'The "Advisor" mode is active: I can explain risks but do '
+                    'not run the scan myself. Start Safe Scan in the Security '
+                    'tab, or choose "Manual".',
+            const [],
+            speech: effectiveLang == 'ru'
+                ? 'Режим «Советник»: сканирование запускается вручную.'
+                : 'Advisor mode: start the scan yourself.',
+          );
+        }
         return info(
-          effectiveLang == 'ru'
-              ? 'В режиме Manual я могу рассказать о рисках, но не запускаю '
-                  'сканирование ${AiVoice.ru('сам', 'сама')}. Включите Guarded '
-                  'или Full Autonomy чтобы я '
-                  '${AiVoice.ru('провёл', 'провела')} Safe-сканирование.'
-              : 'In Manual mode I can explain risks but cannot run the scan myself. '
-                  'Switch to Guarded or Full Autonomy to run Safe Review.',
+          _surfaceOpenMessage(effectiveLang,
+              surfaceRu: 'Safe\u00a0Scan', surfaceEn: 'Safe\u00a0Scan'),
           const [],
-          speech: effectiveLang == 'ru'
-              ? 'Режим Manual: сканирование не запускаю. Переключитесь в Guarded.'
-              : 'Manual mode: I cannot run the scan. Switch to Guarded mode.',
         );
       }
       return info(
@@ -1867,6 +2325,9 @@ class GuardianAssistantService {
     // "поставь TP 5%, SL 5%, алерт 10%" → all three in one go
     final multiActions = MarketMultiActionParser.instance.parse(lower);
     if (multiActions.length >= 2) {
+      if (currentMode == AiMode.manual) {
+        return _advisorMarketRefusal(effectiveLang);
+      }
       final symbol = _extractAssetSymbol(lower) ?? ctx.focusedSymbol?.toUpperCase();
       if (symbol == null) {
         final msg = effectiveLang == 'ru'
@@ -1984,6 +2445,9 @@ class GuardianAssistantService {
         (lower.contains('стоп') &&
             (lower.contains('%') || RegExp(r'\d').hasMatch(lower)));
     if (isTpSlCommand) {
+      if (currentMode == AiMode.manual) {
+        return _advisorMarketRefusal(effectiveLang);
+      }
       // Determine TP or SL
       final isTp = norm.hasTpKeyword(lower);
 
@@ -2066,6 +2530,9 @@ class GuardianAssistantService {
     final isAddFav = norm.hasFavoriteKeyword(lower);
     final isRemoveFav = norm.hasRemoveFavoriteKeyword(lower);
     if (isAddFav || isRemoveFav) {
+      if (currentMode == AiMode.manual) {
+        return _advisorMarketRefusal(effectiveLang);
+      }
       final explicitSymbol = _extractAssetSymbol(lower);
       final symbol = explicitSymbol ?? ctx.focusedSymbol?.toUpperCase();
       if (symbol == null) {
@@ -2123,6 +2590,9 @@ class GuardianAssistantService {
 
     // --- Remove TP/SL via voice/chat (10F: modify/remove) ---
     if (norm.hasRemoveTpKeyword(lower)) {
+      if (currentMode == AiMode.manual) {
+        return _advisorMarketRefusal(effectiveLang);
+      }
       final symbol = _extractAssetSymbol(lower) ??
           ctx.focusedSymbol?.toUpperCase();
       if (symbol != null) {
@@ -2141,6 +2611,9 @@ class GuardianAssistantService {
     }
 
     if (norm.hasRemoveSlKeyword(lower)) {
+      if (currentMode == AiMode.manual) {
+        return _advisorMarketRefusal(effectiveLang);
+      }
       final symbol = _extractAssetSymbol(lower) ??
           ctx.focusedSymbol?.toUpperCase();
       if (symbol != null) {
@@ -2163,6 +2636,9 @@ class GuardianAssistantService {
 
     // Remove alert first
     if (norm.hasRemoveAlertKeyword(lower)) {
+      if (currentMode == AiMode.manual) {
+        return _advisorMarketRefusal(effectiveLang);
+      }
       final symbol = _extractAssetSymbol(lower) ??
           ctx.focusedSymbol?.toUpperCase();
       if (symbol != null) {
@@ -2180,6 +2656,9 @@ class GuardianAssistantService {
 
     final isAlertCommand = norm.hasAlertKeyword(lower);
     if (isAlertCommand && !isTpSlCommand) {
+      if (currentMode == AiMode.manual) {
+        return _advisorMarketRefusal(effectiveLang);
+      }
       final explicitSymbol = _extractAssetSymbol(lower);
       final symbol = explicitSymbol ?? ctx.focusedSymbol?.toUpperCase();
       if (symbol == null) {
@@ -2903,6 +3382,22 @@ class GuardianAssistantService {
     final detectedLang = languageCode ?? LanguageDetector.detect(trimmed);
     final lower = trimmed.toLowerCase();
 
+    // An AI confirmation card is open: «да» = tap «Подтвердить» (the PIN
+    // still follows), «нет» / «отмена» = cancel.
+    final cardAnswer = _cardAnswerFor(lower, source);
+    if (cardAnswer != null) {
+      AiActionGate.instance.answerByVoice(cardAnswer);
+      final isRu = detectedLang.startsWith('ru');
+      final msg = cardAnswer
+          ? (isRu
+              ? 'Подтверждено. Введите ПИН-код на экране.'
+              : 'Confirmed. Enter your PIN on the screen.')
+          : (isRu
+              ? 'Отменено. Ничего не выполнено.'
+              : 'Cancelled. Nothing was done.');
+      return AssistantResponse.info(msg, speechText: msg);
+    }
+
     // ── 0. Hard Greeting Fast-Path (Isolate "Hello" from Operational Context) ──
     // Strictly matching pure greetings to prevent LLM operational hallucinations.
     const pureGreetings = [
@@ -3036,12 +3531,7 @@ class GuardianAssistantService {
           hasTradeIntent = true;
           resolvedTradeIntent = politeTrade;
         } else if (typeStr == 'capabilityQuestion' && confidence >= 0.6) {
-          final isRu = detectedLang.startsWith('ru');
-          final msg = isRu
-              ? 'Да. В Guarded я открою окно покупки для подтверждения. В '
-                  'Full могу купить ${AiVoice.ru('сам', 'сама')} в рамках '
-                  'лимитов. Скажите монету и сумму.'
-              : "Yes. In Guarded I open the trade window for confirmation. In Full I can execute within your limits. Tell me the coin and amount.";
+          final msg = _canTradeAnswer(detectedLang.startsWith('ru'));
           return AssistantResponse.info(msg, speechText: msg);
         }
 
@@ -3118,7 +3608,11 @@ class GuardianAssistantService {
         if (isCexAsset) {
           return await _handleCexTradeIntent(resolvedTradeIntent, source, detectedLang);
         } else {
-          return await _handleOnChainTradeIntent(resolvedTradeIntent, detectedLang);
+          return await _handleOnChainTradeIntent(
+            resolvedTradeIntent,
+            detectedLang,
+            source: source,
+          );
         }
       }
     }
@@ -3161,6 +3655,33 @@ class GuardianAssistantService {
       // SwapVoiceOrchestrator is async → cannot go through _fallbackUiCommandsForIntent()
       // which is sync. Intercept here, before the generic command pipeline.
       if (parsedIntent.type == IntentType.swapAsset) {
+        // «Автономный»: a swap with both tokens and the amount runs through
+        // the gate (voice / market chat) or comes back as a preview card
+        // the chat carries out (general chat), without opening the window.
+        // A token it cannot resolve reliably opens the prefilled window.
+        if (AiControlService.instance.settings.mode == AiMode.fullAutonomy &&
+            source != AssistantInputSource.automated &&
+            _isHeadlessCandidate(parsedIntent)) {
+          final preview = await _buildSwapPreview(parsedIntent);
+          if (preview != null) {
+            if (_runsHeadless(source)) {
+              return _headlessFromPreview(preview,
+                  source: source, lang: detectedLang);
+            }
+            if (preview.type != ResponseType.preview) {
+              // Refused (limits, policy, no route): the reason, never a
+              // window around it.
+              final msg = _withRaiseHint(
+                  preview.message, detectedLang.startsWith('ru'));
+              return AssistantResponse(
+                message: msg,
+                speechText: msg,
+                type: preview.type,
+              );
+            }
+            return _enhanceForVoice(preview, languageCode: detectedLang);
+          }
+        }
         final swapResult =
             await SwapVoiceOrchestrator.instance.handleSwapIntent(
           sourceSymbol: parsedIntent.sourceTokenSymbol,
@@ -3168,23 +3689,41 @@ class GuardianAssistantService {
           amount: parsedIntent.amount,
           lang: detectedLang,
         );
-        if (swapResult.commands.isNotEmpty) {
-          UICommandBus.instance.dispatchAll(swapResult.commands);
+        // The prefilled window obeys «Открытие окон» like every other.
+        final swapCmds = _windowBundle(swapResult.commands);
+        if (swapResult.commands.isNotEmpty && swapCmds.isEmpty) {
+          return _windowsBlockedResponse(detectedLang);
+        }
+        if (swapCmds.isNotEmpty) {
+          UICommandBus.instance.dispatchAll(swapCmds);
         }
         return AssistantResponse.info(
           swapResult.speechText,
           speechText: swapResult.speechText,
-          commands: swapResult.commands,
+          commands: swapCmds,
         );
       }
 
-      final parsedCommands = _commandsAllowedForMode(
-        parsedIntent,
-        _mergeUiCommands(
-          _fallbackUiCommandsForIntent(parsedIntent),
-          _fallbackUiCommandsForText(expanded),
-        ),
-      );
+      // «Автономный»: a transfer with a recipient and an amount is carried
+      // out by the AI itself through the gate — headless from voice / market
+      // chat, as the preview card in the general chat — so the send window
+      // is decided against BEFORE anything is dispatched (C11). A revoke
+      // never runs this way (C12).
+      final aiRunsSend = parsedIntent.type == IntentType.sendAsset &&
+          AiControlService.instance.settings.mode == AiMode.fullAutonomy &&
+          source != AssistantInputSource.automated &&
+          _isHeadlessCandidate(parsedIntent);
+      final headlessSend = aiRunsSend && _runsHeadless(source);
+
+      final parsedCommands = aiRunsSend
+          ? const <UICommand>[]
+          : _commandsAllowedForMode(
+              parsedIntent,
+              _mergeUiCommands(
+                _fallbackUiCommandsForIntent(parsedIntent),
+                _fallbackUiCommandsForText(expanded),
+              ),
+            );
       // Apply window permissions (openWindows/closeWindows) on top of
       // _commandsAllowedForMode so Manual mode cannot navigate/openModal via
       // the IntentParser fast route either.
@@ -3219,6 +3758,10 @@ class GuardianAssistantService {
           parsedIntent.type == IntentType.showRisks) {
         final parsedResponse =
             await _controller.orchestrate(IntentRouter.route(parsedIntent));
+        if (headlessSend) {
+          return _headlessFromPreview(parsedResponse,
+              source: source, lang: detectedLang);
+        }
         return _enhanceForVoice(
           parsedResponse,
           languageCode: detectedLang,
@@ -3313,7 +3856,18 @@ class GuardianAssistantService {
     // Dispatch UI commands with unified window-permission filtering.
     // _commandsAllowedForMode handled execution intents; _applyWindowPermissions
     // handles navigate/openModal/dismiss based on openWindows/closeWindows flags.
-    final permFilteredCmds = _applyWindowPermissions(filteredUiCommands);
+    // «Автономный»: a transfer or swap the AI can run itself goes through
+    // the gate (headless from voice / market chat, the preview card in the
+    // general chat) instead of its window, so the window commands are not
+    // dispatched at all (C11).
+    final aiRunsIntent = effectiveIntent != null &&
+        AiControlService.instance.settings.mode == AiMode.fullAutonomy &&
+        source != AssistantInputSource.automated &&
+        _isHeadlessCandidate(effectiveIntent);
+    final headlessIntent = aiRunsIntent && _runsHeadless(source);
+    final permFilteredCmds = aiRunsIntent
+        ? const <UICommand>[]
+        : _applyWindowPermissions(filteredUiCommands);
     if (permFilteredCmds.isNotEmpty) {
       UICommandBus.instance.dispatchAll(permFilteredCmds);
     }
@@ -3365,6 +3919,42 @@ class GuardianAssistantService {
     // Operator Mode
     final intent = effectiveIntent!;
 
+    if (aiRunsIntent && intent.type == IntentType.swapAsset) {
+      final preview = await _buildSwapPreview(intent);
+      if (preview != null) {
+        if (headlessIntent) {
+          return _headlessFromPreview(preview,
+              source: source,
+              lang: detectedLang,
+              preface: directive.displayMessage);
+        }
+        if (preview.type != ResponseType.preview) {
+          // Refused (limits, policy, no route): the reason, never a window.
+          final msg = _withRaiseHint(
+              preview.message, detectedLang.startsWith('ru'));
+          return AssistantResponse(
+            message: _withPreface(directive.displayMessage, msg),
+            speechText: msg,
+            type: preview.type,
+          );
+        }
+        return _enhanceForVoice(preview,
+            languageCode: detectedLang,
+            displayPreface: directive.displayMessage,
+            speechPreface: directive.speechText);
+      }
+      // A token it cannot resolve reliably: the prefilled window (D17).
+      final windowCmds = _windowBundle(filteredUiCommands);
+      if (windowCmds.isNotEmpty) {
+        UICommandBus.instance.dispatchAll(windowCmds);
+      }
+      return _unsupportedSwapTokenResponse(
+          detectedLang,
+          _resolveSwapSide(intent.sourceTokenSymbol ?? '') == null
+              ? (intent.sourceTokenSymbol ?? '?')
+              : (intent.targetTokenSymbol ?? '?'));
+    }
+
     // Resolve specific tokens if it's a swap to fill missing backend data for demo
     if (intent.type == IntentType.swapAsset &&
         intent.sourceTokenAddress == null) {
@@ -3409,6 +3999,13 @@ class GuardianAssistantService {
 
     final routerAction = IntentRouter.route(intent);
     final systemResponse = await _controller.orchestrate(routerAction);
+
+    if (headlessIntent) {
+      return _headlessFromPreview(systemResponse,
+          source: source,
+          lang: detectedLang,
+          preface: directive.displayMessage);
+    }
 
     return _enhanceForVoice(systemResponse,
         languageCode: detectedLang,
@@ -3487,43 +4084,6 @@ class GuardianAssistantService {
       executionPath: response.executionPath,
       swapPlan: response.swapPlan,
     );
-  }
-
-  Future<AssistantResponse> processAutomatedSignal(
-      String automatedInput) async {
-    if (!automatedInput.startsWith('_AUTO_ ')) {
-      return AssistantResponse.error('Invalid syntax');
-    }
-    final split = automatedInput.replaceFirst('_AUTO_ ', '').split('||');
-    if (split.length != 2) return AssistantResponse.error('Malformed syntax');
-    final intent = IntentParser.parse(split[1]);
-    final automatedIntent = IntentData(
-      type: intent.type,
-      rawInput: intent.rawInput,
-      tokenSymbol: intent.tokenSymbol,
-      toAddress: intent.toAddress,
-      amount: intent.amount,
-      rawAmount: intent.rawAmount,
-      sourceTokenSymbol: intent.sourceTokenSymbol,
-      sourceTokenAddress: intent.sourceTokenAddress,
-      targetTokenSymbol: intent.targetTokenSymbol,
-      targetTokenAddress: intent.targetTokenAddress,
-      amountMode: intent.amountMode,
-      slippageBps: intent.slippageBps,
-      sourceTrigger: split[0],
-    );
-    final action = IntentRouter.route(automatedIntent);
-    return await _controller.orchestrate(action);
-  }
-
-  Future<AssistantResponse> confirmTransaction(
-      TransactionRequest tx, ExecutionPath path) async {
-    return await _controller.orchestrateConfirmation(tx, path);
-  }
-
-  Future<AssistantResponse> confirmSwapStep(
-      TransactionRequest step, ExecutionPath path) async {
-    return await _controller.orchestrateSwapStep(step, path);
   }
 
   // ── Personal Memory Helpers ───────────────────────────────────────────────
@@ -3686,16 +4246,21 @@ class GuardianAssistantService {
 
     // Check if macro is allowed in current mode.
     if (!macro.allowedModes.contains(currentMode)) {
+      final label = _aiModeLabel(currentMode, isRu: lang == 'ru');
       return AssistantResponse.info(
         lang == 'ru'
-            ? 'Макрос «${macro.triggerPhrase}» недоступен в режиме ${currentMode.name}.'
-            : 'Macro "${macro.triggerPhrase}" is not available in ${currentMode.name} mode.',
+            ? 'Макрос «${macro.triggerPhrase}» недоступен в режиме $label.'
+            : 'Macro "${macro.triggerPhrase}" is not available in the $label mode.',
       );
     }
 
-    // Build UICommands from macro actions.
+    // Build UICommands from macro actions. A macro is the user's own fixed
+    // phrase: the windows it opens are marked as the user's ('byUserMacro'),
+    // so a Panic opened by «эвакуация» keeps its revoke button after the
+    // switch to «Советник».
     final commands = <UICommand>[];
     var modeRaiseBlocked = false;
+    AiMode? switchTo;
     for (final action in macro.actions) {
       switch (action.type) {
         case MacroActionType.navigate:
@@ -3708,7 +4273,7 @@ class GuardianAssistantService {
           commands.add(UICommand(
             type: UICommandType.openModal,
             target: action.target,
-            payload: action.payload,
+            payload: {...?action.payload, 'byUserMacro': true},
           ));
         case MacroActionType.executeAction:
           commands.add(UICommand(
@@ -3724,11 +4289,14 @@ class GuardianAssistantService {
             'fullAutonomy' => AiMode.fullAutonomy,
             _ => null,
           };
-          // A phrase may only tighten the mode. Raising it (towards Full
-          // Autonomy) needs PIN in AI Control — never a typed/spoken macro.
+          // A phrase may only tighten the mode. Raising it (towards
+          // «Автономный») needs PIN in AI Control — never a typed/spoken
+          // macro.
           if (targetMode != null) {
             if (targetMode.index <= currentMode.index) {
-              AiControlService.instance.updateMode(targetMode);
+              if (switchTo == null || targetMode.index < switchTo.index) {
+                switchTo = targetMode;
+              }
             } else {
               modeRaiseBlocked = true;
             }
@@ -3736,10 +4304,17 @@ class GuardianAssistantService {
       }
     }
 
-    // Apply permissions and dispatch
-    final permitted = _applyWindowPermissions(commands);
+    // Windows first, with the permissions in force when the phrase was
+    // said; the mode switch after. «эвакуация» used to switch to «Советник»
+    // first, which has no «Открытие окон», so Panic never opened.
+    final permitted = _windowBundle(commands);
+    final windowsDropped = commands.isNotEmpty && permitted.isEmpty;
     if (permitted.isNotEmpty) {
       UICommandBus.instance.dispatchAll(permitted);
+    }
+    final newMode = switchTo;
+    if (newMode != null && newMode != currentMode) {
+      unawaited(AiControlService.instance.updateMode(newMode));
     }
 
     final raiseNote = !modeRaiseBlocked
@@ -3747,10 +4322,24 @@ class GuardianAssistantService {
         : lang == 'ru'
             ? '\nРежим ИИ макросом не повышаю — включите его в «Безопасность → AI Control» (нужен PIN).'
             : '\nI will not raise the AI mode from a macro — enable it in Security → AI Control (PIN required).';
+    final windowNote = !windowsDropped
+        ? ''
+        : lang == 'ru'
+            ? '\nОкно я не ${AiVoice.ru('открыл', 'открыла')}: «Открытие окон» '
+                'выключено (в режиме «Советник» всегда). Откройте его сами.'
+            : '\nI did not open the window: "Open windows" is off (always in '
+                'the Advisor mode). Please open it yourself.';
+    // The built-in «эвакуация» was saved with the old mode name.
+    final description = macro.description ==
+            'Panic → отозвать все разрешения → переключить на Manual'
+        ? (lang == 'ru'
+            ? 'Panic → отозвать все разрешения → режим «Советник»'
+            : 'Panic → revoke all approvals → the Advisor mode')
+        : macro.description;
     return AssistantResponse(
       message: lang == 'ru'
-          ? '⚡ Макрос «${macro.triggerPhrase}»: ${macro.description}$raiseNote'
-          : '⚡ Macro "${macro.triggerPhrase}": ${macro.description}$raiseNote',
+          ? '⚡ Макрос «${macro.triggerPhrase}»: $description$raiseNote$windowNote'
+          : '⚡ Macro "${macro.triggerPhrase}": $description$raiseNote$windowNote',
       speechText: lang == 'ru'
           ? 'Выполняю ${macro.triggerPhrase}.'
           : 'Executing ${macro.triggerPhrase}.',
@@ -4186,9 +4775,13 @@ class GuardianAssistantService {
     final lower = input.toLowerCase();
     final ai = AiControlService.instance.settings;
     final mode = switch (ai.mode) {
-      AiMode.manual => 'Manual (analysis only)',
-      AiMode.guarded => 'Guarded (prepare, user confirms)',
-      AiMode.fullAutonomy => 'Full Autonomy (execute within limits)',
+      AiMode.manual =>
+        'Advisor (advice only: the AI opens, prepares and runs nothing)',
+      AiMode.guarded =>
+        'Manual (the AI prepares windows; the user confirms with the PIN)',
+      AiMode.fullAutonomy =>
+        'Autonomous (the AI executes within limits, mandate and EPK; '
+            'AI action PIN confirmation: ${ai.aiPinConfirm ? 'ON' : 'OFF'})',
     };
     final mandate = ai.mandate;
 
@@ -4369,11 +4962,12 @@ class GuardianAssistantService {
     final isRu = lang.startsWith('ru');
     final isBuy = intent.type == IntentType.buyAsset;
 
-    // 1. Input Source Constraints
-    if (source != AssistantInputSource.voice && source != AssistantInputSource.marketChat) {
+    // 1. Exchange orders only on the user's own request — voice, market
+    // chat or general chat (D8). Automated signals never place them.
+    if (source == AssistantInputSource.automated) {
       final msg = isRu
-          ? 'Торговля CEX поддерживается только через голосовые команды или рыночный чат.'
-          : 'CEX trading is only supported via voice commands or market chat.';
+          ? 'Торговля CEX поддерживается только по вашей просьбе: голосом или в чате.'
+          : 'CEX trading is only supported on your request: by voice or in chat.';
       return AssistantResponse.info(msg, speechText: msg);
     }
 
@@ -4410,11 +5004,9 @@ class GuardianAssistantService {
             ? 'guarded'
             : 'fullAutonomy';
 
-    // 3. Manual Mode
+    // 3. «Советник»: advice only — the user places the order himself.
     if (mode == AiMode.manual) {
-      final msg = isRu
-          ? 'Торговля отключена в режиме Manual. Переключитесь в Guarded или Full Autonomy.'
-          : 'Trading is disabled in Manual Mode. Switch to Guarded or Full Autonomy.';
+      const msg = 'Advisor mode: the AI only advises.';
       await MarketMemoryService.instance.record(
         action: isBuy ? 'buy' : 'sell',
         symbol: symbol,
@@ -4429,7 +5021,7 @@ class GuardianAssistantService {
       return _manualExecutionBlockedResponse(lang);
     }
 
-    // --- GUARDED MODE FAST PATH (Instant Modal, No Network Block) ---
+    // --- «Ручной»: the prefilled order window, the user confirms with PIN ---
     if (mode == AiMode.guarded) {
       if (intent.amount == null) {
         final msg = isRu ? 'Укажите сумму.' : 'Please specify the amount.';
@@ -4491,7 +5083,10 @@ class GuardianAssistantService {
         payload: modalPayload,
       );
 
-      UICommandBus.instance.dispatch(modalCmd);
+      // The prepared window obeys «Открытие окон» like every other.
+      if (!_dispatchWindow(modalCmd)) {
+        return _windowsBlockedResponse(lang);
+      }
 
       // Async/fire-and-forget record to MarketMemory
       MarketMemoryService.instance.record(
@@ -4506,8 +5101,8 @@ class GuardianAssistantService {
       );
 
       final msg = isRu
-          ? '${AiVoice.ru('Подготовил', 'Подготовила')} ордер на ${isBuy ? 'покупку' : 'продажу'} $symbol на ${exchangeId.toUpperCase()}. Пожалуйста, подтвердите вручную.'
-          : 'Prepared trade modal to ${isBuy ? 'buy' : 'sell'} $symbol on ${exchangeId.toUpperCase()}. Please confirm manually.';
+          ? '${AiVoice.ru('Подготовил', 'Подготовила')} ордер на ${isBuy ? 'покупку' : 'продажу'} $symbol на ${exchangeId.toUpperCase()}. Пожалуйста, подтвердите вручную: кнопкой и ПИН-кодом.'
+          : 'Prepared trade modal to ${isBuy ? 'buy' : 'sell'} $symbol on ${exchangeId.toUpperCase()}. Please confirm manually, with the button and your PIN.';
       return AssistantResponse.info(
         msg,
         speechText: msg,
@@ -4515,7 +5110,7 @@ class GuardianAssistantService {
       );
     }
 
-    // 4. Resolve exchange (Full Autonomy Mode only)
+    // 4. Resolve exchange («Автономный» only)
     final resolvedInfo = await _resolveBestExchangeAndPrice(symbol);
     if (resolvedInfo == null) {
       final msg = isRu
@@ -4540,40 +5135,34 @@ class GuardianAssistantService {
     final double price = resolvedInfo['price'];
     final ExchangeExecutionAdapter adapter = resolvedInfo['adapter'];
 
-    // 5. Amount Checks & Conversion Rules (Full Autonomy Mode only)
-    double? orderAmount; // For buy: quote value to spend. For sell: base qty to sell.
-    double? sellQty; // Only for sell
-
+    // 5. Amount Checks & Conversion Rules («Автономный» only)
     if (intent.amount == null) {
       final msg = isRu ? 'Укажите сумму.' : 'Please specify the amount.';
       final speech = isRu ? 'Сумма?' : 'Amount?';
       return AssistantResponse.info(msg, speechText: speech);
     }
 
+    // For a buy: the quote value to spend. For a sell: the coins to sell.
     final double amt = intent.amount!;
+    final double orderAmount;
     if (isBuy) {
-      if (intent.isQuantity) {
-        orderAmount = amt * price;
-      } else {
-        orderAmount = amt;
-      }
+      orderAmount = intent.isQuantity ? amt * price : amt;
     } else {
       final baseBalance = await adapter.fetchAssetBalance(symbol);
       if (amt == -1.0) {
-        sellQty = baseBalance;
+        orderAmount = baseBalance;
       } else if (amt < 0.0) {
-        sellQty = baseBalance * amt.abs();
+        orderAmount = baseBalance * amt.abs();
       } else if (intent.isQuantity) {
-        sellQty = amt;
+        orderAmount = amt;
       } else {
-        sellQty = amt / price;
+        orderAmount = amt / price;
       }
-      orderAmount = sellQty;
     }
 
     final settings = AiControlService.instance.settings;
 
-    // 6. Balance Checks (Full Autonomy Mode only)
+    // 6. Balance Checks («Автономный» only)
     if (isBuy) {
       final quoteBalance = await adapter.fetchAssetBalance(quoteAsset);
       final minTradeBal = settings.minTradeBalance;
@@ -4596,17 +5185,17 @@ class GuardianAssistantService {
       }
     } else {
       final baseBalance = await adapter.fetchAssetBalance(symbol);
-      if (sellQty == null || sellQty <= 0.0 || baseBalance < sellQty) {
+      if (orderAmount <= 0.0 || baseBalance < orderAmount) {
         final msg = isRu
-            ? 'Недостаточный баланс $symbol на ${exchangeId.toUpperCase()}. Доступно: $baseBalance, требуется: ${sellQty ?? 0.0}'
-            : 'Insufficient $symbol balance on ${exchangeId.toUpperCase()}. Available: $baseBalance, required: ${sellQty ?? 0.0}';
+            ? 'Недостаточный баланс $symbol на ${exchangeId.toUpperCase()}. Доступно: $baseBalance, требуется: $orderAmount'
+            : 'Insufficient $symbol balance on ${exchangeId.toUpperCase()}. Available: $baseBalance, required: $orderAmount';
         await MarketMemoryService.instance.record(
           action: 'sell',
           symbol: symbol,
           source: source.name,
           aiMode: modeStr,
           result: 'failed',
-          amount: sellQty,
+          amount: orderAmount,
           priceThen: price,
           reason: msg,
           rawInput: intent.rawInput,
@@ -4615,7 +5204,7 @@ class GuardianAssistantService {
       }
     }
 
-    // 7. Policy Limits & EPK check (Full Autonomy Mode only)
+    // 7. Policy Limits check («Автономный» only)
     if (!settings.isActive) {
       final msg = isRu
           ? 'Торговля заблокирована политикой AI Control (активен экстренный стоп или истекло время разрешений).'
@@ -4634,14 +5223,14 @@ class GuardianAssistantService {
       return AssistantResponse.info(msg, speechText: msg);
     }
 
-    final txValueUsdt = isBuy ? orderAmount! : sellQty! * price;
+    final txValueUsdt = isBuy ? orderAmount : orderAmount * price;
     final delegation = DelegationController.instance;
 
     if (isBuy) {
       if (!delegation.canSpend(txValueUsdt)) {
         final msg = isRu
-            ? 'Сумма ордера (\$${txValueUsdt.toStringAsFixed(2)}) превышает оставшийся дневной бюджет. ${delegation.usageSummary()}'
-            : 'Order value (\$${txValueUsdt.toStringAsFixed(2)}) exceeds remaining daily budget. ${delegation.usageSummary()}';
+            ? 'Сумма ордера (\$${txValueUsdt.toStringAsFixed(2)}) превышает оставшийся дневной бюджет. ${delegation.usageSummary()} ${_raiseHint(true)}'
+            : 'Order value (\$${txValueUsdt.toStringAsFixed(2)}) exceeds remaining daily budget. ${delegation.usageSummary()} ${_raiseHint(false)}';
         await MarketMemoryService.instance.record(
           action: 'buy',
           symbol: symbol,
@@ -4658,26 +5247,32 @@ class GuardianAssistantService {
     }
 
     // Selling the whole balance (or a share of it) always goes through the
-    // confirmation window, even in Full Autonomy: one misheard "продай всё"
-    // must not dump a position.
+    // order window, even in «Автономный» and with the PIN setting off: one
+    // misheard "продай всё" must not dump a position (D8).
     final sellsBalanceShare = !isBuy && amt < 0.0;
-    if (mode == AiMode.guarded || sellsBalanceShare) {
-      final modalPayload = {
-        'symbol': symbol,
-        'isBuy': isBuy,
-        'exchangeId': exchangeId,
-        'initialAmount': orderAmount,
-        'price': price,
-        'quoteAsset': quoteAsset,
-      };
-
+    if (sellsBalanceShare) {
       final modalCmd = UICommand(
         type: UICommandType.openModal,
         target: 'cex_trade',
-        payload: modalPayload,
+        payload: {
+          'symbol': symbol,
+          'isBuy': isBuy,
+          'exchangeId': exchangeId,
+          'initialAmount': orderAmount,
+          'price': price,
+          'quoteAsset': quoteAsset,
+        },
       );
-
-      UICommandBus.instance.dispatch(modalCmd);
+      if (!_dispatchWindow(modalCmd)) {
+        final msg = isRu
+            ? 'Продажу всего баланса или его доли вы подтверждаете в окне '
+                'ордера, а открыть его я сейчас не могу: «Открытие окон» '
+                'выключено. Откройте ордер сами на экране рынка.'
+            : 'Selling all or a share of a balance is confirmed in the order '
+                'window, and I cannot open it now: "Open windows" is off. '
+                'Open the order yourself on the Market screen.';
+        return AssistantResponse.info(msg, speechText: msg);
+      }
 
       await MarketMemoryService.instance.record(
         action: isBuy ? 'buy' : 'sell',
@@ -4691,8 +5286,8 @@ class GuardianAssistantService {
       );
 
       final msg = isRu
-          ? '${AiVoice.ru('Подготовил', 'Подготовила')} ордер на ${isBuy ? 'покупку' : 'продажу'} $symbol на ${exchangeId.toUpperCase()}. Пожалуйста, подтвердите вручную.'
-          : 'Prepared trade modal to ${isBuy ? 'buy' : 'sell'} $symbol on ${exchangeId.toUpperCase()}. Please confirm manually.';
+          ? '${AiVoice.ru('Подготовил', 'Подготовила')} ордер на продажу $symbol на ${exchangeId.toUpperCase()}. Пожалуйста, подтвердите вручную: продажу всего баланса или его доли я без вас не выполняю.'
+          : 'Prepared trade modal to sell $symbol on ${exchangeId.toUpperCase()}. Please confirm manually: I never sell all or a share of a balance without you.';
       return AssistantResponse.info(
         msg,
         speechText: msg,
@@ -4700,26 +5295,190 @@ class GuardianAssistantService {
       );
     }
 
-    if (mode == AiMode.fullAutonomy) {
-      final orderResult = await ExchangeOrderService.instance.placeMarketOrder(
+    // 8. «Автономный»: through AiActionGate — the card + PIN (the setting ON,
+    // the default) or by itself within the limits (OFF); never above a limit
+    // or outside «AI Мандат» (D5–D7).
+    final amountLabel = isBuy
+        ? '${_fmtAmount(orderAmount)} $quoteAsset'
+        : '${_fmtAmount(orderAmount)} $symbol (≈ ${txValueUsdt.toStringAsFixed(2)} $quoteAsset)';
+    final summary = ExchangeOrderService.aiOrderSummary(
+      exchangeId: exchangeId,
+      symbol: symbol,
+      isBuy: isBuy,
+      valueUsd: txValueUsdt,
+      title: _cexOrderTitle(isBuy, symbol, exchangeId),
+      amountLabel: amountLabel,
+      feeLabel: LocalizationService.instance
+          .t('aiCexFeeLabel', {'default': '≈0.1% exchange fee'}),
+      source: source.name,
+    );
+
+    final pre = AiActionGate.instance.precheck(summary);
+    if (!pre.mayExecute) {
+      final msg = pre.reason ??
+          (isRu
+              ? 'Этот ордер я выставить не могу.'
+              : 'I cannot place this order.');
+      await MarketMemoryService.instance.record(
+        action: isBuy ? 'buy' : 'sell',
+        symbol: symbol,
+        source: source.name,
+        aiMode: modeStr,
+        result: 'blocked',
+        amount: orderAmount,
+        priceThen: price,
+        reason: msg,
+        rawInput: intent.rawInput,
+      );
+      return AssistantResponse.info(msg, speechText: msg);
+    }
+    if (AiActionGate.instance.hasOpenCard) return _busyResponse(isRu);
+
+    Future<AssistantResponse> run({required bool background}) =>
+        _runGatedCexOrder(
+          summary: summary,
+          exchangeId: exchangeId,
+          symbol: symbol!,
+          isBuy: isBuy,
+          orderAmount: orderAmount,
+          price: price,
+          quoteAsset: quoteAsset,
+          source: source,
+          modeStr: modeStr,
+          lang: lang,
+          rawInput: intent.rawInput,
+          background: background,
+        );
+
+    // The card + PIN may take longer than the 30 s voice turn: never wait
+    // for them inside it (D15). The result comes as the order window
+    // (success) or a line on the screen, plus «ИИ выполнил: …».
+    final needsCard = settings.pinRequiredForAi ||
+        !IBITIVaultService.instance.isUnlocked;
+    if (needsCard) {
+      _trackPending(run(background: true).then((_) {}));
+      final exchange = _exchangeLabel(exchangeId);
+      final msg = isRu
+          ? 'Карточка ордера на экране: ${isBuy ? 'покупка' : 'продажа'} '
+              '$symbol на $exchange, $amountLabel. Подтвердите её кнопкой или '
+              'словом «да» и введите ПИН-код.'
+          : 'The order card is on the screen: ${isBuy ? 'buy' : 'sell'} '
+              '$symbol on $exchange, $amountLabel. Confirm it with the button '
+              'or by saying "yes", then enter your PIN.';
+      final speech = isRu
+          ? 'Подтвердите на экране: кнопкой или словом «да», затем ПИН-код.'
+          : 'Please confirm on the screen, then enter your PIN.';
+      return AssistantResponse.info(msg, speechText: speech);
+    }
+    return run(background: false);
+  }
+
+  /// The gate, then the order, then the report (audit + «ИИ выполнил»).
+  /// [background]: nobody waits for the answer (the voice turn has ended),
+  /// so a refusal or a failure is also shown as a line on the screen.
+  Future<AssistantResponse> _runGatedCexOrder({
+    required AiActionSummary summary,
+    required String exchangeId,
+    required String symbol,
+    required bool isBuy,
+    required double orderAmount,
+    required double price,
+    required String quoteAsset,
+    required AssistantInputSource source,
+    required String modeStr,
+    required String lang,
+    required String rawInput,
+    required bool background,
+  }) async {
+    final isRu = lang.startsWith('ru');
+    final gate = AiActionGate.instance;
+
+    AssistantResponse notDone(String msg, {String memory = 'blocked'}) {
+      MarketMemoryService.instance.record(
+        action: isBuy ? 'buy' : 'sell',
+        symbol: symbol,
+        source: source.name,
+        aiMode: modeStr,
+        result: memory,
+        amount: orderAmount,
+        priceThen: price,
+        reason: msg,
+        rawInput: rawInput,
+      );
+      if (background) _notifyInApp(msg);
+      return AssistantResponse.info(msg, speechText: msg);
+    }
+
+    AiGateDecision decision;
+    try {
+      decision = await gate.confirm(summary);
+    } catch (e) {
+      _log.e('AI order confirmation failed', e);
+      return notDone(isRu
+          ? 'Не удалось показать подтверждение. Ордер не выставлен.'
+          : 'Could not show the confirmation. No order was placed.');
+    }
+    if (!decision.mayExecute) {
+      final msg = decision.reason ??
+          (isRu
+              ? 'Ордер не выставлен.'
+              : 'No order was placed.');
+      return notDone(msg,
+          memory: decision.outcome == AiGateOutcome.cancelled
+              ? 'cancelled'
+              : 'blocked');
+    }
+    if (!decision.matches(summary)) {
+      gate.release(decision);
+      return notDone(isRu
+          ? 'Подтверждение не совпало с ордером. Ордер не выставлен.'
+          : 'The confirmation does not match this order. No order was placed.');
+    }
+
+    ExchangeOrderResult orderResult;
+    try {
+      orderResult = await ExchangeOrderService.instance.placeMarketOrder(
         exchangeId: exchangeId,
         symbol: symbol,
         isBuy: isBuy,
         amount: orderAmount,
         price: price,
         source: source.name,
+        aiGate: decision,
       );
+    } catch (e) {
+      orderResult = ExchangeOrderResult(
+          isSuccess: false, errorMessage: 'Execution error: $e');
+    }
 
-      if (orderResult.isSuccess) {
-        final successMsg = isRu
-            ? 'Ордер успешно выполнен на ${exchangeId.toUpperCase()}! ID ордера: ${orderResult.orderId}'
-            : 'Order executed successfully on ${exchangeId.toUpperCase()}! Order ID: ${orderResult.orderId}';
+    try {
+      await gate.reportExecuted(
+        summary,
+        decision,
+        success: orderResult.isSuccess,
+        detail: orderResult.isSuccess
+            ? (orderResult.orderId == null ? null : '#${orderResult.orderId}')
+            : orderResult.errorMessage,
+        historyId: orderResult.historyId,
+      );
+    } catch (e) {
+      _log.w('AI order report failed: $e');
+      gate.release(decision);
+    }
 
-        final speechMsg = isRu
-            ? 'Ордер исполнен, удачных торгов.'
-            : 'Order executed, happy trading.';
+    if (orderResult.isSuccess) {
+      final successMsg = isRu
+          ? 'Ордер успешно выполнен на ${exchangeId.toUpperCase()}! ID ордера: ${orderResult.orderId}'
+          : 'Order executed successfully on ${exchangeId.toUpperCase()}! Order ID: ${orderResult.orderId}';
 
-        final modalPayload = {
+      final speechMsg = isRu
+          ? 'Ордер исполнен, удачных торгов.'
+          : 'Order executed, happy trading.';
+
+      final modalCmd = UICommand(
+        type: UICommandType.openModal,
+        target: 'cex_trade',
+        payload: {
           'symbol': symbol,
           'isBuy': isBuy,
           'exchangeId': exchangeId,
@@ -4730,100 +5489,145 @@ class GuardianAssistantService {
           'orderId': orderResult.orderId,
           'executedQty': orderResult.executedQty,
           'executedPrice': orderResult.executedPrice,
-        };
+          if (orderResult.historyId != null)
+            'historyId': orderResult.historyId,
+        },
+      );
+      // The result window obeys «Открытие окон»; the notification and the
+      // history entry are there either way.
+      final shown = _dispatchWindow(modalCmd);
 
-        final modalCmd = UICommand(
-          type: UICommandType.openModal,
-          target: 'cex_trade',
-          payload: modalPayload,
-        );
-
-        UICommandBus.instance.dispatch(modalCmd);
-
-        return AssistantResponse(
-          message: successMsg,
-          speechText: speechMsg,
-          type: ResponseType.info,
-          uiCommands: [modalCmd],
-        );
-      } else {
-        // ── Localize error message instead of embedding raw English ──
-        final raw = orderResult.errorMessage ?? '';
-        final String displayMsg;
-        final String speechMsg;
-
-        // Min notional / minimum order value
-        if (raw.contains('below the minimum required') ||
-            raw.contains('minNotional') ||
-            raw.contains('MIN_NOTIONAL')) {
-          final minMatch = RegExp(r'\$(\d+(?:\.\d+)?)').allMatches(raw).toList();
-          final minVal = minMatch.length >= 2 ? minMatch[1].group(1) : '5';
-          displayMsg = isRu
-              ? 'Минимальная сумма для покупки — \$$minVal.'
-              : 'Minimum order amount is \$$minVal.';
-          speechMsg = isRu
-              ? 'Не могу купить на ${orderAmount.toStringAsFixed(0)} долларов. '
-                'Минимум для покупки, $minVal долларов.'
-              : 'Cannot buy for ${orderAmount.toStringAsFixed(0)} dollars. '
-                'Minimum is $minVal dollars.';
-        }
-        // Insufficient balance
-        else if (raw.contains('Insufficient') || raw.contains('баланс меньше')) {
-          displayMsg = isRu
-              ? 'Недостаточно средств для этого ордера.'
-              : 'Insufficient balance for this order.';
-          speechMsg = isRu
-              ? 'Недостаточно средств для покупки.'
-              : 'Not enough balance for this order.';
-        }
-        // Policy / AI limits block
-        else if (raw.contains('Blocked by AI Policy') || raw.contains('Kill Switch')) {
-          displayMsg = isRu
-              ? 'Ордер заблокирован политикой безопасности.'
-              : 'Order blocked by security policy.';
-          speechMsg = displayMsg;
-        }
-        // Daily budget exceeded
-        else if (raw.contains('daily budget') || raw.contains('dailyLimit')) {
-          displayMsg = isRu
-              ? 'Превышен дневной лимит торговли.'
-              : 'Daily trading limit exceeded.';
-          speechMsg = displayMsg;
-        }
-        // Per-tx limit
-        else if (raw.contains('single transaction limit') || raw.contains('perTxLimit')) {
-          displayMsg = isRu
-              ? 'Сумма превышает лимит на одну сделку.'
-              : 'Amount exceeds per-transaction limit.';
-          speechMsg = displayMsg;
-        }
-        // Symbol not found
-        else if (raw.contains('does not exist')) {
-          displayMsg = isRu
-              ? 'Торговая пара не найдена на ${exchangeId.toUpperCase()}.'
-              : 'Trading pair not found on ${exchangeId.toUpperCase()}.';
-          speechMsg = displayMsg;
-        }
-        // Fallback
-        else {
-          displayMsg = isRu
-              ? 'Не удалось выполнить ордер.'
-              : 'Failed to execute order.';
-          speechMsg = displayMsg;
-        }
-
-        return AssistantResponse(
-          message: '$displayMsg${raw.isNotEmpty ? '\n\n$raw' : ''}',
-          speechText: speechMsg,
-          type: ResponseType.error,
-        );
-      }
+      return AssistantResponse(
+        message: successMsg,
+        speechText: speechMsg,
+        type: ResponseType.info,
+        uiCommands: shown ? [modalCmd] : const [],
+      );
     }
 
-    return const AssistantResponse(
-      message: 'Unknown AI mode.',
+    final failure = _cexFailureResponse(
+      orderResult.errorMessage ?? '',
+      isRu: isRu,
+      exchangeId: exchangeId,
+      orderAmount: orderAmount,
+    );
+    if (background) _notifyInApp(failure.speechText);
+    return failure;
+  }
+
+  /// A failed exchange order, said in the user's language.
+  AssistantResponse _cexFailureResponse(
+    String raw, {
+    required bool isRu,
+    required String exchangeId,
+    required double orderAmount,
+  }) {
+    final String displayMsg;
+    final String speechMsg;
+
+    // Min notional / minimum order value
+    if (raw.contains('below the minimum required') ||
+        raw.contains('minNotional') ||
+        raw.contains('MIN_NOTIONAL')) {
+      final minMatch = RegExp(r'\$(\d+(?:\.\d+)?)').allMatches(raw).toList();
+      final minVal = minMatch.length >= 2 ? minMatch[1].group(1) : '5';
+      displayMsg = isRu
+          ? 'Минимальная сумма для покупки — \$$minVal.'
+          : 'Minimum order amount is \$$minVal.';
+      speechMsg = isRu
+          ? 'Не могу купить на ${orderAmount.toStringAsFixed(0)} долларов. '
+              'Минимум для покупки, $minVal долларов.'
+          : 'Cannot buy for ${orderAmount.toStringAsFixed(0)} dollars. '
+              'Minimum is $minVal dollars.';
+    }
+    // Insufficient balance
+    else if (raw.contains('Insufficient') || raw.contains('баланс меньше')) {
+      displayMsg = isRu
+          ? 'Недостаточно средств для этого ордера.'
+          : 'Insufficient balance for this order.';
+      speechMsg = isRu
+          ? 'Недостаточно средств для покупки.'
+          : 'Not enough balance for this order.';
+    }
+    // Daily budget exceeded
+    else if (raw.contains('daily budget') || raw.contains('dailyLimit')) {
+      displayMsg = isRu
+          ? 'Превышен дневной лимит торговли. ${_raiseHint(true)}'
+          : 'Daily trading limit exceeded. ${_raiseHint(false)}';
+      speechMsg = displayMsg;
+    }
+    // Policy / AI limits block
+    else if (raw.contains('Blocked by AI Policy') || raw.contains('Kill Switch')) {
+      displayMsg = isRu
+          ? 'Ордер заблокирован политикой безопасности. ${_raiseHint(true)}'
+          : 'Order blocked by security policy. ${_raiseHint(false)}';
+      speechMsg = displayMsg;
+    }
+    // Per-tx limit
+    else if (raw.contains('single transaction limit') || raw.contains('perTxLimit')) {
+      displayMsg = isRu
+          ? 'Сумма превышает лимит на одну сделку. ${_raiseHint(true)}'
+          : 'Amount exceeds per-transaction limit. ${_raiseHint(false)}';
+      speechMsg = displayMsg;
+    }
+    // Symbol not found
+    else if (raw.contains('does not exist')) {
+      displayMsg = isRu
+          ? 'Торговая пара не найдена на ${exchangeId.toUpperCase()}.'
+          : 'Trading pair not found on ${exchangeId.toUpperCase()}.';
+      speechMsg = displayMsg;
+    }
+    // Fallback
+    else {
+      displayMsg = isRu
+          ? 'Не удалось выполнить ордер.'
+          : 'Failed to execute order.';
+      speechMsg = displayMsg;
+    }
+
+    return AssistantResponse(
+      message: '$displayMsg${raw.isNotEmpty ? '\n\n$raw' : ''}',
+      speechText: speechMsg,
       type: ResponseType.error,
     );
+  }
+
+  static String _exchangeLabel(String exchangeId) =>
+      switch (exchangeId.toLowerCase()) {
+        'mexc' => 'MEXC',
+        'binance' => 'Binance',
+        'gateio' || 'gate.io' => 'Gate.io',
+        'okx' => 'OKX',
+        _ => exchangeId.toUpperCase(),
+      };
+
+  /// The card / notification title, in the app language.
+  static String _cexOrderTitle(bool isBuy, String symbol, String exchangeId) {
+    final ex = _exchangeLabel(exchangeId);
+    final t = LocalizationService.instance;
+    return isBuy
+        ? t.t('aiCexBuyTitle', {
+            'symbol': symbol,
+            'exchange': ex,
+            'default': 'Buy $symbol on $ex',
+          })
+        : t.t('aiCexSellTitle', {
+            'symbol': symbol,
+            'exchange': ex,
+            'default': 'Sell $symbol on $ex',
+          });
+  }
+
+  /// 20 → '20', 0.5 → '0.5', 0.00012345 → '0.00012345'.
+  static String _fmtAmount(double v) {
+    if (v == 0) return '0';
+    final digits = v.abs() >= 1 ? 4 : 8;
+    var s = v.toStringAsFixed(digits);
+    if (s.contains('.')) {
+      s = s.replaceFirst(RegExp(r'0+$'), '');
+      if (s.endsWith('.')) s = s.substring(0, s.length - 1);
+    }
+    return s;
   }
 
   Future<Map<String, dynamic>?> _resolveBestExchangeAndPrice(String tokenSymbol) async {
@@ -4874,23 +5678,43 @@ class GuardianAssistantService {
     return null;
   }
 
+  /// A buy or a sell of a wallet (non-exchange) coin, from any source.
+  ///
+  /// «Советник»: the plan as advice only. «Ручной»: the prefilled trade
+  /// window with the quote requested; the user confirms with the PIN.
+  /// «Автономный»: the swap is built on the active network and carried out
+  /// through [AiActionGate] (voice / market chat) or shown as a preview
+  /// card the chat carries out (general chat). Selling all or a share of a
+  /// balance keeps the window (C13); a coin the app cannot resolve reliably
+  /// opens the prefilled window (D17); a refusal over a limit never does.
   Future<AssistantResponse> _handleOnChainTradeIntent(
     IntentData intent,
-    String lang,
-  ) async {
+    String lang, {
+    required AssistantInputSource source,
+    MarketAsset? asset,
+  }) async {
     final isRu = lang.startsWith('ru');
     final symbol = intent.tokenSymbol!.toUpperCase();
     final markets = MarketDataService.instance.cachedMarkets;
-    var asset = markets.cast<MarketAsset?>().firstWhere(
-          (a) => a!.symbol.toUpperCase() == symbol,
-          orElse: () => null,
-        );
+    var resolved = asset ??
+        markets.cast<MarketAsset?>().firstWhere(
+              (a) => a!.symbol.toUpperCase() == symbol,
+              orElse: () => null,
+            );
 
-    if (asset == null) {
-      final price = ScreenContextService.instance.focusedSymbol == symbol
-          ? (ScreenContextService.instance.focusedPrice ?? 1.0)
-          : 1.0;
-      asset = MarketAsset(
+    // A real price only: never size a trade from a guessed one.
+    final focus = ScreenContextService.instance;
+    final focusedPrice = focus.focusedSymbol?.toUpperCase() == symbol
+        ? focus.focusedPrice
+        : null;
+    final double? realPrice = (resolved != null && resolved.price > 0)
+        ? resolved.price
+        : ((focusedPrice != null && focusedPrice > 0) ? focusedPrice : null);
+
+    if (resolved == null) {
+      // For the plan text only.
+      final price = realPrice ?? 1.0;
+      resolved = MarketAsset(
         id: 'dummy-${symbol.toLowerCase()}',
         symbol: symbol,
         name: symbol,
@@ -4916,9 +5740,10 @@ class GuardianAssistantService {
     final direction = intent.type == IntentType.sellAsset
         ? TradingDirection.sell
         : TradingDirection.buy;
+    final isBuy = direction == TradingDirection.buy;
 
     final plan = TradingPlanBuilder.build(
-      asset: asset,
+      asset: resolved,
       direction: direction,
       settings: aiSettings,
     );
@@ -4927,12 +5752,62 @@ class GuardianAssistantService {
     final voicePlan = _buildTradingPlanBriefing(plan, lang, short: true);
 
     if (aiSettings.mode == AiMode.manual) {
-      final manualNote = isRu
-          ? '\n\n⚠️ Режим Manual. Это только анализ.'
-          : '\n\n⚠️ Manual mode. Analysis only.';
-      return AssistantResponse.info(fullPlan + manualNote, speechText: voicePlan);
+      return AssistantResponse.info(fullPlan + _advisorPlanNote(lang),
+          speechText: voicePlan);
     }
 
+    final amount = intent.amount;
+    // «всё» / «половину» come as -1 / -0.5 (MarketVoiceBrain).
+    final sellsShare = !isBuy && amount != null && amount < 0;
+    String note = '';
+
+    if (aiSettings.mode == AiMode.fullAutonomy &&
+        source != AssistantInputSource.automated &&
+        amount != null &&
+        amount > 0) {
+      final built = AutomationIntentBuilder.buildTrade(
+        symbol: symbol,
+        isBuy: isBuy,
+        amountUsd: intent.isQuantity ? null : amount,
+        quantity: intent.isQuantity ? amount : null,
+        priceUsd: realPrice,
+      );
+      if (built is AutomationIntentReady) {
+        final preview = await _controller.requestSwapPreview(built.intent);
+        if (source == AssistantInputSource.generalChat) {
+          // The chat shows the preview card and carries it out through the
+          // gate; a refusal is said with its reason.
+          if (preview.type == ResponseType.preview &&
+              preview.swapPlan != null) {
+            return _enhanceForVoice(preview,
+                languageCode: lang, displayPreface: fullPlan);
+          }
+          final msg = _withRaiseHint(preview.message, isRu);
+          return AssistantResponse(
+            message: '$fullPlan\n\n$msg',
+            speechText: msg,
+            type: preview.type == ResponseType.error
+                ? ResponseType.error
+                : ResponseType.info,
+          );
+        }
+        return _headlessFromPreview(preview,
+            source: source, lang: lang, preface: fullPlan);
+      }
+      final why = built is AutomationIntentBlocked ? built.reason : '';
+      note = isRu
+          ? '\n\n${AiVoice.ru('Сам', 'Сама')} выполнить не могу ($why). '
+              'Открываю заполненное окно — подтвердите его ПИН-кодом.'
+          : "\n\nI can't carry this out myself ($why). Opening the filled-in "
+              'window: confirm it with your PIN.';
+    } else if (sellsShare) {
+      note = isRu
+          ? '\n\nПродажу всего баланса или его доли вы подтверждаете в окне.'
+          : '\n\nSelling all or a share of a balance is confirmed in the '
+              'window.';
+    }
+
+    // «Ручной» (and the fallbacks above): the prefilled window + quote.
     final commands = <UICommand>[
       UICommand(
         type: UICommandType.showTradingPlan,
@@ -4940,11 +5815,11 @@ class GuardianAssistantService {
       ),
       UICommand(
         type: UICommandType.openModal,
-        target: direction == TradingDirection.sell ? 'wallet_sell' : 'wallet_buy',
+        target: isBuy ? 'wallet_buy' : 'wallet_sell',
       ),
     ];
 
-    if (direction == TradingDirection.sell) {
+    if (!isBuy) {
       commands.add(UICommand(
         type: UICommandType.selectToken,
         target: 'swap_from_token',
@@ -4968,25 +5843,63 @@ class GuardianAssistantService {
       ));
     }
 
-    final amount = intent.amount;
+    // The amount field is in the FROM token: USDT for a buy, the coin for
+    // a sell. Dollars and coins are converted with a real price only.
+    double? fill;
     if (amount != null && amount > 0) {
-      final amountStr = amount >= 1
-          ? amount.toStringAsFixed(2)
-          : amount.toStringAsFixed(4);
+      if (isBuy) {
+        fill = intent.isQuantity
+            ? (realPrice != null ? amount * realPrice : null)
+            : amount;
+      } else {
+        fill = intent.isQuantity
+            ? amount
+            : (realPrice != null ? amount / realPrice : null);
+      }
+    }
+    if (fill != null && fill > 0 && fill.isFinite) {
       commands.add(UICommand(
         type: UICommandType.fillField,
         target: 'swap_amount',
-        payload: {'value': amountStr},
+        payload: {'value': _fmtAmount(fill)},
+      ));
+      // «Ручной» prepares everything: the quote is requested too.
+      commands.add(const UICommand(
+        type: UICommandType.executeAction,
+        target: 'wallet_swap_quote',
       ));
     }
 
-    final permCmds = _applyWindowPermissions(commands);
+    final permCmds = _windowBundle(commands);
     if (permCmds.isNotEmpty) {
       UICommandBus.instance.dispatchAll(permCmds);
+      MarketMemoryService.instance.record(
+        action: isBuy ? 'buy' : 'sell',
+        symbol: symbol,
+        source: source.name,
+        aiMode: aiSettings.mode.name,
+        result: 'opened_form',
+        amount: amount,
+        priceThen: realPrice,
+        rawInput: intent.rawInput,
+      );
+    }
+    final opened = permCmds.any((c) => c.type == UICommandType.openModal);
+    if (!opened) {
+      note = isRu
+          ? '\n\nОткрыть окно ${AiVoice.ru('сам', 'сама')} не могу: в AI-Центре '
+              'выключено «Открытие окон». Откройте покупку или продажу в '
+              'кошельке сами.'
+          : '\n\nI cannot open the window myself: "Open windows" is off in AI '
+              'Center. Open the buy or sell window in the wallet yourself.';
+    } else if (note.isEmpty) {
+      note = isRu
+          ? '\n\n🛡️ Открываю заполненное окно. Подтвердите его ПИН-кодом.'
+          : '\n\n🛡️ Opening the filled-in window. Confirm it with your PIN.';
     }
 
     return AssistantResponse.info(
-      fullPlan,
+      fullPlan + note,
       speechText: voicePlan,
       commands: permCmds,
     );

@@ -1,7 +1,9 @@
 // OpenAIChatService: the gpt-6-luna request shape, the 10-minute fallback to
 // gpt-4o-mini, the read-only status tools, tool routing for the System
-// status card, remembered canned turns, the app guide in the prompt, the
-// voice's grammatical gender and the language of error replies.
+// status card, remembered canned turns, the app guide in the prompt, the AI
+// mode and AI PIN setting in the prompt («Советник» / «Ручной» /
+// «Автономный»), the voice's grammatical gender and the language of error
+// replies.
 //
 // No real network: every request goes to a MockClient.
 //
@@ -679,16 +681,22 @@ void main() {
         '«Выпустить',
         '«Лимит апрув»',
         '«Блокировать неизвестные контракты»',
-        'Manual',
-        'Guarded',
-        'Full Autonomy',
         'EPK',
         'info@ibiticoin.com',
         '«Результаты отзыва»',
-        // AI mode names as AI-Центр shows them.
-        '«Руководство»',
-        '«Охраняемый»',
-        '«Полная автономия»',
+        // AI mode names as AI-Центр shows them (RU, then EN).
+        '«Советник»',
+        '«Ручной»',
+        '«Автономный»',
+        'Advisor',
+        'Manual',
+        'Autonomous',
+        // The AI PIN setting, its notification and exchange orders in history.
+        '«Подтверждать действия ИИ ПИН-кодом»',
+        '«ИИ выполнил: …»',
+        '«Биржа»',
+        '«Делегировать AI»',
+        '«Остановить AI»',
         '«AI Мандат»',
         '«Безопасность»',
         '«Язык»',
@@ -698,7 +706,34 @@ void main() {
       ]) {
         expect(guide, contains(fact), reason: fact);
       }
-      expect(guide.trim().split('\n').length, lessThanOrEqualTo(95));
+      expect(guide.trim().split('\n').length, lessThanOrEqualTo(100));
+    });
+
+    test('states the AI mode rules the owner decided', () {
+      final guide = AppGuide.text.replaceAll(RegExp(r'\s+'), ' ');
+      for (final fact in [
+        // «Советник» only advises; the user's own actions work in every mode.
+        'the AI only advises and explains',
+        'Your own actions work in every mode',
+        // «Ручной»: the user confirms with the PIN.
+        'you confirm with the PIN',
+        // «Автономный» without the PIN: limits, mandate, EPK, trusted only.
+        'only within the daily trading limit and «AI Мандат», EPK active, '
+            'to trusted addresses or own cards',
+        // A new address still gets the card + PIN.
+        '(new address, unknown price) the card + PIN',
+        // Limits hold in every mode; raising one needs the PIN.
+        'the AI never goes over a limit',
+        'raise it in «Политика» (PIN)',
+        // AI-opened Safe/Panic.
+        '«Ручной» = your tap + PIN',
+        // Selling all always shows the order window.
+        'selling all or part of a balance always opens the order window',
+        // The EPK screen can pause EPK too (with the PIN).
+        'pause EPK (in Policy or on the EPK screen)',
+      ]) {
+        expect(guide, contains(fact), reason: fact);
+      }
     });
 
     test('drops the claims the code does not back', () {
@@ -709,13 +744,184 @@ void main() {
         // Nothing in the code gives the PRO tag a meaning.
         'card tiers',
         '«PRO»',
-        // Revoking is off only in a window the AI opened in Manual.
+        // Revoking is off only in a window the AI opened in «Советник».
         'revoke button is off',
-        // Not every loosening asks the PIN (e.g. the EPK tile, max gas).
+        // Not every loosening asks the PIN (e.g. max gas).
         'loosening',
+        // The old mode names.
+        'Guarded',
+        'Full Autonomy',
+        '«Руководство»',
+        '«Охраняемый»',
+        '«Полная автономия»',
+        // «Советник» no longer blocks the user's own exchange orders.
+        'your own too',
+        // «Делегировать AI» now runs in «Автономный».
+        'never signs',
+        // Exchange orders no longer skip the PIN by default.
+        'without it, inside the daily trading limit',
       ]) {
         expect(guide, isNot(contains(wrong)), reason: wrong);
       }
+    });
+  });
+
+  group('AI mode and the AI PIN setting in the prompt', () {
+    Future<String> systemPrompt({bool allowActionTools = false}) async {
+      mockOpenAi((_) => chatResponse(answer('Готово.')));
+      await service.solve('какой режим?', 'ru', allowActionTools);
+      final messages = requests.last['messages'] as List;
+      return messages.first['content'] as String;
+    }
+
+    List<String> toolNames() => (requests.last['tools'] as List)
+        .map((t) => t['function']['name'] as String)
+        .toList();
+
+    test('«Ручной»: the mode as the user sees it, PIN confirmation ON',
+        () async {
+      final system = await systemPrompt();
+
+      expect(system, contains('Current AI mode: «Ручной» (Manual).'));
+      expect(system, contains('AI action PIN confirmation: ON'));
+      expect(system, contains('- AI mode: «Ручной» (Manual): prepare'));
+      expect(system, contains('AI MODES: WHAT YOU MAY DO'));
+      expect(system, isNot(contains('Guarded')));
+      expect(system, isNot(contains('Full Autonomy')));
+      expect(system, isNot(contains('AI can open screens, open modals')));
+    });
+
+    test('«Автономный» with the PIN setting ON', () async {
+      AiControlService.instance.setSettingsForTest(
+          const AiControlSettings(mode: AiMode.fullAutonomy));
+
+      final system = await systemPrompt();
+
+      expect(system, contains('Current AI mode: «Автономный» (Autonomous).'));
+      expect(
+          system,
+          contains('AI action PIN confirmation: ON (every AI action shows a '
+              'card and asks the PIN first)'));
+    });
+
+    test('«Автономный» with the PIN setting OFF: the limits still hold',
+        () async {
+      AiControlService.instance.setSettingsForTest(const AiControlSettings(
+          mode: AiMode.fullAutonomy, aiPinConfirm: false));
+
+      final system = await systemPrompt();
+
+      expect(system, contains('AI action PIN confirmation: OFF'));
+      expect(system, contains('to trusted addresses or own cards'));
+      expect(system, contains('«ИИ выполнил»'));
+      expect(system, isNot(contains('AI action PIN confirmation: ON')));
+    });
+
+    test('pinConfirmationLabel: the setting counts only in «Автономный»', () {
+      for (final mode in [AiMode.manual, AiMode.guarded]) {
+        final label = OpenAIChatService.pinConfirmationLabel(
+            AiControlSettings(mode: mode, aiPinConfirm: false));
+        expect(label, startsWith('ON'), reason: mode.name);
+      }
+      expect(
+          OpenAIChatService.pinConfirmationLabel(const AiControlSettings(
+              mode: AiMode.fullAutonomy, aiPinConfirm: false)),
+          startsWith('OFF'));
+    });
+
+    test('the rules: refuse over a limit and say how to raise it', () {
+      const rules = OpenAIChatService.aiModeRules;
+      for (final rule in [
+        '«Советник» (Advisor): ONLY advise and explain',
+        'watchlist entries, price',
+        '«Ручной» (Manual): prepare only',
+        'never exceed a limit or go around Policy, «AI Мандат» or EPK',
+        'refuse it, name the limit and its value',
+        'raises it in «Политика» (Security → Policy) with',
+        'Never suggest splitting an order',
+        'Never say an operation is done',
+      ]) {
+        expect(rules.replaceAll(RegExp(r'\s+'), ' '), contains(rule),
+            reason: rule);
+      }
+    });
+
+    test('«Советник» offers no action tools, even in an action turn',
+        () async {
+      AiControlService.instance.setSettingsForTest(
+          const AiControlSettings(mode: AiMode.manual, allowedActions: []));
+
+      final system = await systemPrompt(allowActionTools: true);
+
+      expect(system, contains('Current AI mode: «Советник» (Advisor).'));
+      expect(system, contains('- AI mode: «Советник» (Advisor): advise only'));
+      final names = toolNames();
+      for (final action in [
+        'panic_revoke_all',
+        'safe_revoke_review',
+        'manage_watchlist',
+      ]) {
+        expect(names, isNot(contains(action)), reason: action);
+      }
+      expect(names, containsAll(['get_wallet_balance', 'get_system_status']));
+    });
+
+    test('«Ручной» still offers the action tools in an action turn', () async {
+      await systemPrompt(allowActionTools: true);
+
+      expect(
+          toolNames(),
+          containsAll(
+              ['panic_revoke_all', 'safe_revoke_review', 'manage_watchlist']));
+    });
+
+    test('«Советник»: a watchlist call is refused and a send never leaves',
+        () async {
+      AiControlService.instance.setSettingsForTest(
+          const AiControlSettings(mode: AiMode.manual, allowedActions: []));
+      var call = 0;
+      mockOpenAi((body) {
+        call++;
+        if (call == 1) {
+          return chatResponse({
+            'role': 'assistant',
+            'content': null,
+            'tool_calls': [
+              {
+                'id': 'call_1',
+                'type': 'function',
+                'function': {
+                  'name': 'manage_watchlist',
+                  'arguments': jsonEncode({'action': 'add', 'symbol': 'SOL'}),
+                },
+              }
+            ],
+          });
+        }
+        return chatResponse({
+          'role': 'assistant',
+          'content': jsonEncode({
+            'displayMessage': 'В режиме «Советник» я только советую.',
+            'speechText': 'Я только советую.',
+            'uiCommands': [
+              {'type': 'openModal', 'target': 'wallet_send'}
+            ],
+            'explicitIntent': {'type': 'sendAsset'},
+          }),
+        });
+      });
+
+      final result = await service.solve('добавь SOL в отслеживание', 'ru');
+
+      final toolMessage = (requests.last['messages'] as List)
+          .cast<Map>()
+          .firstWhere((m) => m['role'] == 'tool');
+      final toolResult = jsonDecode(toolMessage['content'] as String) as Map;
+      expect(toolResult['error'], contains('«Советник»'));
+      expect(toolResult['error'], contains('only advises'));
+      expect(result.containsKey('uiCommands'), isFalse);
+      expect(result['explicitIntent']['type'], 'explainOnly');
+      expect(result['explicitIntent']['reason'], contains('«Советник»'));
     });
   });
 }

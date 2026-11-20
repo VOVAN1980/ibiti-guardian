@@ -265,7 +265,8 @@ class _MarketRow extends StatelessWidget {
       dotColor = Colors.grey;
     } else if (opp.executableByAi) {
       dotColor = Colors.greenAccent.shade400;
-    } else if (opp.blockReason?.contains('Manual') ?? false) {
+    } else if (opp.blockReason == MarketScoutService.advisorBlockReason) {
+      // «Советник» (advice only) is the user's choice, not a problem.
       dotColor = Colors.grey;
     } else {
       dotColor = Colors.redAccent.withOpacity(0.7);

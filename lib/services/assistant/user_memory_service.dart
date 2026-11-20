@@ -299,11 +299,28 @@ class UserMemoryService {
     try {
       final list = jsonDecode(raw) as List<dynamic>;
       _macros.clear();
-      _macros.addAll(
-          list.map((e) => VoiceMacro.fromJson(e as Map<String, dynamic>)));
+      _macros.addAll(list
+          .map((e) => VoiceMacro.fromJson(e as Map<String, dynamic>))
+          .map(_withCurrentModeNames));
     } catch (e) {
       _log.e('Macros load error', e);
     }
+  }
+
+  /// The built-in «эвакуация» was saved with the old mode name ("Manual"
+  /// meant the advice-only mode, now «Советник»; «Ручной» is a different
+  /// mode now). Only the description text changes.
+  static VoiceMacro _withCurrentModeNames(VoiceMacro m) {
+    if (m.description != legacyEvacuationDescription) return m;
+    return VoiceMacro(
+      triggerPhrase: m.triggerPhrase,
+      description: evacuationDescription,
+      actions: m.actions,
+      requiresConfirmation: m.requiresConfirmation,
+      allowedModes: m.allowedModes,
+      isRisky: m.isRisky,
+      createdAt: m.createdAt,
+    );
   }
 
   Future<void> _saveMacros() async {
@@ -334,6 +351,16 @@ class UserMemoryService {
 
   static const _defaultTriggers = {'эвакуация', 'разведка'};
 
+  /// What «эвакуация» does, with the mode name the user sees («Советник»,
+  /// code name manual).
+  static const evacuationDescription =
+      'Panic → отозвать все разрешения → режим «Советник»';
+
+  /// The same description as saved before the modes were renamed; loading
+  /// replaces it with [evacuationDescription].
+  static const legacyEvacuationDescription =
+      'Panic → отозвать все разрешения → переключить на Manual';
+
   /// Whether this macro is a built-in default.
   bool isDefaultMacro(VoiceMacro m) =>
       _defaultTriggers.contains(m.triggerPhrase.toLowerCase());
@@ -344,7 +371,7 @@ class UserMemoryService {
     if (!existing.contains('эвакуация')) {
       _macros.add(VoiceMacro(
         triggerPhrase: 'эвакуация',
-        description: 'Panic → отозвать все разрешения → переключить на Manual',
+        description: evacuationDescription,
         actions: const [
           MacroAction(type: MacroActionType.openModal, target: 'panic'),
           MacroAction(

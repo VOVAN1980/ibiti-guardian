@@ -43,7 +43,11 @@ void main() {
       source: AssistantInputSource.voice,
     );
 
-    expect(response.message, contains('Текущий режим ИИ: полная автономия'));
+    expect(response.message, contains('Текущий режим ИИ: «Автономный»'));
+    // The AI knows the PIN setting and that only the owner changes limits.
+    expect(response.message,
+        contains('Подтверждение действий ИИ ПИН-кодом: включено'));
+    expect(response.message, contains('только вы, в «Политике», с ПИН-кодом'));
     expect(response.message, contains('Лимит одного перевода'));
     expect(response.message, contains('Лимит одного обмена'));
     expect(response.message, contains('Лимит разрешения токена'));
