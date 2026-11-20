@@ -1447,6 +1447,62 @@ void main() {
       expect(mockMexc.ordersPlaced, hasLength(1));
     });
 
+    test('PIN OFF, EPK paused, by voice: the gate will show the card, so the '
+        'voice says «подтвердите на экране», never «ставлю ордер»', () async {
+      setLivePrice('mexc', 'SOL', 'USDT', 100.0);
+      mockMexc.balances['USDT'] = 500.0;
+      // EPK cannot stop an exchange order: with EPK paused the gate asks
+      // first even with «Подтверждать действия ИИ ПИН-кодом» off.
+      await EPKPolicyManager.instance.emergencyPause();
+      final svc = GuardianAssistantService.instance;
+      // Past the voice deadline too: an order that asks first is not
+      // refused as «too late».
+      final deadline = svc.voiceActDeadline;
+      svc.voiceActDeadline = const Duration(microseconds: -1);
+      addTearDown(() => svc.voiceActDeadline = deadline);
+      final cards = <AiActionSummary>[];
+      gate.confirmUiOverride = (s) async {
+        cards.add(s);
+        return true;
+      };
+
+      final response = await svc.process(
+        'купи SOL на 20',
+        source: AssistantInputSource.voice,
+      );
+      expect(response.message, contains('Карточка ордера'));
+      expect(response.speechText, contains('Подтвердите на экране'));
+      expect(response.message, isNot(contains('Ставлю ордер')));
+      expect(response.message, isNot(contains('слишком много времени')));
+      await svc.pendingAiActionForTest();
+      expect(cards, hasLength(1));
+      expect(mockMexc.ordersPlaced, hasLength(1));
+      expect(mockMexc.ordersPlaced.single['amount'], 20.0);
+    });
+
+    test('«Автономный», selling a balance share outside the «AI Мандат» '
+        'assets: refused with the «Политика» hint, no order window', () async {
+      setLivePrice('mexc', 'SOL', 'USDT', 100.0);
+      mockMexc.balances['SOL'] = 4.0;
+      AiControlService.instance.setSettingsForTest(const AiControlSettings(
+        mode: AiMode.fullAutonomy,
+        activeSources: ['mexc', 'okx'],
+        dailyLimit: 500000.0,
+        aiPinConfirm: false,
+        mandate: AutonomyMandate(allowedAssets: ['BTC']),
+      ));
+      dispatchedCommands.clear();
+      final response = await GuardianAssistantService.instance.process(
+        'sell all SOL',
+        source: AssistantInputSource.voice,
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(response.message, contains('AI Mandate'));
+      expect(response.message, contains('Policy'));
+      expect(dispatchedCommands.where((c) => c.target == 'cex_trade'), isEmpty);
+      expect(mockMexc.ordersPlaced, isEmpty);
+    });
+
     test('another AI money action holding the lock (no card open): "busy" '
         'at once, nothing placed', () async {
       setLivePrice('mexc', 'SOL', 'USDT', 100.0);

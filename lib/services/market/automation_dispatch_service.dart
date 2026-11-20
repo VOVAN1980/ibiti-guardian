@@ -362,7 +362,7 @@ class AutomationDispatchService extends ChangeNotifier {
       _resolveItem(
         index,
         DispatchStatus.blocked,
-        'Intent build: ${intentResult.reason}',
+        intentResult.reason,
       );
       _isProcessing = false;
       return;

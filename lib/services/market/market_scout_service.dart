@@ -456,23 +456,30 @@ class MarketScoutService {
               'nothing runs without you.',
         });
       case AiMode.fullAutonomy:
+        // A wallet trade of a coin without a USD price is never carried out
+        // by the AI, PIN setting on or off: its limits are dollars. The
+        // filled-in wallet window opens and the user confirms it there with
+        // the PIN (D17). An exchange order always has a price.
         if (settings.aiPinConfirm) {
           return t.t('marketScoutNoteAutoPin', {
             ...args,
             'default': '«Autonomous» mode: I carry out the trades you ask '
                 'for, within your mandate: $assets on $networks. Allowed '
                 'actions: $actions. Daily limit: $daily. PIN confirmation is '
-                'on: each trade first shows a card and asks your PIN. Limits, '
-                'policy and EPK hold on every trade; I never trade on my own '
-                'without your request.',
+                'on: each trade first shows a card and asks your PIN. A '
+                'wallet trade of a coin without a USD price I never carry out '
+                'myself: I open the filled-in wallet window, and you confirm '
+                'it there with your PIN. Limits, policy and EPK hold on every '
+                'trade; I never trade on my own without your request.',
           });
         }
-        // D6, exactly: no card only when ALL hold; a new address / unknown
-        // price / locked wallet → the user confirms with the PIN (the card;
-        // a wallet trade of a coin without a price: its filled-in window,
-        // D17);
-        // over a limit or outside the mandate → refused with the «Политика»
-        // hint (never a card or a window that lets the user go over).
+        // D6, exactly as the gate runs it: no card only when ALL hold; a new
+        // address, a locked wallet or an exchange order while EPK is paused
+        // → the card + PIN; a coin without a USD price → the filled-in
+        // wallet window, never the AI and never a card (D17); EPK paused →
+        // nothing on-chain; over a limit or outside the mandate → refused
+        // with the «Политика» hint (never a card or a window that lets the
+        // user go over).
         return t.t('marketScoutNoteAutoNoPin', {
           ...args,
           'default': '«Autonomous» mode: I carry out the trades you ask for, '
@@ -482,15 +489,16 @@ class MarketScoutService {
               'this holds: within the daily limit and the «AI Mandate», EPK '
               'protection on, a trusted recipient (a trusted address or '
               'contract, or your own wallet), a known USD price, and the app '
-              'open with the wallet unlocked. A new address, an unknown price '
-              'or a locked wallet: I ask you first — the card and your PIN '
-              '(a wallet trade of a coin without a price opens in the '
-              'filled-in window instead). Over a limit or outside the mandate '
-              'I refuse; '
-              'to allow more, raise the limit in «Policy» (needs your PIN). '
-              'After each trade you get the notification «AI did: …». I never '
-              'go over a limit and never trade on my own without your '
-              'request.',
+              'open with the wallet unlocked. A new address, a locked wallet '
+              'or an exchange order while EPK is paused: I ask you first — '
+              'the card and your PIN. A wallet trade of a coin without a USD '
+              'price I never carry out myself: I open the filled-in wallet '
+              'window, and you confirm it there with your PIN. While EPK is '
+              'paused I do nothing on-chain. Over a limit or outside the '
+              'mandate I refuse; to allow more, raise the limit in «Policy» '
+              '(needs your PIN). After each trade you get the notification '
+              '«AI did: …». I never go over a limit and never trade on my own '
+              'without your request.',
         });
     }
   }

@@ -347,8 +347,15 @@ Act by the current AI mode and AI action PIN confirmation (both given below).
   ON: every action shows a card (what, amount, to / exchange, network, fee),
   then «Подтвердить» or a spoken «да», then the PIN. OFF: no card only within
   the daily trading limit and «AI Мандат», with EPK active, to trusted
-  addresses or the owner's own cards, with a known USD value; otherwise the
-  card + PIN. After each action the notification «ИИ выполнил: …» comes.
+  addresses or the owner's own cards, with the app open and the wallet
+  unlocked; a new address, a locked wallet, or an exchange order while EPK
+  is paused gets the card + PIN. While EPK is paused nothing on-chain is
+  carried out (revoking aside). After each action the notification
+  «ИИ выполнил: …» comes.
+- Never carry out yourself an operation whose USD value is unknown (a coin
+  without a price), PIN confirmation ON or OFF: the app opens the filled
+  wallet window and the user confirms it there with the PIN. Never promise a
+  card for it.
 - Every mode: never exceed a limit or go around Policy, «AI Мандат» or EPK.
   A request over a limit (daily trading limit, max position, a wallet limit)
   or outside «AI Мандат»: refuse it, name the limit and its value, and say
@@ -367,11 +374,14 @@ Act by the current AI mode and AI action PIN confirmation (both given below).
           'carries out nothing by itself)';
     }
     return s.aiPinConfirm
-        ? 'ON (every AI action shows a card and asks the PIN first)'
+        ? 'ON (every AI action shows a card and asks the PIN first; one with '
+            'an unknown USD value opens in the filled wallet window instead)'
         : 'OFF (no card only within the daily trading limit and «AI Мандат», '
-            'with EPK active, to trusted addresses or own cards, with a known '
-            'USD value; otherwise card + PIN; then the «ИИ выполнил» '
-            'notification)';
+            'with EPK active, to trusted addresses or own cards, with the app '
+            'open and the wallet unlocked; a new address, a locked wallet or '
+            'an exchange order while EPK is paused = card + PIN; an unknown '
+            'USD value = the filled wallet window for the user, never you; '
+            'then the «ИИ выполнил» notification)';
   }
 
   /// One context line: what the AI can do in [mode].

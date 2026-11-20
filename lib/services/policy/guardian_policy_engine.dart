@@ -85,21 +85,40 @@ class PolicyResult {
 class GuardianPolicyEngine {
   GuardianPolicyEngine._();
 
-  /// Whether [tx] comes from the user's own wallet window (Send / Swap,
-  /// origin [IntentOrigin.wallet]): the user fills it in and confirms it
+  /// Whether [tx] comes from the user's own wallet Send / Swap window
+  /// (origin [IntentOrigin.wallet]): the user fills it in and confirms it
   /// with the PIN. Such a transaction is not the AI's: the AI mode, the AI
   /// permissions, «AI Мандат» and the daily trading limit never stop it
   /// (D2: the user's own actions work in every mode, also in «Советник»
   /// and after the emergency stop). The wallet limits (send / swap /
   /// approve), unknown contracts, the simulation and EPK still apply to it.
   ///
-  /// Everything else is not the user's own wallet window: the AI (chat,
-  /// voice, market chat), automation and the Buy / Sell window (origin
-  /// market). An automation intent is never the user's own window, whatever
-  /// origin it carries.
+  /// Everything else is not the user's own Send / Swap window: the AI
+  /// (chat, voice, market chat), automation and the Buy / Sell window
+  /// (origin market, see [isUserTradeWindowTx]). An automation intent is
+  /// never the user's own window, whatever origin it carries.
   static bool isUserWalletTx(TransactionRequest tx) =>
       tx.sourceIntent.origin == IntentOrigin.wallet &&
       !tx.sourceIntent.isAutomated;
+
+  /// Whether [tx] is a step (approve or swap) of a swap made in the user's
+  /// own wallet Buy / Sell window ([IntentData.userTradeWindow], set only by
+  /// WalletTradeModal). The window is origin market: the daily trading
+  /// limit, «AI Мандат» and the trading budget apply to it exactly as to
+  /// any market trade (never looser than before). Only the AI mode (Check 0:
+  /// «Советник», emergency stop) and the AI permissions (Check 0b) do not
+  /// stop it, because it is the user's own action (D2).
+  ///
+  /// Never true for automation (a [IntentData.sourceTrigger]), for an intent
+  /// that is not a swap, or for a transaction other than an approve or a
+  /// swap: the marker cannot carry a send, a revoke or an unknown call.
+  static bool isUserTradeWindowTx(TransactionRequest tx) {
+    final intent = tx.sourceIntent;
+    if (!intent.userTradeWindow || intent.isAutomated) return false;
+    if (intent.type != IntentType.swapAsset) return false;
+    return tx.type == TransactionType.swap ||
+        tx.type == TransactionType.approve;
+  }
 
   // ─── Phase 5 V3 Pipeline ──────────────────────────────────────────────────
 
@@ -115,19 +134,23 @@ class GuardianPolicyEngine {
     final epkAvail = path == ExecutionPath.epkProtected;
     final aiSettings = AiControlService.instance.settings;
 
-    // The user's own Send / Swap window skips only the AI checks below
-    // (Check 0 and 0b). Every wallet check after them applies to it exactly
-    // as before.
+    // The user's own Send / Swap window and the user's own Buy / Sell window
+    // skip only the AI checks below (Check 0 and 0b). Every check after
+    // them applies to them exactly as before (the trading limits of the
+    // Buy / Sell window are in GuardianExecutionController).
     final ownWalletTx = isUserWalletTx(tx);
+    final ownTradeWindowTx = !ownWalletTx && isUserTradeWindowTx(tx);
     if (ownWalletTx) rules.add('USER_WALLET_ORIGIN');
+    if (ownTradeWindowTx) rules.add('USER_TRADE_WINDOW');
+    final usersOwnTx = ownWalletTx || ownTradeWindowTx;
 
     // ── AI Mode Gate (Check 0) ───────────────────────────────────────────────
     // «Советник» (Advisor, AiMode.manual) means the AI may NOT execute
     // anything. This is enforced here so changing the mode in AI Center
     // immediately closes the execution path for every transaction the AI,
-    // automation or the market starts. The user's own wallet window is not
-    // the AI and works in every mode (D2).
-    if (!ownWalletTx && aiSettings.mode == AiMode.manual) {
+    // automation or the market starts. The user's own wallet windows are
+    // not the AI and work in every mode (D2).
+    if (!usersOwnTx && aiSettings.mode == AiMode.manual) {
       rules.add('AI_MODE_MANUAL_BLOCK');
       return PolicyResult.block(
         'AI mode is Advisor: the AI only advises and will not act. '
@@ -141,10 +164,10 @@ class GuardianPolicyEngine {
     // ── Allowed Actions Check (Check 0b) ─────────────────────────────────────
     // AI Center lets the user whitelist the action types the AI may do.
     // If the action is not in the allowlist, block here. These are the AI's
-    // permissions, not the user's: the user's own wallet window skips them
+    // permissions, not the user's: the user's own wallet windows skip them
     // (the emergency stop clears them all).
     final aiAction = _txTypeToAiAction(tx.type);
-    if (!ownWalletTx &&
+    if (!usersOwnTx &&
         aiAction != null &&
         !aiSettings.allowedActions.contains(aiAction)) {
       rules.add('AI_ACTION_NOT_ALLOWED');

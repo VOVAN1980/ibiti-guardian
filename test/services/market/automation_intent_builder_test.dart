@@ -392,8 +392,16 @@ void main() {
       ]);
       final r = AutomationIntentBuilder.buildBuyForSymbol('FLOKI');
       expect(r, isA<AutomationIntentBlocked>());
-      expect((r as AutomationIntentBlocked).reason,
-          contains('cannot be resolved reliably'));
+      expect((r as AutomationIntentBlocked).outsideMandate, isFalse);
+      // «Делегировать AI» shows this reason on the queue item: why the AI
+      // does not buy it, and that the user still can, in the window.
+      expect(
+          r.reason,
+          contains('FLOKI is not in the app\'s verified token list on '
+              'BNB Chain'));
+      expect(r.reason, contains('the AI does not buy it by itself'));
+      expect(r.reason,
+          contains('You can buy it yourself in the Wallet or Market window'));
     });
 
     test('a network outside «AI Мандат» is a refusal', () {

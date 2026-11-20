@@ -50,6 +50,8 @@ import 'package:ibiti_guardian/services/wallet/market_price_alert_service.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
 import 'package:ibiti_guardian/services/policy/policy_profile_store.dart';
 import 'package:ibiti_guardian/services/policy/trusted_address_directory.dart';
+import 'package:ibiti_guardian/services/policy/tx_usd_valuer.dart';
+import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/models/policy_profile.dart';
 import 'package:ibiti_guardian/services/assistant/market_voice_brain.dart';
 import 'package:ibiti_guardian/services/voice/ai_voice.dart';
@@ -873,7 +875,9 @@ class GuardianAssistantService {
   /// instead (D17), as voice and the market chat do. «AI Мандат» and the AI
   /// permissions are checked first (aiPreflight's order): a refusal there
   /// is left to the card, which says it with the «Политика» hint, and never
-  /// opens a window. Null = show the card.
+  /// opens a window. EPK paused (or another gate block) opens no window
+  /// either: the answer says why ([_aiWindowRefusal]). Null = show the
+  /// card.
   AssistantResponse? _chatUnknownValueWindow(
     AssistantResponse preview,
     IntentData? intent,
@@ -888,6 +892,23 @@ class GuardianAssistantService {
           stop.detail != GuardianExecutionController.aiUnknownValueCode) {
         return null;
       }
+      // The gate's own rules hold before the window opens, as for every
+      // window the AI prepares (D6): EPK paused or the AI permissions off
+      // open nothing either ([_aiWindowRefusal]).
+      final s = AiOnchainExecutor.summaryFor(preview,
+          source: AssistantInputSource.generalChat.name);
+      final refusal = _aiWindowRefusal(
+        kind: s.kind,
+        asset: s.assetSymbol,
+        target: s.targetSymbol,
+        valueUsd: null,
+        source: AssistantInputSource.generalChat,
+        lang: lang,
+        preface: preface,
+        venue: s.venue,
+        isBuy: s.isBuy,
+      );
+      if (refusal != null) return refusal;
       return _unknownValueWindow(stop.message, intent, lang, preface: preface);
     }
     return null;
@@ -914,7 +935,7 @@ class GuardianAssistantService {
         : (isRu
             ? 'Эту операцию я выполнить не могу.'
             : 'I cannot carry out this operation.');
-    final msg = _withRaiseHint(reason, isRu);
+    final msg = _refusalText(reason, response.detail);
     return AssistantResponse(
       message: _withPreface(preface, msg),
       speechText: msg,
@@ -923,6 +944,17 @@ class GuardianAssistantService {
           : ResponseType.info,
     );
   }
+
+  /// [reason] and, when the refusal is one the user lifts by raising a
+  /// threshold in «Политика» with the PIN (the daily trading limit, «AI
+  /// Мандат», a wallet limit), the way to allow more (D6). Decided by the
+  /// refusal's code ([GuardianExecutionController.isRaisableRefusal]),
+  /// never by its words: the controller's texts come in the user's
+  /// language, and the hint must come in every one of them.
+  static String _refusalText(String reason, String? detail) =>
+      GuardianExecutionController.isRaisableRefusal(detail)
+          ? _withRaiseHint(reason)
+          : reason;
 
   /// Hands [preview] to [AiOnchainExecutor] without waiting: the card + PIN
   /// may take longer than the 30 s voice turn (D15). The executor reports
@@ -944,11 +976,17 @@ class GuardianAssistantService {
     final pre = gate.precheck(summary);
     if (!pre.mayExecute) {
       // The gate's reason already carries the «Политика» hint when it is a
-      // limit or «AI Мандат».
-      final msg = pre.reason ??
+      // limit or «AI Мандат». The AI permissions off or a paused EPK: the
+      // answer also says how to let the AI act again and that the user can
+      // do it in the wallet window.
+      final reason = pre.reason ??
           (isRu
               ? 'Эту операцию я выполнить не могу.'
               : 'I cannot carry out this operation.');
+      final msg = pre.outcome == AiGateOutcome.blocked &&
+              !_gateRefusalRaisable(pre, summary.kind)
+          ? _selfServiceRefusal(reason, summary.kind)
+          : reason;
       return AssistantResponse.info(_withPreface(preface, msg),
           speechText: msg);
     }
@@ -961,18 +999,19 @@ class GuardianAssistantService {
         return _unknownValueWindow(stop.message, intent, lang,
             preface: preface);
       }
-      final msg = _withRaiseHint(stop.message, isRu);
+      final msg = _refusalText(stop.message, stop.detail);
       return AssistantResponse.info(_withPreface(preface, msg),
           speechText: msg);
     }
     if (gate.isBusy) return _busyResponse(isRu, preface: preface);
 
-    final pinOn = AiControlService.instance.settings.pinRequiredForAi;
+    // The card comes with the PIN setting on and for a locked wallet (an
+    // unknown value or a paused EPK never reach this point): then the
+    // answer says «подтвердите на экране».
+    final pinOn = _gateWillAskFor(summary);
     // Without the card the operation would go out after a voice turn that
     // already told the user to try again (D15).
-    if (!pinOn &&
-        IBITIVaultService.instance.isUnlocked &&
-        _tooLateToActUnasked(source)) {
+    if (!pinOn && _tooLateToActUnasked(source)) {
       return _tooLateResponse(isRu, preface: preface);
     }
 
@@ -1087,15 +1126,21 @@ class GuardianAssistantService {
     return upper.isEmpty ? null : upper;
   }
 
-  /// «Автономный»: the gate's own refusal (AI permissions, «AI Мандат»
-  /// network / asset, the position cap for buys, the daily limit when the
-  /// USD value is known, EPK) for a trade the AI cannot carry out itself
-  /// and would hand over in its prefilled window instead (D17). That window
-  /// is the user's own and checks none of these, so it must never be a way
-  /// around them (D6): such a trade is refused with the reason (it carries
-  /// the «Политика» hint for a limit or the mandate) and nothing opens.
-  /// Null = the window may open. Never in the other modes: «Ручной»
-  /// prepares windows as the user's own; «Советник» opens none.
+  /// «Автономный»: the gate's precheck for an operation the AI does not
+  /// carry out itself but would hand over in its prefilled window instead
+  /// (D17, selling a balance share, a window the model asked for). Such a
+  /// window is the user's own, so the AI's limits must hold before it is
+  /// prepared — it must never be a way around them (D6):
+  /// - over a limit or outside «AI Мандат» (networks, assets, venues, the
+  ///   position cap for buys, the daily limit when the USD value is known):
+  ///   refused with the gate's reason, which carries the «Политика» hint;
+  /// - the AI permissions off or expired, or EPK paused (on-chain): no
+  ///   window either, but the answer says so plainly, how to let the AI
+  ///   act again, and that the user can do it in the window themselves.
+  /// Only a truly unknown USD value skips the dollar checks: the window is
+  /// then the user's own action, which the controller limits when it is
+  /// confirmed. Null = the window may open. Never in the other modes:
+  /// «Ручной» prepares windows as the user's own; «Советник» opens none.
   AssistantResponse? _aiWindowRefusal({
     required AiActionKind kind,
     required String? asset,
@@ -1104,6 +1149,8 @@ class GuardianAssistantService {
     required AssistantInputSource source,
     required String lang,
     String? preface,
+    String? venue,
+    bool? isBuy,
   }) {
     final settings = AiControlService.instance.settings;
     if (settings.mode != AiMode.fullAutonomy ||
@@ -1112,29 +1159,103 @@ class GuardianAssistantService {
     }
     final value =
         valueUsd != null && valueUsd.isFinite && valueUsd > 0 ? valueUsd : null;
+    final cex = kind == AiActionKind.cexOrder;
     final pre = AiActionGate.instance.precheck(AiActionSummary(
       kind: kind,
       title: '',
       amountLabel: '',
       valueUsd: value,
-      isBuy: kind != AiActionKind.onChainSell,
-      network: IBITIVaultService.instance.chainKey,
+      isBuy: isBuy ?? kind != AiActionKind.onChainSell,
+      // An exchange order is on no network (as ExchangeOrderService's
+      // summary): «AI Мандат» networks bound on-chain operations only.
+      network: cex ? null : IBITIVaultService.instance.chainKey,
+      venue: venue,
       assetSymbol: asset,
       targetSymbol: target,
       source: source.name,
     ));
     if (pre.outcome != AiGateOutcome.blocked) return null;
     final isRu = lang.startsWith('ru');
-    final msg = pre.reason ??
+    final reason = pre.reason ??
         (isRu
             ? 'Эту операцию я выполнить не могу.'
             : 'I cannot carry out this operation.');
+    final msg = _gateRefusalRaisable(pre, kind)
+        ? reason
+        : _selfServiceRefusal(reason, kind);
     return AssistantResponse.info(_withPreface(preface, msg), speechText: msg);
   }
 
+  /// The AI permission the gate requires for [kind] (as AiActionGate).
+  static AiAction _gateActionFor(AiActionKind kind) => switch (kind) {
+        AiActionKind.onChainSend => AiAction.send,
+        AiActionKind.approve => AiAction.approve,
+        AiActionKind.revoke => AiAction.revoke,
+        AiActionKind.cexOrder ||
+        AiActionKind.onChainSwap ||
+        AiActionKind.onChainBuy ||
+        AiActionKind.onChainSell ||
+        AiActionKind.delegatedTrade =>
+          AiAction.swap,
+      };
+
+  /// Whether the gate refused [kind] over a limit or outside «AI Мандат» —
+  /// what the user lifts by raising a threshold in «Политика» with the PIN
+  /// (D6) — and not for the AI permissions (off or expired) or a paused
+  /// EPK. Decided from the state, not the words: the gate checks the
+  /// permissions first; after them it refuses only for «AI Мандат» or a
+  /// limit (its reason then carries its «Политика» hint) or, on-chain, for
+  /// a paused EPK, which it checks last.
+  static bool _gateRefusalRaisable(AiGateDecision pre, AiActionKind kind) {
+    if (pre.outcome != AiGateOutcome.blocked) return false;
+    final settings = AiControlService.instance.settings;
+    if (!settings.isActive) return false;
+    if (!settings.allowedActions.contains(_gateActionFor(kind))) return false;
+    if (_hasRaiseHint(pre.reason)) return true;
+    return kind == AiActionKind.cexOrder ||
+        EPKPolicyManager.instance.state.isActive;
+  }
+
+  /// A gate refusal that is not about a limit or «AI Мандат»: the AI
+  /// permissions are off or expired, or EPK is paused. The AI prepares no
+  /// window around it, but the user's own operation is not stopped by it
+  /// (D2): the answer says how to let the AI act again and where the user
+  /// does it themselves.
+  static String _selfServiceRefusal(String reason, AiActionKind kind) {
+    final t = LocalizationService.instance;
+    final settings = AiControlService.instance.settings;
+    final cex = kind == AiActionKind.cexOrder;
+    final parts = <String>[reason];
+    if (settings.isActive &&
+        !settings.allowedActions.contains(_gateActionFor(kind))) {
+      parts.add(t.t('aiWindowAllowPermissionHint', {
+        'default': 'To let the AI do it, turn this action on for the AI in '
+            'AI Center (PIN needed).',
+      }));
+    } else if (settings.isActive &&
+        !cex &&
+        !EPKPolicyManager.instance.state.isActive) {
+      parts.add(t.t('aiWindowResumeEpkHint', {
+        'default': 'EPK is resumed in «Policy» or on the EPK screen.',
+      }));
+    }
+    parts.add(cex
+        ? t.t('aiWindowSelfExchange', {
+            'default': 'You can place this order yourself in the order '
+                'window on the Market screen.',
+          })
+        : t.t('aiWindowSelfWallet', {
+            'default': 'You can do it yourself in the wallet window.',
+          }));
+    return parts.join(' ');
+  }
+
   /// [_aiWindowRefusal] for a swap: a buy from a stablecoin, a sell into
-  /// one, else a swap. The USD value is known only when a stablecoin side
-  /// carries the amount.
+  /// one, else a swap. The swap window takes the amount on the paying side
+  /// whatever the amount mode (SwapVoiceOrchestrator), so the USD value is
+  /// that amount of the paying token ([_payingValueUsd]); unknown only
+  /// when the paying token has no price (an exact-out amount of a
+  /// stablecoin still counts as at least that many dollars).
   AssistantResponse? _aiSwapWindowRefusal(
     IntentData intent,
     AssistantInputSource source,
@@ -1150,11 +1271,19 @@ class GuardianAssistantService {
         : (!fromStable && toStable
             ? AiActionKind.onChainSell
             : AiActionKind.onChainSwap);
-    final exactOut = intent.amountMode == AmountMode.exactOut;
     final amount = intent.amount;
-    final valueUsd = amount == null
-        ? null
-        : ((fromStable && !exactOut) || (toStable && exactOut) ? amount : null);
+    var valueUsd =
+        amount == null || from == null ? null : _payingValueUsd(from, amount);
+    // An exact-out amount names the stablecoin received: never valued lower
+    // than that (as before), whatever the paying side is worth.
+    if (amount != null &&
+        amount.isFinite &&
+        amount > 0 &&
+        toStable &&
+        intent.amountMode == AmountMode.exactOut &&
+        (valueUsd == null || valueUsd < amount)) {
+      valueUsd = amount;
+    }
     return _aiWindowRefusal(
       kind: kind,
       asset: from,
@@ -1165,6 +1294,249 @@ class GuardianAssistantService {
       preface: preface,
     );
   }
+
+  @visibleForTesting
+  AssistantResponse? aiSwapWindowRefusalForTest(
+    IntentData intent,
+    AssistantInputSource source,
+    String lang,
+  ) =>
+      _aiSwapWindowRefusal(intent, source, lang);
+
+  /// What [amount] of the paying token [symbol] is worth in dollars on the
+  /// active network, from the portfolio prices the controller's limits use
+  /// ([TxUsdValuer]): a stablecoin 1:1, the native coin or the vetted
+  /// token at its portfolio price. Without that, the highest price any
+  /// holding with this symbol has — a look-alike never makes it look
+  /// cheaper. Null = no price at all (unknown).
+  double? _payingValueUsd(String symbol, double amount) {
+    if (!amount.isFinite || amount <= 0) return null;
+    final upper = _tradeSymbol(symbol);
+    if (upper == null) return null;
+    if (_stableSymbols.contains(upper)) return amount;
+    final chainKey = IBITIVaultService.instance.chainKey;
+    final chain = PrivyChainRegistry.getChain(chainKey);
+    final isNative = upper == (chain.nativeSymbol ?? '').toUpperCase();
+    final side = isNative ? null : _resolveSwapSide(upper, paying: true);
+    final priced = TxUsdValuer.usdValue(TransactionRequest(
+      type: TransactionType.swap,
+      fromAddress: '',
+      toAddress: '',
+      chainId: chain.evmChainId ?? 0,
+      chainKey: chainKey,
+      sourceIntent: IntentData(type: IntentType.swapAsset, rawInput: upper),
+      tokenSymbol: upper,
+      tokenContract: side?.address,
+      amount: amount,
+    ));
+    if (priced != null && priced.isFinite && priced > 0) return priced;
+    double? best;
+    for (final a in VaultPortfolioListener.instance.summary?.allAssets ??
+        const <WalletAsset>[]) {
+      if (a.symbol.trim().toUpperCase() != upper) continue;
+      if (!a.priceAvailable || !a.priceUsd.isFinite || a.priceUsd <= 0) {
+        continue;
+      }
+      if (best == null || a.priceUsd > best) best = a.priceUsd;
+    }
+    return best == null ? null : amount * best;
+  }
+
+  /// [amount] in a window whose paying token is not named: its default is
+  /// a stablecoin or the network's native coin (WalletTradeModal), so the
+  /// higher of the two values counts — never the lower.
+  double _unnamedPayingValueUsd(double amount) {
+    final chain =
+        PrivyChainRegistry.getChain(IBITIVaultService.instance.chainKey);
+    final native = chain.nativeSymbol;
+    final nativeValue = native == null || native.isEmpty
+        ? null
+        : _payingValueUsd(native, amount);
+    return nativeValue != null && nativeValue > amount ? nativeValue : amount;
+  }
+
+  /// The windows whose amount is on the paying side (swap, Buy / Sell).
+  static const Set<String> _swapWindows = {
+    'wallet_swap',
+    'wallet_buy',
+    'wallet_sell',
+  };
+
+  /// A window amount from a command ('500', '0,5', 12.5), else null.
+  static double? _commandAmount(Object? raw) {
+    if (raw == null) return null;
+    final value = raw is num
+        ? raw.toDouble()
+        : double.tryParse(
+            raw.toString().replaceAll(RegExp(r'\s'), '').replaceAll(',', '.'));
+    return value != null && value.isFinite && value > 0 ? value : null;
+  }
+
+  /// «Автономный»: window commands not prepared by the checks above — the
+  /// model's own (LLM route) or the parser's fallback — that would open or
+  /// fill a money window (swap, Buy / Sell, send, exchange order). Such a
+  /// window is the user's own, so it passes [_aiWindowRefusal] like every
+  /// window the AI prepares (D6). A window only opened, with nothing filled
+  /// in, prepares nothing: the user fills it in. Null = may be dispatched.
+  AssistantResponse? _preparedWindowRefusal(
+    List<UICommand> commands,
+    AssistantInputSource source,
+    String lang,
+  ) {
+    final settings = AiControlService.instance.settings;
+    if (settings.mode != AiMode.fullAutonomy ||
+        source == AssistantInputSource.automated ||
+        commands.isEmpty) {
+      return null;
+    }
+    String? openedWindow(bool Function(String target) matches) {
+      String? found;
+      for (final c in commands) {
+        final target = c.target;
+        if (c.type == UICommandType.openModal &&
+            target != null &&
+            matches(target)) {
+          found = target;
+        }
+      }
+      return found;
+    }
+
+    UICommand? last(UICommandType type, String target) {
+      UICommand? found;
+      for (final c in commands) {
+        if (c.type == type && c.target == target) found = c;
+      }
+      return found;
+    }
+
+    bool runs(Set<String> actions) => commands.any((c) =>
+        c.type == UICommandType.executeAction && actions.contains(c.target));
+
+    // The swap and Buy / Sell windows: the amount is on the paying side.
+    final fromCmd = last(UICommandType.selectToken, 'swap_from_token');
+    final toCmd = last(UICommandType.selectToken, 'swap_to_token');
+    final amountCmd = last(UICommandType.fillField, 'swap_amount');
+    if (fromCmd != null ||
+        toCmd != null ||
+        amountCmd != null ||
+        runs(const {'wallet_swap_quote', 'swap_quote', 'swap_preview'})) {
+      final activeModal = ScreenContextService.instance.activeModal;
+      final window = openedWindow(_swapWindows.contains) ??
+          (activeModal != null && _swapWindows.contains(activeModal)
+              ? activeModal
+              : 'wallet_swap');
+      final from = _tradeSymbol(fromCmd?.payload?['symbol']?.toString());
+      final to = _tradeSymbol(toCmd?.payload?['symbol']?.toString());
+      final amount = _commandAmount(amountCmd?.payload?['value']);
+      final fromStable = from != null && _stableSymbols.contains(from);
+      final toStable = to != null && _stableSymbols.contains(to);
+      final kind = switch (window) {
+        'wallet_buy' => AiActionKind.onChainBuy,
+        'wallet_sell' => AiActionKind.onChainSell,
+        _ => fromStable && !toStable
+            ? AiActionKind.onChainBuy
+            : (!fromStable && toStable
+                ? AiActionKind.onChainSell
+                : AiActionKind.onChainSwap),
+      };
+      final valueUsd = amount == null
+          ? null
+          : (from != null
+              ? _payingValueUsd(from, amount)
+              : _unnamedPayingValueUsd(amount));
+      final refusal = _aiWindowRefusal(
+        kind: kind,
+        asset: from,
+        target: to,
+        valueUsd: valueUsd,
+        source: source,
+        lang: lang,
+      );
+      if (refusal != null) return refusal;
+    }
+
+    // The send window.
+    final tokenCmd = last(UICommandType.selectToken, 'send_token');
+    final sendAmountCmd = last(UICommandType.fillField, 'send_amount');
+    final addressCmd = last(UICommandType.fillField, 'send_address');
+    if (tokenCmd != null ||
+        sendAmountCmd != null ||
+        addressCmd != null ||
+        runs(const {'wallet_send_preview'})) {
+      final token = _tradeSymbol(tokenCmd?.payload?['symbol']?.toString());
+      final amount = _commandAmount(sendAmountCmd?.payload?['value']);
+      final refusal = _aiWindowRefusal(
+        kind: AiActionKind.onChainSend,
+        asset: token,
+        target: null,
+        valueUsd: amount == null
+            ? null
+            : (token != null
+                ? _payingValueUsd(token, amount)
+                : _unnamedPayingValueUsd(amount)),
+        source: source,
+        lang: lang,
+      );
+      if (refusal != null) return refusal;
+    }
+
+    // An exchange order window: its payload (the shell falls back to the
+    // last one on the bus, and to SOL / buy / MEXC, as here). A buy's
+    // amount is the quote to spend (its USD value); a sell, like the sell
+    // of a balance share, is checked against «AI Мандат» only — the user's
+    // own exchange sell is never stopped by the trading budget.
+    if (openedWindow((t) => t == 'cex_trade') != null) {
+      final cmd = commands.lastWhere((c) =>
+          c.type == UICommandType.openModal && c.target == 'cex_trade');
+      final payload =
+          cmd.payload ?? UICommandBus.instance.latestPayload('cex_trade');
+      if (payload != null) {
+        final symbol = _tradeSymbol(payload['symbol']?.toString()) ?? 'SOL';
+        final rawIsBuy = payload['isBuy'];
+        final isBuy = rawIsBuy is bool ? rawIsBuy : true;
+        final exchangeId =
+            payload['exchangeId']?.toString().toLowerCase() ?? 'mexc';
+        final refusal = _aiWindowRefusal(
+          kind: AiActionKind.cexOrder,
+          asset: symbol,
+          target: null,
+          venue: exchangeId,
+          isBuy: isBuy,
+          valueUsd: isBuy ? _commandAmount(payload['initialAmount']) : null,
+          source: source,
+          lang: lang,
+        );
+        if (refusal != null) return refusal;
+      }
+    }
+    return null;
+  }
+
+  @visibleForTesting
+  AssistantResponse? preparedWindowRefusalForTest(
+    List<UICommand> commands,
+    AssistantInputSource source,
+    String lang,
+  ) =>
+      _preparedWindowRefusal(commands, source, lang);
+
+  /// Whether [AiActionGate.confirm] will show the card + PIN for [s]
+  /// (D5, D6): the PIN setting on, a locked wallet, an unknown USD value,
+  /// or an exchange order while EPK is paused — the gate's own card notes
+  /// for an exchange order. The voice then says «подтвердите на экране»,
+  /// never «ставлю ордер» before a card it did not announce.
+  static bool _gateWillAskFor(AiActionSummary s) {
+    if (AiControlService.instance.settings.pinRequiredForAi) return true;
+    if (!IBITIVaultService.instance.isUnlocked) return true;
+    final v = s.valueUsd;
+    if (v == null || v.isNaN || v.isInfinite || v < 0) return true;
+    return s.kind == AiActionKind.cexOrder &&
+        !EPKPolicyManager.instance.state.isActive;
+  }
+
+  @visibleForTesting
+  static bool gateWillAskForTest(AiActionSummary s) => _gateWillAskFor(s);
 
   /// The prefilled swap window (SwapVoiceOrchestrator): «Ручной», or
   /// «Автономный» when the AI cannot carry the swap out itself (D17) — then
@@ -1322,23 +1694,43 @@ class GuardianAssistantService {
     return p.isEmpty ? msg : '$p\n\n$msg';
   }
 
-  static final _limitWords = RegExp(
-    r'limit|budget|mandate|position cap|лимит|бюджет|мандат|позици',
-    caseSensitive: false,
-  );
-
   /// Over a limit or outside «AI Мандат»: say how to allow more — never
-  /// prepare a way around it (D6).
-  static String _withRaiseHint(String msg, bool isRu) {
-    final lower = msg.toLowerCase();
-    if (!_limitWords.hasMatch(msg) ||
-        lower.contains('поднимите порог') ||
-        lower.contains('raise the')) {
-      return msg;
-    }
-    return '$msg ${_raiseHint(isRu)}';
+  /// prepare a way around it (D6). The hint is in the app's language, like
+  /// the refusals it follows; never added twice (the gate's refusals carry
+  /// their own).
+  static String _withRaiseHint(String msg) {
+    if (_hasRaiseHint(msg)) return msg;
+    return '$msg ${_localizedRaiseHint()}';
   }
 
+  static String _localizedRaiseHint() => LocalizationService.instance.t(
+        'aiExecLimitHint',
+        {'default': 'Want more? Raise the threshold in «Policy» (PIN needed).'},
+      );
+
+  /// AiActionGate's own hint, appended to its refusals over a limit or
+  /// outside «AI Мандат» (the same key and text as the gate).
+  static String _gateRaiseHint() => LocalizationService.instance.t(
+        'aiGateRaiseLimitHint',
+        {
+          'default': 'Want more? Raise the limit or change the «AI Mandate» '
+              'in «Policy» (needs your PIN).',
+        },
+      );
+
+  static bool _hasRaiseHint(String? msg) {
+    if (msg == null || msg.isEmpty) return false;
+    if (msg.contains(_localizedRaiseHint()) || msg.contains(_gateRaiseHint())) {
+      return true;
+    }
+    final lower = msg.toLowerCase();
+    return lower.contains('поднимите порог') ||
+        lower.contains('raise the threshold') ||
+        lower.contains('raise the limit');
+  }
+
+  /// The RU / EN hint for texts written in the chat's language (exchange
+  /// order messages).
   static String _raiseHint(bool isRu) => isRu
       ? 'Хотите больше — поднимите порог в «Политике» (нужен ПИН).'
       : 'Want more? Raise the threshold in Policy (PIN needed).';
@@ -2528,14 +2920,14 @@ class GuardianAssistantService {
           }
 
           // «Автономный»: the prefilled swap window is the user's own and
-          // checks no AI limit — never prepared around «AI Мандат», EPK or
-          // the AI permissions (D6). The amount here may be a quantity, so
-          // no USD value is assumed.
+          // checks no AI limit — never prepared around «AI Мандат», a
+          // limit, EPK or the AI permissions (D6). It pays with USDT and
+          // fills [amount] on that side (below), so that is its USD value.
           final refusal = _aiWindowRefusal(
             kind: AiActionKind.onChainBuy,
             asset: null,
             target: symbol,
-            valueUsd: null,
+            valueUsd: amount != null && amount > 0 ? amount : null,
             source: source,
             lang: effectiveLang,
             preface: fullPlan,
@@ -4151,6 +4543,13 @@ class GuardianAssistantService {
       // _commandsAllowedForMode so Manual mode cannot navigate/openModal via
       // the IntentParser fast route either.
       final permParsedCmds = _applyWindowPermissions(parsedCommands);
+      // «Автономный»: a money window these commands would fill (a transfer
+      // the AI does not run itself) is the user's own, so it is checked
+      // like every window the AI prepares — never around «AI Мандат» or a
+      // limit (D6), never with EPK paused or the AI permissions off.
+      final parsedWindowRefusal =
+          _preparedWindowRefusal(permParsedCmds, source, detectedLang);
+      if (parsedWindowRefusal != null) return parsedWindowRefusal;
       if (permParsedCmds.isNotEmpty) {
         UICommandBus.instance.dispatchAll(permParsedCmds);
       }
@@ -4326,6 +4725,16 @@ class GuardianAssistantService {
     final permFilteredCmds = (aiRunsIntent || opensPreparedWindow)
         ? const <UICommand>[]
         : _applyWindowPermissions(filteredUiCommands);
+    // «Автономный»: the model's own window commands for anything else — a
+    // buy, a sell, a transfer without its recipient or amount, or no
+    // intent at all — would open or fill a money window that is the
+    // user's own. They pass the same check as the windows the app prepares
+    // (D6): over a limit, outside «AI Мандат», with EPK paused or the AI
+    // permissions off, nothing is dispatched and the answer says why. The
+    // model's own text is left out then: it may say it opened the window.
+    final modelWindowRefusal =
+        _preparedWindowRefusal(permFilteredCmds, source, detectedLang);
+    if (modelWindowRefusal != null) return modelWindowRefusal;
     if (permFilteredCmds.isNotEmpty) {
       UICommandBus.instance.dispatchAll(permFilteredCmds);
     }
@@ -5656,6 +6065,36 @@ class GuardianAssistantService {
     // misheard "продай всё" must not dump a position (D8).
     final sellsBalanceShare = !isBuy && amt < 0.0;
     if (sellsBalanceShare) {
+      // The order window places the user's own order, which the exchange
+      // service checks against no AI rule, so «AI Мандат» (assets, venues)
+      // and the AI permissions hold before the AI prepares it, as for every
+      // window it prepares (D6). No dollar check: the user's own exchange
+      // sell is never stopped by the trading budget (an exit must stay
+      // possible), only the AI's own sells count against it.
+      final refusal = _aiWindowRefusal(
+        kind: AiActionKind.cexOrder,
+        asset: symbol,
+        target: null,
+        venue: exchangeId,
+        isBuy: false,
+        valueUsd: null,
+        source: source,
+        lang: lang,
+      );
+      if (refusal != null) {
+        await MarketMemoryService.instance.record(
+          action: 'sell',
+          symbol: symbol,
+          source: source.name,
+          aiMode: modeStr,
+          result: 'blocked',
+          amount: orderAmount,
+          priceThen: price,
+          reason: refusal.speechText,
+          rawInput: intent.rawInput,
+        );
+        return refusal;
+      }
       final modalCmd = UICommand(
         type: UICommandType.openModal,
         target: 'cex_trade',
@@ -5759,9 +6198,11 @@ class GuardianAssistantService {
 
     // The card + PIN may take longer than the 30 s voice turn: never wait
     // for them inside it (D15). The result comes as the order window
-    // (success) or a line on the screen, plus «ИИ выполнил: …».
-    final needsCard = settings.pinRequiredForAi ||
-        !IBITIVaultService.instance.isUnlocked;
+    // (success) or a line on the screen, plus «ИИ выполнил: …». Whenever
+    // the gate will show the card — the PIN setting, a locked wallet, EPK
+    // paused (an exchange order then asks first) — the answer says
+    // «подтвердите на экране», never «ставлю ордер».
+    final needsCard = _gateWillAskFor(summary);
     if (needsCard) {
       _trackPending(run(background: true).then((_) {}));
       final exchange = _exchangeLabel(exchangeId);
@@ -6245,17 +6686,23 @@ class GuardianAssistantService {
       }
 
       // The AI does not carry it out itself; its prefilled window is the
-      // user's own and checks no AI limit. So the window opens only for
-      // what the AI cannot do reliably (D17: the coin cannot be resolved
-      // reliably, no price, no stablecoin or balance) and for selling all /
-      // a share (C13) — never around «AI Мандат», a limit, EPK or the AI
-      // permissions (D6): those are refused with the reason and the
-      // «Политика» hint, and nothing opens.
+      // user's own. So the window opens only for what the AI cannot do
+      // reliably (D17: the coin cannot be resolved reliably, no price, no
+      // stablecoin or balance) and for selling all / a share (C13) — never
+      // around «AI Мандат» or a limit (D6): those are refused with the
+      // reason and the «Политика» hint, and nothing opens. The AI
+      // permissions off or a paused EPK open nothing either; the answer
+      // says the user can do it in the wallet window ([_aiWindowRefusal]).
+      // A sold quantity without a market price is valued at the coin's
+      // portfolio price, as the controller does (the window fills that
+      // quantity below). A bought quantity without one fills no amount.
       final double? valueUsd;
       if (amount == null || amount <= 0) {
         valueUsd = null;
       } else if (intent.isQuantity) {
-        valueUsd = realPrice != null ? amount * realPrice : null;
+        valueUsd = realPrice != null
+            ? amount * realPrice
+            : (isBuy ? null : _payingValueUsd(symbol, amount));
       } else {
         valueUsd = amount;
       }
@@ -6270,7 +6717,7 @@ class GuardianAssistantService {
       final refusedWhy = refusal != null
           ? refusal.speechText
           : (blocked != null && blocked.outsideMandate
-              ? _withRaiseHint(blocked.reason, isRu)
+              ? _withRaiseHint(blocked.reason)
               : null);
       if (refusedWhy != null) {
         MarketMemoryService.instance.record(

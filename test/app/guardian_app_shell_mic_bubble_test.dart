@@ -10,6 +10,11 @@
 // «нет» then reaches GuardianAssistantService, which answers the card with
 // AiActionGate.answerByVoice.
 //
+// While a card is open the bubble sits in a strip at the top of the screen,
+// above the card (review finding guardian_app_shell.dart:62): at its usual
+// spot (bottom right) it covered the card's note and «да» / «нет» hint, and
+// a bubble dragged lower could sit on «Подтвердить».
+//
 // Run: flutter test test/app/guardian_app_shell_mic_bubble_test.dart
 
 import 'dart:async';
@@ -62,6 +67,112 @@ void main() {
         expect(visible(session: false, tab: tab, card: true), isTrue,
             reason: 'tab $tab, no session');
       }
+    });
+  });
+
+  group('where the bubble goes', () {
+    MicBubblePlace place(
+            {required bool session, required int tab, required bool card}) =>
+        GuardianAppShell.micBubblePlace(
+          sessionActive: session,
+          tabIndex: tab,
+          aiCardOpen: card,
+        );
+
+    test('a card is open: above the card, on every tab, session or not', () {
+      for (final tab in tabs) {
+        for (final session in [true, false]) {
+          expect(place(session: session, tab: tab, card: true),
+              MicBubblePlace.aboveAiCard,
+              reason: 'tab $tab, session $session');
+        }
+      }
+    });
+
+    test('no card: its usual spot during a session, off the AI Voice tab', () {
+      for (final tab in tabs) {
+        expect(place(session: true, tab: tab, card: false),
+            tab == 0 ? MicBubblePlace.hidden : MicBubblePlace.usual,
+            reason: 'tab $tab');
+        expect(place(session: false, tab: tab, card: false),
+            MicBubblePlace.hidden,
+            reason: 'tab $tab, no session');
+      }
+    });
+
+    test('a small phone: the strip still fits the bubble below the status bar',
+        () {
+      const phone = MediaQueryData(
+        size: Size(360, 640),
+        padding: EdgeInsets.only(top: 24, bottom: 16),
+      );
+      final strip = GuardianAppShell.aboveAiCardStripHeight(phone);
+      // 4 px below the status bar, the 72 px bubble, 8 px below it.
+      expect(strip, 24 + 4 + 72 + 8);
+      // The review's case on this phone: the card's note and «да» / «нет»
+      // hint start at y≈440, its buttons at y≈564 — far below the strip.
+      expect(strip, lessThan(440));
+    });
+
+    test('a tall screen: the strip ends where the tallest card can begin', () {
+      const tablet = MediaQueryData(
+        size: Size(800, 1280),
+        padding: EdgeInsets.only(top: 24, bottom: 24),
+      );
+      // AiActionConfirmSheet: at most 85 % of the screen high, 12 px and
+      // the bottom safe area below it.
+      const tallestCardTop = 1280 - (1280 * 0.85 + 12 + 24);
+      expect(GuardianAppShell.aboveAiCardStripHeight(tablet),
+          closeTo(tallestCardTop, 1e-9));
+    });
+
+    testWidgets(
+        'the bubble is given a screen that ends at the strip: no bottom '
+        'inset, no keyboard', (tester) async {
+      const phone = MediaQueryData(
+        size: Size(360, 640),
+        padding: EdgeInsets.only(top: 24, bottom: 16),
+        viewPadding: EdgeInsets.only(top: 24, bottom: 16),
+        // Even with a keyboard up, the bubble stays in the strip.
+        viewInsets: EdgeInsets.only(bottom: 280),
+      );
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      const stripKey = ValueKey('strip');
+      MediaQueryData? seen;
+      // The root overlay's Stack, as in the app.
+      await tester.pumpWidget(Directionality(
+        textDirection: TextDirection.ltr,
+        child: MediaQuery(
+          data: phone,
+          child: Stack(children: [
+            Builder(
+              builder: (context) => GuardianAppShell.aboveAiCard(
+                context,
+                // Stands for FloatingMicBubble, which places and clamps
+                // itself in the screen its MediaQuery describes.
+                Positioned.fill(
+                  child: Builder(builder: (inner) {
+                    seen = MediaQuery.of(inner);
+                    return const SizedBox(key: stripKey);
+                  }),
+                ),
+              ),
+            ),
+          ]),
+        ),
+      ));
+
+      final strip = GuardianAppShell.aboveAiCardStripHeight(phone);
+      expect(tester.getRect(find.byKey(stripKey)),
+          Rect.fromLTWH(0, 0, 360, strip));
+      expect(seen, isNotNull);
+      expect(seen!.size, Size(360, strip));
+      expect(seen!.padding.top, 24, reason: 'below the status bar');
+      expect(seen!.padding.bottom, 0);
+      expect(seen!.viewPadding.bottom, 0);
+      expect(seen!.viewInsets, EdgeInsets.zero);
     });
   });
 

@@ -68,8 +68,12 @@ class GuardianExecutionController {
   /// A confirmation that stops before the transaction is dispatched used to
   /// leave no trace: nothing in the journal, nothing in the log. Every such
   /// stop is now written to both.
+  ///
+  /// [detail] keeps the refusal's code (e.g. [dailyLimitCode]) so the caller
+  /// can still tell what it was ([isRaisableRefusal]).
   AssistantResponse _stopBeforeDispatch(
-      TransactionRequest tx, String stage, String message) {
+      TransactionRequest tx, String stage, String message,
+      {String? detail}) {
     _log.w('confirm stopped [$stage]: $message');
     AuditLogService.instance.recordPolicyBlock(
       intentType: tx.sourceIntent.type,
@@ -77,7 +81,8 @@ class GuardianExecutionController {
       summary: tx.displaySummary,
       reason: message,
     );
-    return AssistantResponse.error(message, intent: tx.sourceIntent);
+    return AssistantResponse.error(message,
+        detail: detail, intent: tx.sourceIntent);
   }
 
   // ── P0 Safety: Double-execution guard ──────────────────────────────────────
@@ -265,6 +270,7 @@ class GuardianExecutionController {
         return AssistantResponse.error(
           policy.reason ??
               'Transaction blocked by advanced Guardian enforcement.',
+          detail: policyRefusalCode(policy, tx),
           intent: intent,
         );
       }
@@ -369,7 +375,8 @@ class GuardianExecutionController {
       if (reserved == null) {
         gate.release(aiDecision);
         return AssistantResponse.error(
-          'Daily limit would be exceeded. ${_delegation.usageSummary()}',
+          _dailyLimitMessage(txAmount),
+          detail: dailyLimitCode,
           intent: intent,
         );
       }
@@ -464,6 +471,7 @@ class GuardianExecutionController {
       );
       return AssistantResponse.error(
         policy.reason ?? 'Transaction blocked by Guardian policy.',
+        detail: policyRefusalCode(policy, tx),
         intent: tx.sourceIntent,
       );
     }
@@ -530,7 +538,8 @@ class GuardianExecutionController {
       // ── P0 Safety: Daily limit pre-check ──────────────────────────────────
       final dailyBlock = _checkDailyLimit(tx);
       if (dailyBlock != null) {
-        return _stopBeforeDispatch(tx, 'daily_limit', dailyBlock.message);
+        return _stopBeforeDispatch(tx, 'daily_limit', dailyBlock.message,
+            detail: dailyBlock.detail);
       }
 
       // Re-run preview immediately before execution to prevent stale confirms:
@@ -546,7 +555,8 @@ class GuardianExecutionController {
         TransactionSimulator.analyze(tx),
       );
       if (aiGate != null) {
-        return _stopBeforeDispatch(tx, 'ai_gate', aiGate.message);
+        return _stopBeforeDispatch(tx, 'ai_gate', aiGate.message,
+            detail: aiGate.detail);
       }
 
       final expectedPath = _executor.normalizeExecutionPath(tx, path);
@@ -629,6 +639,24 @@ class GuardianExecutionController {
       );
     }
 
+    // ── Gate 1b: The amount is what the user pays ──────────────────────────
+    // The plan, its approve and every USD check (the swap limit, the daily
+    // trading limit, «AI Мандат» max position, the AI card) treat the
+    // amount as the paying coin's quantity. An exact amount to RECEIVE
+    // would be valued at the wrong coin's price, so it is never quoted.
+    // No window sends one and LlmIntentGuard drops the model's.
+    if (intent.amountMode == AmountMode.exactOut) {
+      final token = (intent.sourceTokenSymbol ?? '').trim().toUpperCase();
+      final payToken = token.isEmpty ? '?' : token;
+      final message =
+          LocalizationService.instance.t('swapExactOutUnsupported', {
+        'token': payToken,
+        'default': 'A swap for an exact amount to receive is not supported. '
+            'Say how much $payToken you want to pay.',
+      });
+      return AssistantResponse.error(message, intent: intent);
+    }
+
     // ── Gate 2: Wallet connected ────────────────────────────────────────────
     if (!_wallet.isConnected) {
       return AssistantResponse.error('No wallet connected.', intent: intent);
@@ -671,7 +699,8 @@ class GuardianExecutionController {
       sourceTokenAddress: resolvedIntent.sourceTokenAddress!,
       targetTokenAddress: resolvedIntent.targetTokenAddress!,
       amount: resolvedAmount,
-      amountMode: resolvedIntent.amountMode ?? AmountMode.exactIn,
+      // Always the amount to pay (Gate 1b refuses an exact output).
+      amountMode: AmountMode.exactIn,
       slippageBps: clampedSlippage,
       chainId: effectiveChainId,
       userAddress: effectiveAddress,
@@ -880,6 +909,7 @@ class GuardianExecutionController {
       if (kDebugMode) print('[SwapOrchestrator] ❌ Policy blocked swap preview');
       return AssistantResponse.error(
         policy.reason ?? 'Swap blocked by Guardian policy.',
+        detail: policyRefusalCode(policy, plan.swapStep),
         intent: intent,
       );
     }
@@ -1125,16 +1155,24 @@ class GuardianExecutionController {
   // Enforces AiControlSettings.dailyLimit BEFORE execution, not just after.
   // DelegationController tracks cumulative spend; this gates the pipeline.
   //
+  // It bounds every market trade: the AI's (chat, voice, market chat,
+  // automation), a «Ручной» chat card the user confirms, and the user's own
+  // Buy / Sell window (origin market, GuardianPolicyEngine
+  // .isUserTradeWindowTx) — like the user's own exchange buys. Only the
+  // user's own Send / Swap window (origin wallet) is bounded by the wallet
+  // send / swap / approve limits instead.
+  //
   // The limit is in dollars. The AI never runs an operation by itself with
   // an unknown USD value ([aiPreflight] and the automation path refuse it
   // first). An operation the user confirms themselves (the Buy / Sell
   // window, a chat card in «Ручной») keeps the old stand-in when there is
   // no price: the token quantity is compared as if it were dollars — never
   // looser than before — and the message says so instead of showing the
-  // quantity as "$".
+  // quantity as "$". Every refusal carries [dailyLimitCode].
   AssistantResponse? _checkDailyLimit(TransactionRequest tx) {
-    // Daily TRADING limit only — the user's own wallet window is bounded by
-    // the wallet send/swap/approve limits, not the trading budget.
+    // Daily TRADING limit only — the user's own Send / Swap window is
+    // bounded by the wallet send/swap/approve limits, not the trading
+    // budget. The Buy / Sell window is a trade and is checked here.
     if (GuardianPolicyEngine.isUserWalletTx(tx)) return null;
 
     final usd = _finiteUsd(TxUsdValuer.usdValue(tx));
@@ -1145,23 +1183,16 @@ class GuardianExecutionController {
     // usage + in-flight reservations).
     if (_delegation.canSpend(amount)) return null;
 
-    final remaining = _delegation.remainingBudgetUsd;
-    final left = _usd(remaining < 0 ? 0 : remaining);
-    final loc = LocalizationService.instance;
     final String message;
     if (usd != null) {
-      final value = _usd(usd);
-      message = loc.t('aiGateBlockedDaily', {
-        'value': value,
-        'left': left,
-        'default':
-            'Over the daily trading limit: this needs $value, $left left today.',
-      });
+      message = _dailyLimitMessage(usd);
     } else {
+      final remaining = _delegation.remainingBudgetUsd;
+      final left = _usd(remaining < 0 ? 0 : remaining);
       final token = _symbolOf(tx);
       final quantity = _fmtQuantity(amount);
       final asUsd = _usd(amount);
-      message = loc.t('aiDailyLimitNoPrice', {
+      message = LocalizationService.instance.t('aiDailyLimitNoPrice', {
         'token': token,
         'amount': quantity,
         'amountUsd': asUsd,
@@ -1170,17 +1201,32 @@ class GuardianExecutionController {
             '$quantity $token is counted as $asUsd; $left left today.',
       });
     }
-    return AssistantResponse.error(message, intent: tx.sourceIntent);
+    return AssistantResponse.error(message,
+        detail: dailyLimitCode, intent: tx.sourceIntent);
+  }
+
+  /// Over the daily trading limit by [usd] dollars, with what is left today.
+  String _dailyLimitMessage(double usd) {
+    final remaining = _delegation.remainingBudgetUsd;
+    final left = _usd(remaining < 0 ? 0 : remaining);
+    final value = _usd(usd);
+    return LocalizationService.instance.t('aiGateBlockedDaily', {
+      'value': value,
+      'left': left,
+      'default':
+          'Over the daily trading limit: this needs $value, $left left today.',
+    });
   }
 
   AssistantResponse? _checkAiIntentControl(IntentData intent) {
     final settings = AiControlService.instance.settings;
+    final loc = LocalizationService.instance;
 
     // «Советник»: the AI starts no scan either (D2). Only the assistant
     // comes through here; the user runs Safe Scan in «Защита» themselves.
     if (intent.type == IntentType.scanApprovals &&
         settings.mode == AiMode.manual) {
-      final message = LocalizationService.instance.t('aiAdvisorNoScan', {
+      final message = loc.t('aiAdvisorNoScan', {
         'default': 'The «Advisor» mode is on: I can explain the risks but do '
             'not run the scan. Start Safe Scan in the «Security» tab '
             'yourself, or choose «Manual».',
@@ -1190,12 +1236,17 @@ class GuardianExecutionController {
 
     if (!intent.isExecutionIntent) return null;
 
+    // The same texts as AiActionGate and [_checkAiTransactionControl], in
+    // the user's language («AI-Центр» in Russian).
     if (settings.mode == AiMode.manual) {
+      final message = loc.t('aiGateAdvisorOnly', {
+        'default': 'In «Advisor» mode the AI only advises: it opens and '
+            'prepares nothing. To let it act, choose «Manual» or '
+            '«Autonomous» in AI Center.',
+      });
       return AssistantResponse(
-        message: 'Advisor mode is on: the AI only advises and will not act. '
-            'To let it act, switch to Manual or Autonomous in AI Control.',
-        speechText: 'Advisor mode: I only advise. Open AI Control to change '
-            'the mode.',
+        message: message,
+        speechText: message,
         type: ResponseType.error,
         sourceIntent: intent,
         uiCommands: const [
@@ -1207,10 +1258,12 @@ class GuardianExecutionController {
     final requiredAction = _requiredAiActionForIntent(intent.type);
     if (requiredAction != null &&
         !settings.allowedActions.contains(requiredAction)) {
+      final message = loc.t('aiGateBlockedPermission', {
+        'default': 'This action is turned off for the AI in AI Center.',
+      });
       return AssistantResponse(
-        message:
-            'This AI action is disabled in AI Control. Enable ${requiredAction.name} permissions before continuing.',
-        speechText: 'This AI action is disabled in your AI Control settings.',
+        message: message,
+        speechText: message,
         type: ResponseType.error,
         sourceIntent: intent,
         uiCommands: const [
@@ -1222,9 +1275,11 @@ class GuardianExecutionController {
     return null;
   }
 
-  /// A successful AI/market operation counts against the daily trading
-  /// budget. Before, only the pre-check ran, so every operation saw a fresh
-  /// budget and the "daily" limit was really a per-operation one.
+  /// A successful market operation counts against the daily trading
+  /// budget: the AI's, a «Ручной» chat card and the user's own Buy / Sell
+  /// window (as before); not the user's own Send / Swap window. Before,
+  /// only the pre-check ran, so every operation saw a fresh budget and the
+  /// "daily" limit was really a per-operation one.
   void _commitDailyUsage(TransactionRequest tx, AssistantResponse result) {
     if (result.type == ResponseType.error) return;
     final usd = dailyUsageUsd(tx);
@@ -1238,9 +1293,10 @@ class GuardianExecutionController {
   }
 
   /// What a successful [tx] adds to today's trading budget, in dollars, or
-  /// null when it adds nothing: the user's own wallet window, approvals and
-  /// revokes, and an unknown USD value — a token quantity is never added to
-  /// the dollar budget.
+  /// null when it adds nothing: the user's own Send / Swap window (origin
+  /// wallet), approvals and revokes, and an unknown USD value — a token
+  /// quantity is never added to the dollar budget. The user's own Buy / Sell
+  /// window is a trade (origin market) and counts.
   @visibleForTesting
   static double? dailyUsageUsd(TransactionRequest tx) {
     if (GuardianPolicyEngine.isUserWalletTx(tx)) return null;
@@ -1270,6 +1326,71 @@ class GuardianExecutionController {
   /// caller hands the operation to the user in the prefilled window
   /// instead (D17).
   static const String aiUnknownValueCode = 'ai_unknown_usd_value';
+
+  // ── Refusals the user can lift in «Политика» (D6) ──────────────────────────
+  // Stable, language-independent `detail` codes. Every refusal below carries
+  // one, whatever language its message is in, so the assistant can append
+  // «поднимите порог в «Политике» (нужен ПИН)» by code, never by wording.
+
+  /// Over the daily trading limit ([_checkDailyLimit], the automation
+  /// budget reservation).
+  static const String dailyLimitCode = 'limit_daily_trading';
+
+  /// Over «AI Мандат» max position (buys only).
+  static const String maxPositionCode = 'limit_ai_max_position';
+
+  /// The network is outside «AI Мандат».
+  static const String mandateNetworkCode = 'mandate_network';
+
+  /// An asset (paid or bought) is outside «AI Мандат».
+  static const String mandateAssetCode = 'mandate_asset';
+
+  /// The venue (swap router / spender) is outside «AI Мандат».
+  static const String mandateVenueCode = 'mandate_venue';
+
+  /// Over the wallet Send limit of the policy profile.
+  static const String sendLimitCode = 'limit_wallet_send';
+
+  /// Over the wallet Swap limit of the policy profile.
+  static const String swapLimitCode = 'limit_wallet_swap';
+
+  /// Over the Approve limit of the policy profile (a finite approval; an
+  /// unlimited one is never lifted by a higher limit and has no code).
+  static const String approveLimitCode = 'limit_wallet_approve';
+
+  static const Set<String> _raisableCodes = {
+    dailyLimitCode,
+    maxPositionCode,
+    mandateNetworkCode,
+    mandateAssetCode,
+    mandateVenueCode,
+    sendLimitCode,
+    swapLimitCode,
+    approveLimitCode,
+  };
+
+  /// Whether a refusal with this `detail` is one the user can lift by
+  /// raising a threshold in «Политика» with the PIN (D6): the daily trading
+  /// limit, «AI Мандат» (max position, networks, assets, venues) or a wallet
+  /// send / swap / approve limit. False for everything else — the AI mode,
+  /// AI permissions, EPK, an unknown price ([aiUnknownValueCode]), trusted
+  /// scope, the simulation, a transaction hash on success, or null.
+  static bool isRaisableRefusal(String? detail) =>
+      detail != null && _raisableCodes.contains(detail);
+
+  /// The `detail` code of a policy-engine refusal ([PolicyResult.blocked])
+  /// over a wallet limit the user can raise in «Политика», else null.
+  @visibleForTesting
+  static String? policyRefusalCode(PolicyResult policy, TransactionRequest tx) {
+    if (!policy.blocked) return null;
+    final rules = policy.appliedRules;
+    if (rules.contains('PROFILE_LIMIT_EXCEEDED')) return sendLimitCode;
+    if (rules.contains('SWAP_PROFILE_LIMIT_EXCEEDED')) return swapLimitCode;
+    if (rules.contains('APPROVE_LIMIT_EXCEEDED') && !tx.isUnlimitedApproval) {
+      return approveLimitCode;
+    }
+    return null;
+  }
 
   /// The controller's AI checks for [tx] before the AI runs it by itself
   /// (before any card): AI Control (permissions, «AI Мандат», trusted
@@ -1490,9 +1611,16 @@ class GuardianExecutionController {
     );
   }
 
-  /// AI Control for an AI / market / automation transaction: permissions,
-  /// «AI Мандат» (network, assets, max position for buys, venue), unknown
-  /// contracts and the trusted scope. Null when it passes.
+  /// AI Control for a market transaction (the AI, automation, a «Ручной»
+  /// chat card, the user's own Buy / Sell window): the AI mode and
+  /// permissions, «AI Мандат» (network, assets, max position for buys,
+  /// venue), unknown contracts and the trusted scope. Null when it passes.
+  ///
+  /// The user's own Buy / Sell window
+  /// ([GuardianPolicyEngine.isUserTradeWindowTx]) skips ONLY the AI mode
+  /// («Советник», emergency stop, expired AI permissions) and the AI
+  /// permissions, because it is the user's own action (D2); «AI Мандат»,
+  /// unknown contracts and the trusted scope bound it as before.
   ///
   /// [quantityFallback]: without a USD price, compare the token quantity
   /// with the max position as before — only when the user confirms the
@@ -1500,14 +1628,18 @@ class GuardianExecutionController {
   /// for the Buy / Sell window or a «Ручной» chat card). False for previews
   /// and for the AI's own execution, which [aiPreflight] refuses on an
   /// unknown value instead of measuring it in token units.
+  ///
+  /// The refusals over max position or outside «AI Мандат» carry
+  /// [maxPositionCode] / [mandateNetworkCode] / [mandateAssetCode] /
+  /// [mandateVenueCode] ([isRaisableRefusal]).
   AssistantResponse? _checkAiTransactionControl(
     TransactionRequest tx,
     SimulationResult staticSim, {
     bool quantityFallback = true,
   }) {
     // The AI mandate bounds what the AI does. Operations the user starts in
-    // their own wallet window are bounded by the wallet limits in the policy
-    // engine; the AI's position cap must not block a manual send.
+    // their own Send / Swap window are bounded by the wallet limits in the
+    // policy engine; the AI's position cap must not block a manual send.
     if (GuardianPolicyEngine.isUserWalletTx(tx)) return null;
 
     final settings = AiControlService.instance.settings;
@@ -1519,10 +1651,14 @@ class GuardianExecutionController {
     // which asks for the card + PIN when the AI revoke permission is off.
     if (tx.type == TransactionType.revoke) return null;
 
+    // The user's own Buy / Sell window: not the AI, so the AI mode and the
+    // AI permissions below do not apply to it; everything after them does.
+    final ownTradeWindow = GuardianPolicyEngine.isUserTradeWindowTx(tx);
+
     // The refusals use the gate's texts (AiActionGate), so voice, chat and
     // the card say the same thing in the user's language.
     final loc = LocalizationService.instance;
-    if (!settings.isActive) {
+    if (!ownTradeWindow && !settings.isActive) {
       // «Советник» is not an expiry: say which one it is.
       return AssistantResponse.error(
         settings.mode == AiMode.manual
@@ -1542,7 +1678,8 @@ class GuardianExecutionController {
     final profile = _profileStore.current;
 
     final requiredAction = _requiredAiActionForTx(tx.type);
-    if (requiredAction != null &&
+    if (!ownTradeWindow &&
+        requiredAction != null &&
         !settings.allowedActions.contains(requiredAction)) {
       final message = loc.t('aiGateBlockedPermission', {
         'default': 'This action is turned off for the AI in AI Center.',
@@ -1565,6 +1702,7 @@ class GuardianExecutionController {
           'network': name,
           'default': '$name is outside the «AI Mandate» networks.',
         }),
+        detail: mandateNetworkCode,
         intent: tx.sourceIntent,
       );
     }
@@ -1579,14 +1717,17 @@ class GuardianExecutionController {
             'asset': name,
             'default': '$name is outside the «AI Mandate» assets.',
           }),
+          detail: mandateAssetCode,
           intent: tx.sourceIntent,
         );
       }
     }
 
-    // «AI Мандат» max position: buys only (D6), in dollars. Sends, sells,
-    // approvals and revokes are bounded by the daily trading limit, the
-    // policy and EPK instead (as in ExchangeOrderService / AiActionGate).
+    // «AI Мандат» max position: buys only (D6), in dollars — the value of
+    // the coin paid (the swap amount is always what the user pays, see
+    // Gate 1b in [_orchestrateSwap]). Sends, sells, approvals and revokes
+    // are bounded by the daily trading limit, the policy and EPK instead
+    // (as in ExchangeOrderService / AiActionGate).
     if (maxPositionAppliesTo(tx)) {
       final usd = _finiteUsd(TxUsdValuer.usdValue(tx));
       final value = usd ?? (quantityFallback ? tx.amount : null);
@@ -1594,6 +1735,7 @@ class GuardianExecutionController {
         return AssistantResponse.error(
           _maxPositionMessage(tx, value,
               priced: usd != null, cap: mandate.maxPositionUsd),
+          detail: maxPositionCode,
           intent: tx.sourceIntent,
         );
       }
@@ -1608,6 +1750,7 @@ class GuardianExecutionController {
           'venue': name,
           'default': '$name is outside the «AI Mandate» venues.',
         }),
+        detail: mandateVenueCode,
         intent: tx.sourceIntent,
       );
     }

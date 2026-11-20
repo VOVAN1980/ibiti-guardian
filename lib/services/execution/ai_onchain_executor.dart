@@ -51,8 +51,11 @@ class AiExecResult {
   final bool declined;
 
   /// The confirmation card closed without an answer (the app went to the
-  /// background, or nobody answered in time). Nothing ran and the user did
-  /// not say no: [deferred], safe to ask again later.
+  /// background, or nobody answered in time), or an operation allowed
+  /// without the PIN stopped before a dispatch because its D6 conditions no
+  /// longer held (the PIN setting turned on, the wallet locked, the app in
+  /// the background). The user did not say no and nothing (more) was sent:
+  /// [deferred], safe to ask again later — with the card.
   final bool interrupted;
 
   /// User-facing, localized.
@@ -103,9 +106,13 @@ enum _Session { ok, declined, unavailable }
 /// between the approve receipt and the swap) it checks again that the
 /// request is still wanted (the queue's Cancel wins), the mode is still
 /// «Автономный», the decision is still live and the gate would still allow
-/// it (permissions, «AI Мандат», limits, EPK). With no PIN the controller
-/// also re-checks, right before signing, that the target is trusted and EPK
-/// is on (defense in depth, C4).
+/// it (permissions, «AI Мандат», limits, EPK). A decision given WITHOUT the
+/// PIN also needs the D6 conditions it was given under to still hold: the
+/// «Подтверждать действия ИИ ПИН-кодом» setting still off, the wallet still
+/// unlocked, the app still in the foreground — otherwise nothing more is
+/// sent and the result is [AiExecResult.interrupted] (asked again, with the
+/// card). With no PIN the controller also re-checks, right before signing,
+/// that the target is trusted and EPK is on (defense in depth, C4).
 class AiOnchainExecutor {
   AiOnchainExecutor._();
   static final AiOnchainExecutor instance = AiOnchainExecutor._();
@@ -167,6 +174,11 @@ class AiOnchainExecutor {
   @visibleForTesting
   Duration keepAliveInterval = _defaultKeepAliveInterval;
 
+  /// Replaces the "app is in the foreground" check made before each
+  /// dispatch of an operation allowed without the PIN.
+  @visibleForTesting
+  bool Function()? foregroundOverride;
+
   @visibleForTesting
   void resetForTest() {
     txRunnerOverride = null;
@@ -175,6 +187,7 @@ class AiOnchainExecutor {
     privySessionOverride = null;
     preflightOverride = null;
     receiptFetchOverride = null;
+    foregroundOverride = null;
     receiptPollTimeout = _defaultReceiptPollTimeout;
     receiptPollInterval = _defaultReceiptPollInterval;
     keepAliveInterval = _defaultKeepAliveInterval;
@@ -423,7 +436,7 @@ class AiOnchainExecutor {
       return _refused(_t('aiExecNotBound',
           'The confirmation does not match this operation. Nothing was sent.'));
     }
-    final early = _stopBeforeDispatch(decision, summary, stillWanted);
+    final early = await _stopBeforeDispatch(decision, summary, stillWanted);
     if (early != null) return early;
 
     _Session session;
@@ -452,7 +465,7 @@ class AiOnchainExecutor {
     }
 
     // The sign-in may have taken minutes: check again before sending.
-    final stop = _stopBeforeDispatch(decision, summary, stillWanted);
+    final stop = await _stopBeforeDispatch(decision, summary, stillWanted);
     if (stop != null) return stop;
 
     AiExecResult outcome;
@@ -486,17 +499,27 @@ class AiOnchainExecutor {
   /// - the mode is no longer «Автономный» (or an emergency stop);
   /// - the decision is no longer live (released, the lock timed out, held
   ///   for [AiActionGate.lockMaxHold], or another action took it);
-  /// - the gate would refuse it now (permissions, «AI Мандат», limits, EPK).
+  /// - the gate would refuse it now (permissions, «AI Мандат», limits, EPK);
+  /// - it was allowed WITHOUT the PIN and a D6 condition of that grant no
+  ///   longer holds: the «Подтверждать действия ИИ ПИН-кодом» setting was
+  ///   turned on, the wallet was locked, or the app left the foreground
+  ///   ([_noPinLapsed]). Nothing more is sent without the user: the result
+  ///   is [AiExecResult.interrupted] (deferred), so the delegate queue asks
+  ///   again — with the card then — and voice / chat say why.
   /// [approveSent]: the swap's approval already went out.
-  AiExecResult? _stopBeforeDispatch(
+  Future<AiExecResult?> _stopBeforeDispatch(
     AiGateDecision decision,
     AiActionSummary summary,
     bool Function()? stillWanted, {
     bool approveSent = false,
-  }) {
+  }) async {
+    // A brief `inactive` (the notification shade) is waited out first, as
+    // the gate does at the grant, so the checks below all see one moment.
+    final foreground = decision.withoutPin ? await _inForeground() : true;
     final gate = AiActionGate.instance;
     String? why;
     var cancelled = true;
+    var interrupted = false;
     if (stillWanted != null && !stillWanted()) {
       why = _t('aiExecStopWithdrawn', 'The operation was cancelled.');
     } else if (AiControlService.instance.settings.mode != AiMode.fullAutonomy) {
@@ -510,6 +533,13 @@ class AiOnchainExecutor {
         why = again.reason ??
             _t('aiExecBlocked', 'The AI may not do this operation.');
         cancelled = false;
+      } else if (decision.withoutPin) {
+        final lapsed = _noPinLapsed(foreground: foreground);
+        if (lapsed != null) {
+          why = lapsed;
+          cancelled = false;
+          interrupted = true;
+        }
       }
     }
     if (why == null) return null;
@@ -523,10 +553,63 @@ class AiOnchainExecutor {
     return AiExecResult(
       executed: false,
       cancelled: cancelled,
+      interrupted: interrupted,
       message: message,
-      // The gate had allowed it; the stop came afterwards (not a «нет»).
-      gateOutcome: cancelled ? AiGateOutcome.execute : AiGateOutcome.blocked,
+      // The gate had allowed it; the stop came afterwards (not a «нет»). A
+      // lapsed no-PIN grant is not a «нет» either: like a card closed
+      // without an answer, it is asked again.
+      gateOutcome: interrupted
+          ? AiGateOutcome.cancelled
+          : (cancelled ? AiGateOutcome.execute : AiGateOutcome.blocked),
     );
+  }
+
+  /// Why an operation the gate allowed WITHOUT the PIN may not go on, or
+  /// null. The gate gives a no-PIN decision only while the PIN setting is
+  /// off, the wallet is unlocked and the app is in the foreground (D6). The
+  /// sign-in and the approve receipt wait (up to 2 minutes) leave time for
+  /// any of these to change; then the user is asked again, never skipped.
+  static String? _noPinLapsed({required bool foreground}) {
+    if (AiControlService.instance.settings.pinRequiredForAi) {
+      return _t(
+          'aiExecStopPinTurnedOn',
+          'PIN confirmation of AI actions was turned on, so the AI did not '
+              'go on without your confirmation.');
+    }
+    if (!IBITIVaultService.instance.isUnlocked) {
+      return _t(
+          'aiExecStopVaultLocked',
+          'The wallet was locked, so the AI did not go on without your '
+              'confirmation.');
+    }
+    if (!foreground) {
+      return _t(
+          'aiExecStopBackground',
+          'The app went to the background, so the AI did not go on without '
+              'your confirmation.');
+    }
+    return null;
+  }
+
+  /// Whether the app is in the foreground, as the gate judges it: waits up
+  /// to 2 s while it is only `inactive` (notification shade, a system
+  /// prompt); hidden / paused / detached = not in the foreground. An
+  /// unknown state (before the first frame) counts as the foreground.
+  Future<bool> _inForeground() async {
+    for (var i = 0; i < 10; i++) {
+      final hook = foregroundOverride;
+      if (hook != null) return hook();
+      AppLifecycleState? state;
+      try {
+        state = WidgetsBinding.instance.lifecycleState;
+      } catch (_) {
+        state = null;
+      }
+      if (state == null || state == AppLifecycleState.resumed) return true;
+      if (state != AppLifecycleState.inactive) return false;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+    }
+    return false;
   }
 
   Future<AiExecResult> _runTx(
@@ -566,9 +649,10 @@ class AiOnchainExecutor {
               'The token approval was not confirmed in time, so the swap was not sent.'),
         );
       }
-      // Up to 2 minutes passed: a Cancel in the queue, a mode switch or a
-      // lapsed lock must stop the swap here (D13, D14).
-      final stop = _stopBeforeDispatch(decision, summary, stillWanted,
+      // Up to 2 minutes passed: a Cancel in the queue, a mode switch, a
+      // lapsed lock or (no PIN) the PIN setting turned on, a locked wallet
+      // or the app in the background must stop the swap here (D6, D13, D14).
+      final stop = await _stopBeforeDispatch(decision, summary, stillWanted,
           approveSent: true);
       if (stop != null) return stop;
     }

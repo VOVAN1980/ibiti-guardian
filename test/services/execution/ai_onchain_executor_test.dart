@@ -6,6 +6,7 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ibiti_guardian/models/assistant_response.dart';
@@ -674,6 +675,156 @@ void main() {
           source: 'delegate', stillWanted: () => wanted, announce: false);
       expect(r.cancelled, isTrue);
       expect(calls, isEmpty);
+    });
+
+    // D6: a decision given WITHOUT the PIN holds only while the PIN setting
+    // is off, the wallet unlocked and the app in the foreground. Each may
+    // change during the approve receipt wait (up to 2 minutes) or the
+    // sign-in: then nothing more is sent without the user. The result is
+    // deferred, so the delegate queue asks again — with the card.
+    group('a decision without the PIN', () {
+      setUp(() => useSettings(pin: false));
+
+      void expectAskedAgain(AiExecResult r) {
+        expect(r.executed, isFalse);
+        expect(r.interrupted, isTrue);
+        expect(r.deferred, isTrue);
+        expect(r.cancelled, isFalse);
+        expect(r.declined, isFalse);
+        expect(r.blocked, isFalse);
+        expect(r.failed, isFalse);
+        expect(notifications, isEmpty);
+        expect(gate.isBusy, isFalse);
+      }
+
+      test('the PIN setting turned ON during the approve wait: no swap',
+          () async {
+        executor.receiptWaiterOverride = (tx, hash) async {
+          calls.add('wait:$hash');
+          useSettings(pin: true); // the user turns the PIN setting back on
+          return true;
+        };
+        final r = await executor.executePreview(_swapPreview(_plan()),
+            source: 'delegate', announce: false);
+        expect(cards, 0, reason: 'granted without the card');
+        expect(calls, ['approve', 'wait:0xa11']);
+        expectAskedAgain(r);
+        expect(r.message, contains('approval'));
+        expect(r.message, contains('PIN confirmation'));
+      });
+
+      test('the wallet locked during the approve wait: no swap', () async {
+        executor.receiptWaiterOverride = (tx, hash) async {
+          calls.add('wait:$hash');
+          IBITIVaultService.instance.lock();
+          return true;
+        };
+        final r = await executor.executePreview(_swapPreview(_plan()),
+            source: 'delegate', announce: false);
+        expect(cards, 0);
+        expect(calls, ['approve', 'wait:0xa11']);
+        expectAskedAgain(r);
+        expect(r.message, contains('locked'));
+      });
+
+      test('the app went to the background during the approve wait: no swap',
+          () async {
+        executor.receiptWaiterOverride = (tx, hash) async {
+          calls.add('wait:$hash');
+          executor.foregroundOverride = () => false;
+          return true;
+        };
+        final r = await executor.executePreview(_swapPreview(_plan()),
+            source: 'delegate', announce: false);
+        expect(cards, 0);
+        expect(calls, ['approve', 'wait:0xa11']);
+        expectAskedAgain(r);
+        expect(r.message, contains('background'));
+      });
+
+      test('the PIN setting turned ON during the sign-in: nothing is sent',
+          () async {
+        executor.privySessionOverride = () async {
+          useSettings(pin: true);
+          return true;
+        };
+        final r = await executor.executePreview(_txPreview(_send()),
+            source: 'voice', announce: false);
+        expect(cards, 0);
+        expect(calls, isEmpty);
+        expectAskedAgain(r);
+        expect(r.message, contains('Nothing was sent'));
+      });
+
+      test('asked again, it comes with the card + PIN', () async {
+        executor.receiptWaiterOverride = (tx, hash) async {
+          calls.add('wait:$hash');
+          useSettings(pin: true);
+          return true;
+        };
+        final first = await executor.executePreview(_swapPreview(_plan()),
+            source: 'delegate', announce: false);
+        expect(first.deferred, isTrue);
+
+        executor.receiptWaiterOverride = (tx, hash) async {
+          calls.add('wait:$hash');
+          return true;
+        };
+        final again = await executor.executePreview(
+            _swapPreview(_plan(withApprove: false)),
+            source: 'delegate',
+            announce: false);
+        expect(again.executed, isTrue);
+        expect(cards, 1, reason: 'the PIN setting is on now');
+        expect(calls, ['approve', 'wait:0xa11', 'swap']);
+      });
+
+      test('a brief «inactive» (notification shade) is waited out', () async {
+        final binding = TestWidgetsFlutterBinding.instance;
+        addTearDown(() =>
+            binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed));
+        executor.receiptWaiterOverride = (tx, hash) async {
+          calls.add('wait:$hash');
+          binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+          Timer(const Duration(milliseconds: 50), () {
+            binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+          });
+          return true;
+        };
+        final r = await executor.executePreview(_swapPreview(_plan()),
+            source: 'delegate', announce: false);
+        expect(r.executed, isTrue);
+        expect(calls, ['approve', 'wait:0xa11', 'swap']);
+      });
+
+      test('the app paused during the approve wait: no swap', () async {
+        final binding = TestWidgetsFlutterBinding.instance;
+        addTearDown(() =>
+            binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed));
+        executor.receiptWaiterOverride = (tx, hash) async {
+          calls.add('wait:$hash');
+          binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+          return true;
+        };
+        final r = await executor.executePreview(_swapPreview(_plan()),
+            source: 'delegate', announce: false);
+        expect(calls, ['approve', 'wait:0xa11']);
+        expectAskedAgain(r);
+      });
+    });
+
+    test('a decision WITH the PIN is not undone by those (the user confirmed)',
+        () async {
+      executor.receiptWaiterOverride = (tx, hash) async {
+        calls.add('wait:$hash');
+        executor.foregroundOverride = () => false;
+        return true;
+      };
+      final r = await executor.executePreview(_swapPreview(_plan()),
+          source: 'marketChat', announce: false);
+      expect(cards, 1);
+      expect(r.executed, isTrue);
+      expect(calls, ['approve', 'wait:0xa11', 'swap']);
     });
 
     test('the lock is kept alive while the approve receipt is awaited',

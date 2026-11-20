@@ -14,10 +14,9 @@ class AppGuide {
   static const String text = '''
 ━━━ APP GUIDE ━━━
 Facts about this app. Answer how / what / why questions about the app from
-here and the live context, in your own words; name screens the way the user
-sees them (RU labels in «»). Not covered here = say you don't know.
-Tabs: AI «ИИ», Chat «Чат», Security «Защита», Wallet «Счёт», Market «Рынок»,
-Settings «Меню».
+here and the live context, in your own words; name screens as the user sees
+them (RU labels in «»). Not covered here = say you don't know. Tabs: AI «ИИ»,
+Chat «Чат», Security «Защита», Wallet «Счёт», Market «Рынок», Settings «Меню».
 SIGN-IN, PIN, NEW PHONE
 - Sign-in: email + one-time code, or Google (Privy). Wallets belong to that
   account: the same email/Google on another phone loads the same wallets,
@@ -72,8 +71,8 @@ POLICY («Защита» → «Политика»)
   key read + spot trading rights, no withdrawals).
 - EPK (Eternal Permission Kernel) checks transactions before signing; for AI,
   market and dApp requests it also enforces trusted addresses and spend
-  limits. It holds no keys. Status: Policy → «EPK Статус». While EPK is
-  paused the AI carries out nothing on-chain (revoking aside).
+  limits. It holds no keys. Status: Policy → «EPK Статус». Paused EPK: the AI
+  does nothing on-chain (revoking aside); its exchange orders get card + PIN.
 AI MODES («Защита» → «AI-Центр», or Policy → «AI Режим»)
 - «Советник» (Advisor): the AI only advises and explains; it opens, fills
   and creates nothing (no windows, orders, watchlist, alerts, TP/SL, scans,
@@ -83,9 +82,11 @@ AI MODES («Защита» → «AI-Центр», or Policy → «AI Режим�
   «Подтверждать действия ИИ ПИН-кодом» (AI-Центр, on by default): on = a card
   (what, amount, to / exchange, network, fee) → «Подтвердить» or «да» → PIN.
   Off = no card only within the daily trading limit and «AI Мандат», EPK
-  active, to trusted addresses or own cards, known USD price, app open and
-  unlocked; else (new address, unknown price) the card + PIN. Off needs the
-  PIN (none set up = stays on); leaving «Автономный» or «Остановить AI» = on.
+  active, to trusted addresses or own cards, app open and unlocked; else
+  (new address, locked wallet) the card + PIN. Off needs the PIN (none set
+  up = stays on); leaving «Автономный» or «Остановить AI» = on.
+- Unknown USD price (a coin without a price), PIN setting on or off: the AI
+  does not do it itself; the filled wallet window opens, you confirm (PIN).
 - Every mode: the AI never goes over a limit or around Policy, «AI Мандат»
   or EPK; over a limit it refuses: raise it in «Политика» (PIN). One AI money
   action at a time; after each, notification «ИИ выполнил: …» (even in quiet

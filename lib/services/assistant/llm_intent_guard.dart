@@ -6,9 +6,18 @@ import 'package:ibiti_guardian/models/intent_data.dart';
 /// read can steer it. So only the user-level meaning survives — operation
 /// type, token symbols, amount, slippage. Everything that decides what is
 /// actually signed (atomic amount, token contracts, decimals, origin,
-/// automation trigger) is dropped and re-derived by the app from its own
-/// registries, and a recipient address is kept only when the user typed it
-/// or it is already in their address book.
+/// automation trigger, the Buy / Sell window marker
+/// [IntentData.userTradeWindow], the swap amount mode) is dropped and
+/// re-derived by the app from its own registries, and a recipient address is
+/// kept only when the user typed it or it is already in their address book.
+///
+/// A swap amount is always what the user PAYS (exact input): the swap step,
+/// its approve and every USD check — the swap limit, the daily trading
+/// limit, «AI Мандат» max position, the AI card — value that amount at the
+/// paying coin's price. The model's `exactOut` would make its amount the
+/// coin to RECEIVE, valued at the wrong coin's price (a 0.5 ETH buy counted
+/// as 0.5 BNB). So the model never sets the amount mode, and a swap amount
+/// it marked `exactOut` is dropped: the user gives the amount to pay.
 class LlmIntentGuard {
   LlmIntentGuard._();
 
@@ -27,17 +36,24 @@ class LlmIntentGuard {
     if (intent == null) return null;
     if (untrustedContext && intent.isExecutionIntent) return null;
 
+    // An amount the model marked as the coin to receive is not an amount to
+    // pay: never valued, quoted or signed as one (see the class doc).
+    final receiveAmount = intent.type == IntentType.swapAsset &&
+        intent.amountMode == AmountMode.exactOut;
+
     return IntentData(
       type: intent.type,
       rawInput: userText,
       tokenSymbol: intent.tokenSymbol,
       toAddress: _verifiedRecipient(intent.toAddress, userText, knownAddresses),
-      amount: intent.amount,
+      amount: receiveAmount ? null : intent.amount,
       sourceTokenSymbol: intent.sourceTokenSymbol,
       targetTokenSymbol: intent.targetTokenSymbol,
-      amountMode: intent.amountMode,
+      // No amountMode (always exact input), no origin (market), no
+      // sourceTrigger (not automation) and never the Buy / Sell window.
       slippageBps: intent.slippageBps,
       isQuantity: intent.isQuantity,
+      userTradeWindow: false,
     );
   }
 

@@ -39,6 +39,8 @@ void main() {
       expect(out.targetTokenDecimals, isNull);
       expect(out.sourceTrigger, isNull);
       expect(out.origin, IntentOrigin.market);
+      expect(out.userTradeWindow, isFalse);
+      expect(out.amountMode, isNull);
       expect(out.rawInput, 'send 1 usdt');
     });
 
@@ -77,6 +79,80 @@ void main() {
         untrustedContext: true,
       );
       expect(out, isNull);
+    });
+
+    test('the model can never mark its intent as the Buy / Sell window', () {
+      final out = LlmIntentGuard.sanitize(
+        const IntentData(
+          type: IntentType.swapAsset,
+          rawInput: 'model-written input',
+          sourceTokenSymbol: 'USDT',
+          targetTokenSymbol: 'CAKE',
+          amount: 500,
+          userTradeWindow: true,
+        ),
+        userText: 'купи CAKE на 500 USDT',
+        untrustedContext: false,
+      )!;
+      expect(out.userTradeWindow, isFalse);
+      expect(out.origin, IntentOrigin.market);
+      expect(out.sourceTrigger, isNull);
+      expect(out.amount, 500);
+    });
+
+    test('the model never sets the amount mode: a swap amount is paid', () {
+      final exactIn = LlmIntentGuard.sanitize(
+        const IntentData(
+          type: IntentType.swapAsset,
+          rawInput: 'model',
+          sourceTokenSymbol: 'BNB',
+          targetTokenSymbol: 'ETH',
+          amount: 0.5,
+          amountMode: AmountMode.exactIn,
+        ),
+        userText: 'swap 0.5 BNB to ETH',
+        untrustedContext: false,
+      )!;
+      expect(exactIn.amountMode, isNull);
+      expect(exactIn.amount, 0.5);
+    });
+
+    test('an exactOut swap amount (the coin to receive) is dropped', () {
+      // «купи 0.5 ETH за BNB» as exactOut: 0.5 is ETH, not BNB. Kept, it
+      // would be valued as 0.5 BNB by every limit and the card.
+      final out = LlmIntentGuard.sanitize(
+        const IntentData(
+          type: IntentType.swapAsset,
+          rawInput: 'model',
+          sourceTokenSymbol: 'BNB',
+          targetTokenSymbol: 'ETH',
+          amount: 0.5,
+          amountMode: AmountMode.exactOut,
+        ),
+        userText: 'купи 0.5 ETH за BNB',
+        untrustedContext: false,
+      )!;
+      expect(out.type, IntentType.swapAsset);
+      expect(out.amount, isNull);
+      expect(out.amountMode, isNull);
+      expect(out.sourceTokenSymbol, 'BNB');
+      expect(out.targetTokenSymbol, 'ETH');
+    });
+
+    test('a send keeps its amount whatever amount mode the model wrote', () {
+      final out = LlmIntentGuard.sanitize(
+        const IntentData(
+          type: IntentType.sendAsset,
+          rawInput: 'model',
+          tokenSymbol: 'USDT',
+          amount: 5,
+          amountMode: AmountMode.exactOut,
+        ),
+        userText: 'send 5 usdt',
+        untrustedContext: false,
+      )!;
+      expect(out.amount, 5);
+      expect(out.amountMode, isNull);
     });
 
     test('informational intent survives untrusted content', () {

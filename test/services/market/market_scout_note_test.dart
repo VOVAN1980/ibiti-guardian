@@ -55,6 +55,12 @@ void main() {
     expect(text, contains('PIN confirmation is on'));
     expect(text, contains('card'));
     expect(text, contains('any asset on any network'));
+    // A coin without a USD price: the filled-in window, not the card (D17).
+    expect(
+        text,
+        contains('A wallet trade of a coin without a USD price I never carry '
+            'out myself: I open the filled-in wallet window, and you confirm '
+            'it there with your PIN.'));
     noOldNamesOrPlaceholders(text);
   });
 
@@ -73,10 +79,11 @@ void main() {
     noOldNamesOrPlaceholders(text);
   });
 
-  // D6 exactly: without the card only when ALL hold; a new address, an
-  // unknown price or a locked wallet → the user confirms with the PIN; over
-  // a limit / outside the mandate → refused (the PIN never lets a trade go
-  // over a limit).
+  // D6 exactly as the gate runs it: without the card only when ALL hold; a
+  // new address, a locked wallet or an exchange order while EPK is paused →
+  // the card + PIN; a coin without a USD price → the filled-in wallet window
+  // (never the AI, never a card: D17); over a limit / outside the mandate →
+  // refused (the PIN never lets a trade go over a limit).
   test('«Автономный», PIN OFF: states D6 — when the card, when a refusal', () {
     final text = note(const AiControlSettings(
       mode: AiMode.fullAutonomy,
@@ -94,14 +101,22 @@ void main() {
     expect(text, contains('wallet unlocked'));
     // The max position (buys only) is shown with the daily limit.
     expect(text, contains('one buy at most \$60'));
-    // A new address / an unknown price / a locked wallet → the user confirms
-    // with the PIN: the card (a wallet trade of a coin without a price: its
-    // filled-in window, D17).
+    // A new address / a locked wallet / an exchange order with EPK paused →
+    // the user confirms on the card with the PIN.
     expect(
         text,
-        contains('A new address, an unknown price or a locked wallet: I ask '
-            'you first — the card and your PIN'));
-    expect(text, contains('filled-in window'));
+        contains('A new address, a locked wallet or an exchange order while '
+            'EPK is paused: I ask you first — the card and your PIN.'));
+    // A coin without a USD price → the filled-in wallet window (D17), never
+    // the card and never the AI by itself.
+    expect(
+        text,
+        contains('A wallet trade of a coin without a USD price I never carry '
+            'out myself: I open the filled-in wallet window, and you confirm '
+            'it there with your PIN.'));
+    expect(text, isNot(contains('an unknown price or a locked wallet')));
+    // A paused EPK: nothing on-chain.
+    expect(text, contains('While EPK is paused I do nothing on-chain.'));
     // Over a limit / outside the mandate → refused, with the «Policy» hint.
     expect(text, contains('Over a limit or outside the mandate I refuse'));
     expect(text, contains('«Policy» (needs your PIN)'));

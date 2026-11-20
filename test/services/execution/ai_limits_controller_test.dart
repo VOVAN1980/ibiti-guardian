@@ -5,7 +5,15 @@
 //   limits in token units: it refuses so the caller can hand the operation
 //   to the user in the prefilled window (D17); the automation path demotes
 //   it to a preview; a token quantity is never added to the dollar budget;
-// - «Советник» starts no scan (D2).
+// - «Советник» starts no scan (D2);
+// - every refusal the user can lift in «Политика» (daily limit, max
+//   position, «AI Мандат» network / asset / venue, a wallet send / swap /
+//   approve limit) carries a stable detail code (isRaisableRefusal), so the
+//   «поднимите порог» hint never depends on the wording or the language;
+// - the AI mode / permission refusals of an assistant intent are localized
+//   (no English «AI Control» name);
+// - a swap amount is always what is paid: an exact amount to receive is
+//   never quoted, so the AI limits measure the dollars actually spent.
 //
 // Run: flutter test test/services/execution/ai_limits_controller_test.dart
 
@@ -15,10 +23,14 @@ import 'package:ibiti_guardian/models/assistant_response.dart';
 import 'package:ibiti_guardian/models/autonomy_mandate.dart';
 import 'package:ibiti_guardian/models/execution_path.dart';
 import 'package:ibiti_guardian/models/intent_data.dart';
+import 'package:ibiti_guardian/models/policy_profile.dart';
+import 'package:ibiti_guardian/models/rpc_simulation_result.dart';
+import 'package:ibiti_guardian/models/simulation_result.dart';
 import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/services/execution/ai_onchain_executor.dart';
 import 'package:ibiti_guardian/services/execution/guardian_execution_controller.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
+import 'package:ibiti_guardian/services/policy/guardian_policy_engine.dart';
 import 'package:ibiti_guardian/services/policy/tx_usd_valuer.dart';
 import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
@@ -120,6 +132,8 @@ void main() {
     double dailyLimit = 1000,
     double maxPositionUsd = 100,
     List<String> allowedNetworks = const [],
+    List<String> allowedAssets = const [],
+    List<String> allowedVenues = const [],
     List<AiAction>? allowedActions,
   }) {
     const defaults = AiControlSettings();
@@ -130,6 +144,8 @@ void main() {
       mandate: AutonomyMandate(
         maxPositionUsd: maxPositionUsd,
         allowedNetworks: allowedNetworks,
+        allowedAssets: allowedAssets,
+        allowedVenues: allowedVenues,
       ),
     ));
   }
@@ -219,6 +235,7 @@ void main() {
       expect(stop.message, contains('position cap'));
       expect(stop.message, contains(r'$150.00'));
       expect(stop.message, contains(r'$100.00'));
+      expect(stop.detail, GuardianExecutionController.maxPositionCode);
     });
 
     test('an AI buy within the cap passes', () {
@@ -237,6 +254,7 @@ void main() {
         expect(stop!.message, contains('daily trading limit'));
         expect(stop.message, contains(r'$150.00'));
         expect(stop.message, contains(r'$100.00 left'));
+        expect(stop.detail, GuardianExecutionController.dailyLimitCode);
       }
     });
   });
@@ -293,13 +311,18 @@ void main() {
       expect(outside.message, contains('BSC'));
       expect(outside.message, contains('«AI Mandate»'));
       // A mandate refusal is a limit: the assistant adds «raise it in
-      // Policy» to it (D6).
+      // Policy» to it (D6) — by its code, whatever the language.
       expect(_limitWords.hasMatch(outside.message), isTrue);
+      expect(outside.detail, GuardianExecutionController.mandateNetworkCode);
+      expect(GuardianExecutionController.isRaisableRefusal(outside.detail),
+          isTrue);
 
       useSettings(allowedActions: const [AiAction.swap]);
       final noSend = controller.aiPreflight(_send(symbol: 'CAKE', amount: 2));
       expect(noSend, isNotNull);
       expect(noSend!.detail, isNot(code));
+      expect(GuardianExecutionController.isRaisableRefusal(noSend.detail),
+          isFalse);
     });
 
     test('«Советник» and expired permissions are told apart', () {
@@ -334,12 +357,14 @@ void main() {
       expect(daily!.message, contains('CAKE has no price'));
       expect(daily.message, contains('1000 CAKE'));
       expect(daily.message, contains(r'$100.00 left'));
+      expect(daily.detail, GuardianExecutionController.dailyLimitCode);
 
       final cap = controller.checkAiTransactionControlForTest(
           _swap(from: 'CAKE', to: 'BNB', amount: 1000));
       expect(cap, isNotNull);
       expect(cap!.message, contains('CAKE has no price'));
       expect(cap.message, contains(r'the cap is $100.00'));
+      expect(cap.detail, GuardianExecutionController.maxPositionCode);
 
       // Within the stand-in: passes, as before.
       expect(
@@ -458,6 +483,191 @@ void main() {
       expect(r.message, contains('Advisor'));
       expect(r.message, contains('Safe Scan'));
       expect(r.uiCommands, isEmpty);
+    });
+  });
+
+  group('refusals the user can lift in «Политика» carry a code (D6)', () {
+    const raisable = GuardianExecutionController.isRaisableRefusal;
+
+    test('daily limit, max position and every «AI Мандат» refusal', () {
+      useSettings(dailyLimit: 100);
+      final daily = controller.aiPreflight(_send(amount: 150));
+      expect(daily!.detail, GuardianExecutionController.dailyLimitCode);
+
+      useSettings(maxPositionUsd: 50);
+      final cap =
+          controller.aiPreflight(_swap(from: 'USDT', to: 'BNB', amount: 60));
+      expect(cap!.detail, GuardianExecutionController.maxPositionCode);
+
+      useSettings(allowedNetworks: const ['eth']);
+      final network = controller.aiPreflight(_send(amount: 10));
+      expect(network!.detail, GuardianExecutionController.mandateNetworkCode);
+
+      useSettings(allowedAssets: const ['BNB']);
+      final asset = controller.aiPreflight(_send(amount: 10));
+      expect(asset!.detail, GuardianExecutionController.mandateAssetCode);
+
+      useSettings(allowedVenues: const ['0xother']);
+      final venue =
+          controller.aiPreflight(_swap(from: 'USDT', to: 'BNB', amount: 10));
+      expect(venue!.detail, GuardianExecutionController.mandateVenueCode);
+
+      for (final r in <AssistantResponse?>[daily, cap, network, asset, venue]) {
+        expect(raisable(r!.detail), isTrue, reason: r.message);
+        expect(r.type, ResponseType.error);
+      }
+    });
+
+    test('the same refusals at the confirmation keep their code', () {
+      useSettings(dailyLimit: 100, maxPositionUsd: 50);
+      final daily = controller.checkDailyLimitForTest(_send(amount: 150));
+      final cap = controller.checkAiTransactionControlForTest(
+          _swap(from: 'USDT', to: 'BNB', amount: 60));
+      expect(daily!.detail, GuardianExecutionController.dailyLimitCode);
+      expect(cap!.detail, GuardianExecutionController.maxPositionCode);
+    });
+
+    test('nothing else is raisable', () {
+      // The AI mode, an AI permission, an unknown price.
+      useSettings(mode: AiMode.manual);
+      final advisor = controller.aiPreflight(_send(amount: 10));
+      useSettings(allowedActions: const [AiAction.swap]);
+      final permission = controller.aiPreflight(_send(amount: 10));
+      useSettings();
+      final noPrice = controller.aiPreflight(_send(symbol: 'CAKE', amount: 2));
+      for (final r in [advisor, permission, noPrice]) {
+        expect(r, isNotNull);
+        expect(raisable(r!.detail), isFalse, reason: r.message);
+      }
+      expect(raisable(null), isFalse);
+      expect(raisable(''), isFalse);
+      expect(raisable(GuardianExecutionController.aiUnknownValueCode),
+          isFalse);
+      // A transaction hash in `detail` (a success) is not a refusal.
+      expect(raisable('0xfeed'), isFalse);
+    });
+
+    test('a wallet send / swap / approve limit of the policy profile', () {
+      PolicyResult policy(TransactionRequest tx) => GuardianPolicyEngine.checkV3(
+            tx,
+            SimulationResult.clean(),
+            RpcSimulationResult.ok(),
+            PolicyProfile.safe(),
+            ExecutionPath.localProtected,
+          );
+      final profile = PolicyProfile.safe();
+
+      final send = _send(amount: profile.sendLimitUsd + 1);
+      final swap = _swap(
+          from: 'USDT', to: 'BNB', amount: profile.swapLimitUsd + 1);
+      final approve = _approve(amount: profile.approveLimitUsd + 1);
+      final unlimited = TransactionRequest(
+        type: TransactionType.approve,
+        fromAddress: _owner,
+        toAddress: _usdt,
+        tokenSymbol: 'USDT',
+        tokenContract: _usdt,
+        isUnlimitedApproval: true,
+        spenderAddress: _allowanceHolder,
+        chainId: 56,
+        chainKey: 'bsc',
+        sourceIntent: _aiSwapIntent,
+      );
+
+      expect(GuardianExecutionController.policyRefusalCode(policy(send), send),
+          GuardianExecutionController.sendLimitCode);
+      expect(GuardianExecutionController.policyRefusalCode(policy(swap), swap),
+          GuardianExecutionController.swapLimitCode);
+      expect(
+          GuardianExecutionController.policyRefusalCode(
+              policy(approve), approve),
+          GuardianExecutionController.approveLimitCode);
+      for (final code in [
+        GuardianExecutionController.sendLimitCode,
+        GuardianExecutionController.swapLimitCode,
+        GuardianExecutionController.approveLimitCode,
+      ]) {
+        expect(raisable(code), isTrue, reason: code);
+      }
+
+      // An unlimited approval is never lifted by a higher limit.
+      final unlimitedPolicy = policy(unlimited);
+      expect(unlimitedPolicy.blocked, isTrue);
+      expect(
+          GuardianExecutionController.policyRefusalCode(
+              unlimitedPolicy, unlimited),
+          isNull);
+      // A policy that allows, or blocks for another reason: no code.
+      expect(
+          GuardianExecutionController.policyRefusalCode(
+              policy(_send(amount: 1)), _send(amount: 1)),
+          isNull);
+      useSettings(mode: AiMode.manual);
+      final advisorPolicy = policy(_send(amount: 1));
+      expect(advisorPolicy.blocked, isTrue);
+      expect(
+          GuardianExecutionController.policyRefusalCode(
+              advisorPolicy, _send(amount: 1)),
+          isNull);
+    });
+  });
+
+  group('assistant intents: AI mode / permission refusals are localized', () {
+    Future<AssistantResponse> orchestrateSend() =>
+        controller.orchestrate(const IntentAction(
+          intent: IntentData(
+            type: IntentType.sendAsset,
+            rawInput: 'send 10 USDT to 0x3333',
+            tokenSymbol: 'USDT',
+            amount: 10,
+            toAddress: _friend,
+          ),
+          requiresExecution: true,
+        ));
+
+    test('«Советник»: the gate\'s text, named after AI Center', () async {
+      useSettings(mode: AiMode.manual);
+      final r = await orchestrateSend();
+      expect(r.type, ResponseType.error);
+      expect(r.message, contains('«Advisor»'));
+      expect(r.message, contains('AI Center'));
+      expect(r.message, isNot(contains('AI Control')));
+      expect(r.speechText, r.message);
+      expect(r.uiCommands.single.target, 'security_center');
+      expect(GuardianExecutionController.isRaisableRefusal(r.detail), isFalse);
+    });
+
+    test('a turned-off AI permission: the gate\'s text, no English name',
+        () async {
+      useSettings(allowedActions: const [AiAction.swap]);
+      final r = await orchestrateSend();
+      expect(r.type, ResponseType.error);
+      expect(r.message, 'This action is turned off for the AI in AI Center.');
+      expect(r.message, isNot(contains('AI Control')));
+      expect(r.message, isNot(contains('send permissions')));
+      expect(r.speechText, r.message);
+      expect(r.uiCommands.single.target, 'security_center');
+    });
+  });
+
+  group('a swap amount is always what is paid', () {
+    test('an exact amount to receive is refused before any quote', () async {
+      final r = await controller.requestSwapPreview(const IntentData(
+        type: IntentType.swapAsset,
+        rawInput: 'buy 0.5 ETH with BNB',
+        sourceTokenSymbol: 'BNB',
+        sourceTokenAddress: 'BNB',
+        targetTokenSymbol: 'ETH',
+        targetTokenAddress: '0x2170Ed0880ac9A755fd29B2688956BD959F933F8',
+        amount: 0.5,
+        amountMode: AmountMode.exactOut,
+        sourceTokenDecimals: 18,
+        targetTokenDecimals: 18,
+      ));
+      expect(r.type, ResponseType.error);
+      expect(r.message, contains('exact amount to receive'));
+      expect(r.message, contains('BNB'));
+      expect(r.swapPlan, isNull);
     });
   });
 }

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:ibiti_guardian/models/assistant_directive.dart';
@@ -36,6 +37,19 @@ import 'package:ibiti_guardian/services/market/market_data_service.dart';
 import 'package:ibiti_guardian/services/dapp/dapp_link_service.dart';
 import 'package:ibiti_guardian/screens/dapp/dapp_browser_screen.dart';
 
+/// Where the floating mic bubble is ([GuardianAppShell.micBubblePlace]).
+enum MicBubblePlace {
+  /// Not shown.
+  hidden,
+
+  /// At its usual spot (bottom right, or where the user dragged it).
+  usual,
+
+  /// In the strip at the top of the screen, above an open AI confirmation
+  /// card ([GuardianAppShell.aboveAiCard]).
+  aboveAiCard,
+}
+
 class GuardianAppShell extends StatefulWidget {
   final int initialIndex;
   const GuardianAppShell({super.key, this.initialIndex = 0});
@@ -50,20 +64,89 @@ class GuardianAppShell extends StatefulWidget {
   @visibleForTesting
   static bool? debugIsMountedOverride;
 
-  /// Whether the floating mic bubble shows. Normally only during a voice
-  /// session and off the AI Voice tab (index 0, which has its own mic
-  /// button). While an AI confirmation card is open it shows on EVERY tab,
-  /// with or without a session: the card is a root modal sheet whose
+  /// Where the floating mic bubble is. Normally only during a voice session
+  /// and off the AI Voice tab (index 0, which has its own mic button), at
+  /// its usual spot. While an AI confirmation card is open it shows on EVERY
+  /// tab, with or without a session: the card is a root modal sheet whose
   /// barrier covers every tab's own mic button (the AI Voice tab's too), and
   /// it tells the user they can answer «да» / «нет» by voice (D5). The
-  /// bubble is drawn above all routes, so it stays reachable.
+  /// bubble is drawn above all routes, so it stays reachable — and so it
+  /// then goes to the strip at the top of the screen, above the card
+  /// ([aboveAiCard]): at its usual spot (bottom right) it would cover the
+  /// card's note, its «да» / «нет» hint or even «Подтвердить».
+  @visibleForTesting
+  static MicBubblePlace micBubblePlace({
+    required bool sessionActive,
+    required int tabIndex,
+    required bool aiCardOpen,
+  }) {
+    if (aiCardOpen) return MicBubblePlace.aboveAiCard;
+    if (sessionActive && tabIndex != 0) return MicBubblePlace.usual;
+    return MicBubblePlace.hidden;
+  }
+
+  /// Whether the floating mic bubble shows at all ([micBubblePlace]).
   @visibleForTesting
   static bool micBubbleVisible({
     required bool sessionActive,
     required int tabIndex,
     required bool aiCardOpen,
   }) =>
-      aiCardOpen || (sessionActive && tabIndex != 0);
+      micBubblePlace(
+        sessionActive: sessionActive,
+        tabIndex: tabIndex,
+        aiCardOpen: aiCardOpen,
+      ) !=
+      MicBubblePlace.hidden;
+
+  /// AiActionConfirmSheet: the card is at most this share of the screen
+  /// high, with [_aiCardBottomGap] and the bottom safe area below it.
+  static const double _aiCardMaxHeightFactor = 0.85;
+  static const double _aiCardBottomGap = 12;
+
+  /// FloatingMicBubble: 72 px high, kept at least 4 px below the top inset
+  /// and 8 px above the bottom of the screen it is given.
+  static const double _bubbleFootprint = 4 + 72 + 8;
+
+  /// Height of the strip at the top of the screen the mic bubble keeps to
+  /// while an AI card is open: everything above the tallest card the sheet
+  /// can show, and never less than the bubble needs below the status bar.
+  /// Only a card taller than ~80 % of the screen can reach the strip, and
+  /// then only its title row: the bubble never sits on the card's rows,
+  /// note, hint or buttons.
+  @visibleForTesting
+  static double aboveAiCardStripHeight(MediaQueryData mq) {
+    final aboveTallestCard = mq.size.height * (1 - _aiCardMaxHeightFactor) -
+        _aiCardBottomGap -
+        mq.padding.bottom;
+    return math.max(aboveTallestCard, mq.padding.top + _bubbleFootprint);
+  }
+
+  /// [bubble] (a [FloatingMicBubble], which places and clamps itself in the
+  /// screen its MediaQuery describes) kept to the strip above the AI card:
+  /// it is given a screen that ends at the strip's bottom, with no bottom
+  /// inset and no keyboard, so its default spot (then the top right, just
+  /// below the status bar) and every drag stay inside the strip.
+  @visibleForTesting
+  static Widget aboveAiCard(BuildContext context, Widget bubble) {
+    final mq = MediaQuery.of(context);
+    final height = aboveAiCardStripHeight(mq);
+    return Positioned(
+      left: 0,
+      top: 0,
+      right: 0,
+      height: height,
+      child: MediaQuery(
+        data: mq.copyWith(
+          size: Size(mq.size.width, height),
+          padding: mq.padding.copyWith(bottom: 0),
+          viewPadding: mq.viewPadding.copyWith(bottom: 0),
+          viewInsets: EdgeInsets.zero,
+        ),
+        child: Stack(clipBehavior: Clip.none, children: [bubble]),
+      ),
+    );
+  }
 
   /// Whether an AI confirmation card is open ([AiActionGate.hasOpenCard]),
   /// as seen after the last frame. The card is a root modal sheet, so a
@@ -102,7 +185,7 @@ class _GuardianAppShellState extends State<GuardianAppShell>
   OverlayEntry? _bubbleOverlay;
 
   // ValueNotifier so the OverlayEntry builder always reads fresh state.
-  final _bubbleVisible = ValueNotifier<bool>(false);
+  final _bubblePlace = ValueNotifier<MicBubblePlace>(MicBubblePlace.hidden);
 
   late final List<Widget> _screens = [
     const AssistantHomeScreen(),
@@ -168,19 +251,34 @@ class _GuardianAppShellState extends State<GuardianAppShell>
       if (!mounted) return;
       _bubbleOverlay = OverlayEntry(
         // Wrap in Stack so Positioned works correctly inside Overlay.
-        builder: (_) => Stack(
-          children: [
-            ValueListenableBuilder<bool>(
-              valueListenable: _bubbleVisible,
-              builder: (_, visible, __) => ValueListenableBuilder<Offset?>(
+        builder: (_) => ValueListenableBuilder<MicBubblePlace>(
+          valueListenable: _bubblePlace,
+          builder: (_, place, __) => Stack(
+            children: [
+              // The usual bubble: it keeps its own (dragged) spot while it
+              // is hidden, also while an AI card is open.
+              ValueListenableBuilder<Offset?>(
                 valueListenable: ScreenContextService.instance.bubblePosition,
                 builder: (_, initPos, __) => FloatingMicBubble(
-                  isVisible: visible,
+                  isVisible: place == MicBubblePlace.usual,
                   initialPosition: initPos,
                 ),
               ),
-            ),
-          ],
+              // An AI card is open: a bubble of its own, only while the
+              // card is, in the strip above the card — it never covers the
+              // card, and «да» / «нет» by voice stays one tap away (D5).
+              if (place == MicBubblePlace.aboveAiCard)
+                Builder(
+                  builder: (stripContext) => GuardianAppShell.aboveAiCard(
+                    stripContext,
+                    const FloatingMicBubble(
+                      key: ValueKey('aiCardMicBubble'),
+                      isVisible: true,
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
       );
       Overlay.of(context, rootOverlay: true).insert(_bubbleOverlay!);
@@ -195,7 +293,7 @@ class _GuardianAppShellState extends State<GuardianAppShell>
     DappLinkService.instance.detach();
     _cmdSub?.cancel();
     _bubbleOverlay?.remove();
-    _bubbleVisible.dispose();
+    _bubblePlace.dispose();
     _voice.sessionNotifier.removeListener(_onSessionChanged);
     WidgetsBinding.instance.removeObserver(this);
     AutomationEngine.instance.stop();
@@ -236,18 +334,18 @@ class _GuardianAppShellState extends State<GuardianAppShell>
     _updateBubbleVisibility();
   }
 
-  /// Compute and push bubble visibility to the ValueNotifier: during a voice
-  /// session off the AI Voice tab (index 0 has its own PTT button), and on
-  /// every tab while an AI confirmation card is open
-  /// ([GuardianAppShell.micBubbleVisible]).
+  /// Compute and push the bubble's place to the ValueNotifier: during a
+  /// voice session off the AI Voice tab (index 0 has its own PTT button) at
+  /// its usual spot, and on every tab, above the card, while an AI
+  /// confirmation card is open ([GuardianAppShell.micBubblePlace]).
   void _updateBubbleVisibility() {
-    final visible = GuardianAppShell.micBubbleVisible(
+    final place = GuardianAppShell.micBubblePlace(
       sessionActive: _voice.isSessionActive,
       tabIndex: _currentIndex,
       aiCardOpen: AiActionGate.instance.hasOpenCard,
     );
-    if (_bubbleVisible.value != visible) {
-      _bubbleVisible.value = visible;
+    if (_bubblePlace.value != place) {
+      _bubblePlace.value = place;
     }
   }
 

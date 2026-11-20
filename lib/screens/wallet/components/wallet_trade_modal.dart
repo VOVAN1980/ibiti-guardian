@@ -83,17 +83,22 @@ class WalletTradeModal extends StatefulWidget {
     );
   }
 
-  /// The swap this window asks for. The window is the user's own (owner
-  /// decisions D2 / D3): the user picks or checks the coins and the amount
-  /// and confirms with the PIN — also when the AI opened and filled it in
-  /// «Ручной». So it is origin [IntentOrigin.wallet], like the Send and
-  /// Swap windows (`GuardianPolicyEngine.isUserWalletTx`): the AI mode, the
-  /// AI permissions, «AI Мандат» and the daily trading limit do not stop it
-  /// (it works in «Советник» and after the emergency stop), while the wallet
-  /// swap / approve limits, the slippage cap, unknown contracts, the
-  /// simulation and EPK still apply to it. The AI's own trades never come
-  /// through here: AutomationIntentBuilder builds them (origin market) and
-  /// AiActionGate confirms them on the AI card.
+  /// The swap this window asks for. A Buy / Sell is a trade: it is origin
+  /// [IntentOrigin.market], as it always was, so the daily trading limit,
+  /// «AI Мандат» (networks, assets, venues, max position for buys) and the
+  /// trading budget bound it exactly like the user's own exchange buys —
+  /// never looser — together with the wallet swap / approve limits, the
+  /// slippage cap, unknown contracts, the simulation and EPK.
+  ///
+  /// The window is still the user's own (owner decisions D2 / D3): the user
+  /// picks or checks the coins and the amount and confirms with the PIN,
+  /// also when the AI opened and filled it in «Ручной». So it carries
+  /// [IntentData.userTradeWindow] (`GuardianPolicyEngine.isUserTradeWindowTx`),
+  /// which lifts ONLY the AI mode («Советник», emergency stop) and the AI
+  /// permissions: the window works in every mode. Only this window sets the
+  /// marker; the model (LlmIntentGuard) and automation never do, and the
+  /// AI's own trades are built by AutomationIntentBuilder and confirmed on
+  /// the AI card.
   @visibleForTesting
   static IntentData swapIntent({
     required double amount,
@@ -116,7 +121,8 @@ class WalletTradeModal extends StatefulWidget {
       sourceTokenDecimals: fromDecimals,
       targetTokenDecimals: toDecimals,
       slippageBps: (slippagePercent * 100).toInt(),
-      origin: IntentOrigin.wallet,
+      origin: IntentOrigin.market,
+      userTradeWindow: true,
     );
   }
 
@@ -410,8 +416,8 @@ class _WalletTradeModalState extends State<WalletTradeModal> {
         'decimals=${_toAsset?.decimals} (resolved=$dstDecimals)');
     print('[SwapModal] amount=$_inputAmount chain=$_swapChainKey');
 
-    // Build IntentData for the swap pipeline: the user's own window
-    // (origin wallet, see [WalletTradeModal.swapIntent]).
+    // Build IntentData for the swap pipeline: a trade (origin market) from
+    // the user's own Buy / Sell window, see [WalletTradeModal.swapIntent].
     final intent = WalletTradeModal.swapIntent(
       amount: _inputAmount,
       fromSymbol: fromSymbol,

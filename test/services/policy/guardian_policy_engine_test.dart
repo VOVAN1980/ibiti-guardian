@@ -35,6 +35,14 @@ const _walletSwap = IntentData(
 const _aiSend = IntentData(type: IntentType.sendAsset, rawInput: 'send');
 const _aiSwap = IntentData(type: IntentType.swapAsset, rawInput: 'swap');
 
+/// The user's own Buy / Sell window (wallet_trade_modal): a trade (origin
+/// market) marked as the user's own window.
+const _tradeWindowSwap = IntentData(
+  type: IntentType.swapAsset,
+  rawInput: 'swap',
+  userTradeWindow: true,
+);
+
 /// «Советник» after the emergency stop: mode manual, no AI permissions.
 AiControlSettings _emergencyStopped() =>
     const AiControlSettings(mode: AiMode.manual, allowedActions: []);
@@ -267,6 +275,124 @@ void main() {
       // TransactionType.unknown handler at the bottom of checkV3.
       expect(result.blocked, isTrue);
       expect(result.appliedRules, isNot(contains('AI_ACTION_NOT_ALLOWED')));
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 2a. The user's own Buy / Sell window (origin market + userTradeWindow):
+  //     only the AI mode and the AI permissions (Check 0 / 0b) are skipped;
+  //     the trading limits of GuardianExecutionController and every wallet
+  //     check here still apply (test/screens/wallet/
+  //     wallet_trade_modal_origin_test.dart covers the trading limits).
+  // ═══════════════════════════════════════════════════════════════════════════
+  group('User Buy / Sell window (origin market, userTradeWindow)', () {
+    PolicyResult check(TransactionRequest tx) => GuardianPolicyEngine.checkV3(
+          tx,
+          _cleanSim(),
+          _rpcOk(),
+          _safeProfile(),
+          ExecutionPath.localProtected,
+        );
+
+    test('isUserTradeWindowTx: only the window\'s swap steps', () {
+      expect(
+          GuardianPolicyEngine.isUserTradeWindowTx(
+              _swapTx(amount: 1, intent: _tradeWindowSwap)),
+          isTrue);
+      expect(
+          GuardianPolicyEngine.isUserTradeWindowTx(_approveTx(
+              amount: 1, spenderAddress: '0xSpender', intent: _tradeWindowSwap)),
+          isTrue);
+      // Never the Send / Swap window: the trading limits stay.
+      expect(
+          GuardianPolicyEngine.isUserWalletTx(
+              _swapTx(amount: 1, intent: _tradeWindowSwap)),
+          isFalse);
+      // The AI's swap, automation claiming the marker, a marked send.
+      expect(
+          GuardianPolicyEngine.isUserTradeWindowTx(
+              _swapTx(amount: 1, intent: _aiSwap)),
+          isFalse);
+      expect(
+        GuardianPolicyEngine.isUserTradeWindowTx(_swapTx(
+          amount: 1,
+          intent: const IntentData(
+            type: IntentType.swapAsset,
+            rawInput: '_AUTO_ swap',
+            sourceTrigger: 'rule_1',
+            userTradeWindow: true,
+          ),
+        )),
+        isFalse,
+      );
+      expect(
+        GuardianPolicyEngine.isUserTradeWindowTx(_sendTx(
+          amount: 1,
+          intent: const IntentData(
+            type: IntentType.sendAsset,
+            rawInput: 'send',
+            userTradeWindow: true,
+          ),
+        )),
+        isFalse,
+      );
+    });
+
+    test('«Советник» / emergency stop / AI permissions off: it passes', () {
+      for (final settings in [
+        _guardedSettings(mode: AiMode.manual),
+        _emergencyStopped(),
+        _guardedSettings(allowedActions: []),
+      ]) {
+        AiControlService.instance.setSettingsForTest(settings);
+        final swap = check(_swapTx(
+          amount: 100,
+          quoteSummary: {'slippageBps': 50},
+          intent: _tradeWindowSwap,
+        ));
+        final approve = check(_approveTx(
+          amount: 50,
+          spenderAddress: '0xSpender',
+          intent: _tradeWindowSwap,
+        ));
+        for (final r in [swap, approve]) {
+          expect(r.blocked, isFalse, reason: '${settings.mode} ${r.reason}');
+          expect(r.appliedRules, contains('USER_TRADE_WINDOW'));
+          expect(r.appliedRules, isNot(contains('USER_WALLET_ORIGIN')));
+          expect(r.appliedRules, isNot(contains('AI_MODE_MANUAL_BLOCK')));
+          expect(r.appliedRules, isNot(contains('AI_ACTION_NOT_ALLOWED')));
+        }
+
+        // The AI's swap (origin market, no marker) is still blocked.
+        final ai = check(_swapTx(
+          amount: 100,
+          quoteSummary: {'slippageBps': 50},
+          intent: _aiSwap,
+        ));
+        expect(ai.blocked, isTrue, reason: settings.mode.name);
+        expect(ai.appliedRules, isNot(contains('USER_TRADE_WINDOW')));
+      }
+    });
+
+    test('the swap limit and the slippage cap still hold', () {
+      AiControlService.instance
+          .setSettingsForTest(_guardedSettings(mode: AiMode.manual));
+
+      final overLimit = check(_swapTx(
+        amount: 600, // safe profile swap limit is 500
+        quoteSummary: {'slippageBps': 50},
+        intent: _tradeWindowSwap,
+      ));
+      final overSlippage = check(_swapTx(
+        amount: 10,
+        quoteSummary: {'slippageBps': SwapSlippagePolicy.maxBps + 1},
+        intent: _tradeWindowSwap,
+      ));
+
+      expect(overLimit.blocked, isTrue);
+      expect(overLimit.appliedRules, contains('SWAP_PROFILE_LIMIT_EXCEEDED'));
+      expect(overSlippage.blocked, isTrue);
+      expect(overSlippage.appliedRules, contains('SWAP_SLIPPAGE_CAP_EXCEEDED'));
     });
   });
 

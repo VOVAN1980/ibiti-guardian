@@ -720,8 +720,16 @@ void main() {
         // «Автономный» without the PIN: limits, mandate, EPK, trusted only.
         'only within the daily trading limit and «AI Мандат», EPK active, '
             'to trusted addresses or own cards',
-        // A new address still gets the card + PIN.
-        '(new address, unknown price) the card + PIN',
+        // A new address or a locked wallet still gets the card + PIN.
+        '(new address, locked wallet) the card + PIN',
+        // An unknown USD price: the AI never does it itself, in either PIN
+        // setting; the user confirms it in the filled window (D17).
+        'Unknown USD price (a coin without a price), PIN setting on or off: '
+            'the AI does not do it itself; the filled wallet window opens, '
+            'you confirm (PIN).',
+        // A paused EPK: nothing on-chain; an AI exchange order asks first.
+        'Paused EPK: the AI does nothing on-chain (revoking aside); its '
+            'exchange orders get card + PIN.',
         // Limits hold in every mode; raising one needs the PIN.
         'the AI never goes over a limit',
         'raise it in «Политика» (PIN)',
@@ -760,6 +768,8 @@ void main() {
         'never signs',
         // Exchange orders no longer skip the PIN by default.
         'without it, inside the daily trading limit',
+        // An unknown price never gets the card: the filled window opens.
+        'unknown price) the card',
       ]) {
         expect(guide, isNot(contains(wrong)), reason: wrong);
       }
@@ -801,7 +811,8 @@ void main() {
       expect(
           system,
           contains('AI action PIN confirmation: ON (every AI action shows a '
-              'card and asks the PIN first)'));
+              'card and asks the PIN first; one with an unknown USD value '
+              'opens in the filled wallet window instead)'));
     });
 
     test('«Автономный» with the PIN setting OFF: the limits still hold',
@@ -815,6 +826,18 @@ void main() {
       expect(system, contains('to trusted addresses or own cards'));
       expect(system, contains('«ИИ выполнил»'));
       expect(system, isNot(contains('AI action PIN confirmation: ON')));
+      // D6 as the code runs it: a new address / a locked wallet / an
+      // exchange order with EPK paused → card + PIN; an unknown USD value →
+      // the filled wallet window for the user (never a card, never the AI).
+      expect(
+          system,
+          contains('a new address, a locked wallet or an exchange order '
+              'while EPK is paused = card + PIN'));
+      expect(
+          system,
+          contains('an unknown USD value = the filled wallet window for the '
+              'user, never you'));
+      expect(system, isNot(contains('with a known USD value; otherwise')));
     });
 
     test('pinConfirmationLabel: the setting counts only in «Автономный»', () {
@@ -840,10 +863,23 @@ void main() {
         'raises it in «Политика» (Security → Policy) with',
         'Never suggest splitting an order',
         'Never say an operation is done',
+        // D6 as the code runs it (no card, else the card + PIN).
+        'with the app open and the wallet unlocked; a new address, a locked '
+            'wallet, or an exchange order while EPK is paused gets the card '
+            '+ PIN',
+        'While EPK is paused nothing on-chain is carried out',
+        // An unknown USD value: never the AI, never a card (D17).
+        'Never carry out yourself an operation whose USD value is unknown',
+        'PIN confirmation ON or OFF: the app opens the filled wallet window '
+            'and the user confirms it there with the PIN',
+        'Never promise a card for it',
       ]) {
         expect(rules.replaceAll(RegExp(r'\s+'), ' '), contains(rule),
             reason: rule);
       }
+      // The old rule promised the card + PIN for an unknown value.
+      expect(rules.replaceAll(RegExp(r'\s+'), ' '),
+          isNot(contains('with a known USD value; otherwise the card + PIN')));
     });
 
     test('«Советник» offers no action tools, even in an action turn',

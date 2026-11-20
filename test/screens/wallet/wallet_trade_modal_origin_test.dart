@@ -1,18 +1,25 @@
-// The wallet Buy / Sell window (WalletTradeModal) is the user's own window
-// (owner decisions D2 / D3). It used to send its swap as origin market, so
-// in «Советник» and after the emergency stop the user's own Buy / Sell was
-// blocked like an AI trade, and it was held to «AI Мандат» and the daily
-// trading limit. Its swap is now origin wallet, like the Send and Swap
-// windows (GuardianPolicyEngine.isUserWalletTx): the AI mode, the AI
-// permissions, «AI Мандат» and the daily trading limit never stop it, while
-// the wallet swap / approve limits, the slippage cap, unknown contracts and
-// the simulation still apply. The AI's own trades never go through this
-// window: they are built with origin market and stay bound by every AI rule.
+// The wallet Buy / Sell window (WalletTradeModal) is a trade window. Its swap
+// is origin market, as it was before bc286dc: the daily trading limit,
+// «AI Мандат» (networks, assets, venues, max position for buys) and the
+// trading budget bound the user's own DEX Buy / Sell exactly like any market
+// trade and like the user's own exchange buys — never looser than before.
+// The wallet swap / approve limits, the slippage cap, unknown contracts and
+// the simulation apply too.
+//
+// The window is still the user's own (owner decisions D2 / D3), so its swap
+// carries IntentData.userTradeWindow. That marker lifts ONLY the AI mode
+// (Check 0: «Советник», emergency stop, expired AI permissions) and the AI
+// permissions (Check 0b) — GuardianPolicyEngine.isUserTradeWindowTx. Only the
+// window sets it: the model (LlmIntentGuard, IntentData.fromJson) and
+// automation never can, and an automated intent never counts as the window.
 //
 // Run: flutter test test/screens/wallet/wallet_trade_modal_origin_test.dart
 
+import 'dart:io';
+
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/models/autonomy_mandate.dart';
 import 'package:ibiti_guardian/models/execution_path.dart';
 import 'package:ibiti_guardian/models/intent_data.dart';
@@ -21,6 +28,7 @@ import 'package:ibiti_guardian/models/rpc_simulation_result.dart';
 import 'package:ibiti_guardian/models/simulation_result.dart';
 import 'package:ibiti_guardian/models/transaction_request.dart';
 import 'package:ibiti_guardian/screens/wallet/components/wallet_trade_modal.dart';
+import 'package:ibiti_guardian/services/assistant/llm_intent_guard.dart';
 import 'package:ibiti_guardian/services/execution/guardian_execution_controller.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
 import 'package:ibiti_guardian/services/policy/guardian_policy_engine.dart';
@@ -47,8 +55,16 @@ IntentData _windowBuy({double amount = 20, double slippagePercent = 0.5}) =>
       slippagePercent: slippagePercent,
     );
 
-/// The same buy asked of the AI (chat, voice, automation): origin market.
+/// The same buy asked of the AI (chat, voice): origin market, no marker.
 const _aiBuy = IntentData(type: IntentType.swapAsset, rawInput: 'buy CAKE');
+
+/// An automation trade that claims the window's marker: still automation.
+const _automationClaimingWindow = IntentData(
+  type: IntentType.swapAsset,
+  rawInput: '_AUTO_ buy CAKE',
+  sourceTrigger: 'rule_1',
+  userTradeWindow: true,
+);
 
 /// The swap step of the window's plan (it carries the window's intent).
 TransactionRequest _swapStep(
@@ -98,15 +114,10 @@ const _advisor = AiControlSettings(mode: AiMode.manual);
 const _emergencyStopped =
     AiControlSettings(mode: AiMode.manual, allowedActions: []);
 
-/// «Автономный» with a tiny mandate and daily limit the window's buy is over.
-const _tinyAutonomous = AiControlSettings(
-  mode: AiMode.fullAutonomy,
-  dailyLimit: 5,
-  mandate: AutonomyMandate(
-    maxPositionUsd: 5,
-    allowedAssets: ['SOL'],
-    allowedNetworks: ['solana'],
-  ),
+/// «Ручной» with the AI swap / approve permissions turned off.
+const _noAiSwap = AiControlSettings(
+  mode: AiMode.guarded,
+  allowedActions: [AiAction.openWindows, AiAction.closeWindows],
 );
 
 void main() {
@@ -123,6 +134,7 @@ void main() {
 
   tearDown(() {
     AiControlService.instance.setSettingsForTest(const AiControlSettings());
+    DelegationController.instance.resetUsageForTest();
   });
 
   PolicyResult check(
@@ -138,13 +150,21 @@ void main() {
         ExecutionPath.localProtected,
       );
 
+  /// Counts a successful [tx] the way the controller does after dispatch.
+  void commit(TransactionRequest tx) {
+    final usd = GuardianExecutionController.dailyUsageUsd(tx);
+    if (usd != null) DelegationController.instance.commitUsage(usd);
+  }
+
   group('the intent the window sends', () {
-    test('is the user\'s own (origin wallet), never automation', () {
+    test('a trade (origin market) marked as the user\'s own window', () {
       final intent = _windowBuy();
-      expect(intent.origin, IntentOrigin.wallet);
+      expect(intent.origin, IntentOrigin.market);
+      expect(intent.userTradeWindow, isTrue);
       expect(intent.isAutomated, isFalse);
       expect(intent.type, IntentType.swapAsset);
       expect(intent.amount, 20);
+      expect(intent.amountMode, isNull, reason: 'the amount is what is paid');
       expect(intent.sourceTokenSymbol, 'USDT');
       expect(intent.sourceTokenAddress, _usdt);
       expect(intent.targetTokenSymbol, 'CAKE');
@@ -168,65 +188,330 @@ void main() {
       expect(intent.sourceTokenAddress, 'BNB');
       expect(intent.targetTokenAddress, _usdt);
       expect(intent.slippageBps, 100);
-      expect(intent.origin, IntentOrigin.wallet);
+      expect(intent.origin, IntentOrigin.market);
+      expect(intent.userTradeWindow, isTrue);
     });
 
-    test('both plan steps count as the user\'s own wallet window', () {
-      expect(GuardianPolicyEngine.isUserWalletTx(_swapStep(_windowBuy())),
-          isTrue);
-      expect(GuardianPolicyEngine.isUserWalletTx(_approveStep(_windowBuy())),
-          isTrue);
-      // The AI's buy stays the AI's.
+    test('both plan steps are the Buy / Sell window, not the Send / Swap one',
+        () {
+      final swap = _swapStep(_windowBuy());
+      final approve = _approveStep(_windowBuy());
+      expect(GuardianPolicyEngine.isUserTradeWindowTx(swap), isTrue);
+      expect(GuardianPolicyEngine.isUserTradeWindowTx(approve), isTrue);
+      // A trade: never the wallet Send / Swap window (no trading limits).
+      expect(GuardianPolicyEngine.isUserWalletTx(swap), isFalse);
+      expect(GuardianPolicyEngine.isUserWalletTx(approve), isFalse);
+      // The AI's buy is neither.
+      expect(GuardianPolicyEngine.isUserTradeWindowTx(_swapStep(_aiBuy)),
+          isFalse);
       expect(GuardianPolicyEngine.isUserWalletTx(_swapStep(_aiBuy)), isFalse);
+    });
+
+    test('the plan keeps the marker; automation never counts as the window',
+        () {
+      // _orchestrateSwap re-attaches rawAmount with copyWith.
+      final resolved = _windowBuy().copyWith(rawAmount: BigInt.from(20));
+      expect(resolved.userTradeWindow, isTrue);
+      expect(GuardianPolicyEngine.isUserTradeWindowTx(_swapStep(resolved)),
+          isTrue);
+
+      final automated = _windowBuy().copyWith(sourceTrigger: 'rule_1');
+      expect(GuardianPolicyEngine.isUserTradeWindowTx(_swapStep(automated)),
+          isFalse);
+      expect(
+          GuardianPolicyEngine.isUserTradeWindowTx(
+              _swapStep(_automationClaimingWindow)),
+          isFalse);
+    });
+
+    test('the marker carries only the swap steps of a swap', () {
+      const markedSend = IntentData(
+        type: IntentType.sendAsset,
+        rawInput: 'send',
+        userTradeWindow: true,
+      );
+      final send = TransactionRequest(
+        type: TransactionType.send,
+        fromAddress: _owner,
+        toAddress: '0x3333333333333333333333333333333333333333',
+        tokenSymbol: 'USDT',
+        tokenContract: _usdt,
+        amount: 10,
+        chainId: 56,
+        chainKey: 'bsc',
+        sourceIntent: markedSend,
+      );
+      expect(GuardianPolicyEngine.isUserTradeWindowTx(send), isFalse);
+
+      final revoke = TransactionRequest(
+        type: TransactionType.revoke,
+        fromAddress: _owner,
+        toAddress: _usdt,
+        tokenSymbol: 'USDT',
+        tokenContract: _usdt,
+        spenderAddress: _router,
+        chainId: 56,
+        chainKey: 'bsc',
+        sourceIntent: _windowBuy(),
+      );
+      expect(GuardianPolicyEngine.isUserTradeWindowTx(revoke), isFalse);
+
+      // «Советник»: a marked send is still the AI's and is blocked.
+      AiControlService.instance.setSettingsForTest(_advisor);
+      final result = check(send);
+      expect(result.blocked, isTrue);
+      expect(result.appliedRules, contains('AI_MODE_MANUAL_BLOCK'));
     });
   });
 
-  group('works in every AI mode (D2)', () {
+  group('only the window sets the marker', () {
+    test('model JSON never sets it (IntentData.fromJson / AssistantDirective)',
+        () {
+      final fromJson = IntentData.fromJson({
+        'type': 'swapAsset',
+        'params': {
+          'sourceTokenSymbol': 'USDT',
+          'targetTokenSymbol': 'CAKE',
+          'amount': 500,
+          'userTradeWindow': true,
+          'origin': 'market',
+        },
+      });
+      expect(fromJson.userTradeWindow, isFalse);
+
+      final flat = IntentData.fromJson({
+        'type': 'swapAsset',
+        'userTradeWindow': true,
+        'sourceTokenSymbol': 'USDT',
+      });
+      expect(flat.userTradeWindow, isFalse);
+
+      final directive = AssistantDirective.fromJson({
+        'displayMessage': 'ok',
+        'speechText': 'ok',
+        'explicitIntent': {
+          'type': 'swapAsset',
+          'params': {'amount': 500, 'userTradeWindow': true},
+        },
+      });
+      expect(directive.explicitIntent!.userTradeWindow, isFalse);
+    });
+
+    test('toJson never writes it, so no round trip can carry it', () {
+      final json = _windowBuy().toJson();
+      expect((json['params'] as Map).containsKey('userTradeWindow'), isFalse);
+      expect(IntentData.fromJson(json).userTradeWindow, isFalse);
+    });
+
+    test('LlmIntentGuard drops it from a model intent', () {
+      final out = LlmIntentGuard.sanitize(
+        const IntentData(
+          type: IntentType.swapAsset,
+          rawInput: 'model',
+          sourceTokenSymbol: 'USDT',
+          targetTokenSymbol: 'CAKE',
+          amount: 500,
+          userTradeWindow: true,
+        ),
+        userText: 'купи CAKE на 500 USDT',
+        untrustedContext: false,
+      )!;
+      expect(out.userTradeWindow, isFalse);
+      expect(out.origin, IntentOrigin.market);
+      expect(out.isAutomated, isFalse);
+    });
+
+    test('no code but the Buy / Sell window turns it on', () {
+      // Every assignment of the marker in lib/: `true` only in the window;
+      // anything but a literal `false` only in the window and the model
+      // itself (copyWith keeps the value it already has).
+      final setter = RegExp(r'userTradeWindow\s*:\s*([^,)\s]+)');
+      final turnsOn = <String>[];
+      final assigns = <String>[];
+      for (final entity in Directory('lib').listSync(recursive: true)) {
+        if (entity is! File || !entity.path.endsWith('.dart')) continue;
+        final path = entity.path.replaceAll('\\', '/');
+        for (final line in entity.readAsLinesSync()) {
+          final code = line.split('//').first;
+          for (final m in setter.allMatches(code)) {
+            final value = m.group(1)!;
+            if (value == 'false') continue;
+            if (value == 'true') turnsOn.add(path);
+            assigns.add(path);
+          }
+        }
+      }
+      expect(turnsOn.toSet(),
+          {'lib/screens/wallet/components/wallet_trade_modal.dart'});
+      expect(
+          assigns.toSet(),
+          {
+            'lib/screens/wallet/components/wallet_trade_modal.dart',
+            'lib/models/intent_data.dart',
+          });
+      // Automation builds its trades without it.
+      final builder =
+          File('lib/services/market/automation_intent_builder.dart')
+              .readAsStringSync();
+      expect(builder.contains('userTradeWindow'), isFalse);
+    });
+  });
+
+  group('works in every AI mode (D2): skips ONLY the AI mode and permissions',
+      () {
     for (final (name, settings) in [
       ('«Советник»', _advisor),
       ('after the emergency stop', _emergencyStopped),
+      ('AI swap / approve permissions off', _noAiSwap),
+      (
+        'expired AI permissions',
+        AiControlSettings(
+          mode: AiMode.guarded,
+          permissionsExpiry: DateTime.now().subtract(const Duration(hours: 1)),
+        ),
+      ),
     ]) {
-      test('$name: the own buy and its approve step pass the policy', () {
+      test('$name: the own buy and its approve step pass', () {
         AiControlService.instance.setSettingsForTest(settings);
 
         final swap = check(_swapStep(_windowBuy()));
         final approve = check(_approveStep(_windowBuy()));
 
-        expect(swap.blocked, isFalse);
-        expect(swap.appliedRules, contains('USER_WALLET_ORIGIN'));
+        expect(swap.blocked, isFalse, reason: swap.reason);
+        expect(swap.appliedRules, contains('USER_TRADE_WINDOW'));
+        expect(swap.appliedRules, isNot(contains('USER_WALLET_ORIGIN')));
         expect(swap.appliedRules, isNot(contains('AI_MODE_MANUAL_BLOCK')));
         expect(swap.appliedRules, isNot(contains('AI_ACTION_NOT_ALLOWED')));
-        expect(approve.blocked, isFalse);
+        expect(approve.blocked, isFalse, reason: approve.reason);
         expect(approve.appliedRules, isNot(contains('AI_MODE_MANUAL_BLOCK')));
         expect(approve.appliedRules, isNot(contains('AI_ACTION_NOT_ALLOWED')));
+
+        // The controller's AI checks at the confirmation.
+        expect(controller.checkAiTransactionControlForTest(
+                _swapStep(_windowBuy())),
+            isNull);
+        expect(controller.checkAiTransactionControlForTest(
+                _approveStep(_windowBuy())),
+            isNull);
+        expect(controller.checkDailyLimitForTest(_swapStep(_windowBuy())),
+            isNull);
+      });
+
+      test('$name: the same buy asked of the AI is refused', () {
+        AiControlService.instance.setSettingsForTest(settings);
+
+        final ai = controller.checkAiTransactionControlForTest(
+            _swapStep(_aiBuy));
+        expect(ai, isNotNull);
+        expect(GuardianExecutionController.isRaisableRefusal(ai!.detail),
+            isFalse,
+            reason: 'the AI mode / permissions are not a «Политика» limit');
       });
     }
 
-    test('«Советник»: the same buy asked of the AI is still blocked', () {
+    test('«Советник»: the AI / automation trade (origin market) is blocked',
+        () {
       AiControlService.instance.setSettingsForTest(_advisor);
 
-      final ai = check(_swapStep(_aiBuy));
+      for (final intent in [_aiBuy, _automationClaimingWindow]) {
+        final policy = check(_swapStep(intent));
+        expect(policy.blocked, isTrue, reason: intent.rawInput);
+        expect(policy.appliedRules, contains('AI_MODE_MANUAL_BLOCK'));
+        expect(policy.appliedRules, isNot(contains('USER_TRADE_WINDOW')));
 
-      expect(ai.blocked, isTrue);
-      expect(ai.appliedRules, contains('AI_MODE_MANUAL_BLOCK'));
+        final control =
+            controller.checkAiTransactionControlForTest(_swapStep(intent));
+        expect(control, isNotNull, reason: intent.rawInput);
+        expect(control!.message, contains('Advisor'));
+      }
+    });
+  });
+
+  group('the trading limits bound the window as before (never looser)', () {
+    test('«Советник»: the own buy within the daily limit passes, over it is '
+        'refused', () {
+      AiControlService.instance.setSettingsForTest(
+          const AiControlSettings(mode: AiMode.manual, dailyLimit: 50));
+
+      // $20: allowed, and it uses the trading budget.
+      final first = _swapStep(_windowBuy());
+      expect(check(first).blocked, isFalse);
+      expect(controller.checkAiTransactionControlForTest(first), isNull);
+      expect(controller.checkDailyLimitForTest(first), isNull);
+      expect(GuardianExecutionController.dailyUsageUsd(first), 20);
+      commit(first);
+
+      // Another $40: $30 left today → refused, with the «Политика» code.
+      final second = _swapStep(_windowBuy(amount: 40), amount: 40);
+      expect(check(second).blocked, isFalse,
+          reason: 'the policy engine lets it through; the daily limit stops it');
+      final daily = controller.checkDailyLimitForTest(second);
+      expect(daily, isNotNull);
+      expect(daily!.message, contains('daily trading limit'));
+      expect(daily.message, contains(r'$40.00'));
+      expect(daily.message, contains(r'$30.00 left'));
+      expect(daily.detail, GuardianExecutionController.dailyLimitCode);
+      expect(GuardianExecutionController.isRaisableRefusal(daily.detail),
+          isTrue);
     });
 
-    test('«AI Мандат» and the daily trading limit bound the AI, not the window',
-        () {
-      AiControlService.instance.setSettingsForTest(_tinyAutonomous);
+    test('the window and the AI share one trading budget', () {
+      AiControlService.instance.setSettingsForTest(
+          const AiControlSettings(mode: AiMode.guarded, dailyLimit: 50));
 
-      final own = _swapStep(_windowBuy());
-      expect(controller.checkDailyLimitForTest(own), isNull);
-      expect(controller.checkAiTransactionControlForTest(own), isNull);
-      // The user's own buy does not use up the AI's trading budget.
-      expect(GuardianExecutionController.dailyUsageUsd(own), isNull);
+      // The user's own $40 buy in the window is counted...
+      commit(_swapStep(_windowBuy(amount: 40), amount: 40));
+      // ...so the AI's $20 buy no longer fits, and neither does the window's.
+      expect(controller.checkDailyLimitForTest(_swapStep(_aiBuy)), isNotNull);
+      expect(controller.checkDailyLimitForTest(_swapStep(_windowBuy())),
+          isNotNull);
+      // $10 still fits both.
+      expect(
+          controller.checkDailyLimitForTest(
+              _swapStep(_windowBuy(amount: 10), amount: 10)),
+          isNull);
+    });
 
-      // The same $20 buy by the AI: over the $5 daily limit, outside the
-      // mandate (assets SOL, network solana) and over the $5 position cap.
-      final ai = _swapStep(_aiBuy);
-      expect(controller.checkDailyLimitForTest(ai), isNotNull);
-      expect(controller.checkAiTransactionControlForTest(ai), isNotNull);
-      expect(GuardianExecutionController.dailyUsageUsd(ai), 20);
+    test('«AI Мандат» max position bounds the own buy (in dollars)', () {
+      AiControlService.instance.setSettingsForTest(const AiControlSettings(
+        mode: AiMode.manual,
+        mandate: AutonomyMandate(maxPositionUsd: 10),
+      ));
+
+      final r = controller.checkAiTransactionControlForTest(
+          _swapStep(_windowBuy()));
+      expect(r, isNotNull);
+      expect(r!.message, contains('position cap'));
+      expect(r.message, contains(r'$20.00'));
+      expect(r.detail, GuardianExecutionController.maxPositionCode);
+      expect(GuardianExecutionController.isRaisableRefusal(r.detail), isTrue);
+    });
+
+    test('«AI Мандат» networks / assets / venues bound the own buy', () {
+      final cases = <(AutonomyMandate, String)>[
+        (
+          const AutonomyMandate(allowedNetworks: ['solana']),
+          GuardianExecutionController.mandateNetworkCode,
+        ),
+        (
+          const AutonomyMandate(allowedAssets: ['USDT', 'SOL']),
+          GuardianExecutionController.mandateAssetCode,
+        ),
+        (
+          const AutonomyMandate(allowedVenues: ['0xother']),
+          GuardianExecutionController.mandateVenueCode,
+        ),
+      ];
+      for (final (mandate, code) in cases) {
+        AiControlService.instance.setSettingsForTest(
+            AiControlSettings(mode: AiMode.manual, mandate: mandate));
+        final r = controller.checkAiTransactionControlForTest(
+            _swapStep(_windowBuy()));
+        expect(r, isNotNull, reason: code);
+        expect(r!.detail, code);
+        expect(GuardianExecutionController.isRaisableRefusal(r.detail),
+            isTrue);
+      }
     });
   });
 
@@ -240,10 +525,13 @@ void main() {
         AiControlService.instance.setSettingsForTest(settings);
 
         // PolicyProfile.safe(): swap limit $500.
-        final result = check(_swapStep(_windowBuy(amount: 600), amount: 600));
+        final step = _swapStep(_windowBuy(amount: 600), amount: 600);
+        final result = check(step);
 
         expect(result.blocked, isTrue);
         expect(result.appliedRules, contains('SWAP_PROFILE_LIMIT_EXCEEDED'));
+        expect(GuardianExecutionController.policyRefusalCode(result, step),
+            GuardianExecutionController.swapLimitCode);
       });
     }
 

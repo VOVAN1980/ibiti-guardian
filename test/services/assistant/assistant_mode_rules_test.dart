@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ibiti_guardian/models/app_settings.dart';
 import 'package:ibiti_guardian/models/assistant_directive.dart';
@@ -17,11 +18,15 @@ import 'package:ibiti_guardian/services/assistant/guardian_assistant_service.dar
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
 import 'package:ibiti_guardian/services/execution/ai_onchain_executor.dart';
+import 'package:ibiti_guardian/services/execution/guardian_execution_controller.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/policy/tx_usd_valuer.dart';
 import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/settings/settings_service.dart';
 import 'package:ibiti_guardian/services/swap/zerox_swap_provider.dart';
+import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
+import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// The assistant's rules for the AI modes that sit outside the gate: which
@@ -98,6 +103,41 @@ void main() {
   }
 
   bool sameAddress(String? a, String b) => a?.toLowerCase() == b.toLowerCase();
+
+  /// A real controller refusal outside the «AI Мандат» networks, with the
+  /// code the controller gives it.
+  AssistantResponse mandateRefusal() {
+    final saved = AiControlService.instance.settings;
+    AiControlService.instance.setSettingsForTest(const AiControlSettings(
+      mode: AiMode.guarded,
+      mandate: AutonomyMandate(allowedNetworks: ['tron']),
+    ));
+    try {
+      final refusal = GuardianExecutionController.instance
+          .checkAiTransactionControlForTest(const TransactionRequest(
+        type: TransactionType.send,
+        fromAddress: self,
+        toAddress: recipient,
+        chainId: 56,
+        chainKey: 'bsc',
+        sourceIntent:
+            IntentData(type: IntentType.sendAsset, rawInput: 'send'),
+        tokenSymbol: 'USDT',
+        amount: 10,
+      ));
+      expect(refusal, isNotNull);
+      expect(GuardianExecutionController.isRaisableRefusal(refusal!.detail),
+          true);
+      return refusal;
+    } finally {
+      AiControlService.instance.setSettingsForTest(saved);
+    }
+  }
+
+  /// The «Политика» hint the assistant appends, in the app's language.
+  String raiseHint() => LocalizationService.instance.t('aiExecLimitHint', {
+        'default': 'Want more? Raise the threshold in «Policy» (PIN needed).',
+      });
 
   group('the token the AI trades by itself: the vetted registry first', () {
     test('a look-alike with the same symbol is never bought', () {
@@ -247,19 +287,39 @@ void main() {
       expect(r.uiCommands.first.target, 'wallet_send');
     });
 
-    test('a refused transfer: the reason with the «Политика» hint, nothing '
-        'prefilled', () async {
-      final r = svc.sendWindowResponseForTest(
+    test('a refused transfer over «AI Мандат»: the reason with the '
+        '«Политика» hint, nothing prefilled', () async {
+      final refusal = mandateRefusal();
+      final r = svc.sendWindowResponseForTest(refusal, intent, 'ru');
+      await Future<void>.delayed(Duration.zero);
+      expect(r.type, ResponseType.error);
+      expect(r.message, contains(refusal.message));
+      expect(r.message, contains(raiseHint()));
+      expect(dispatched, isEmpty);
+      expect(r.uiCommands, isEmpty);
+    });
+
+    test('the hint is decided by the refusal\'s code, not its words: in '
+        'any language over a limit, never for another refusal', () async {
+      // The controller's code with a text in a language the old word list
+      // did not know (German).
+      final coded = AssistantResponse.error(
+        'BSC gehört nicht zu den Netzwerken des „KI-Mandats“.',
+        detail: mandateRefusal().detail,
+      );
+      final r = svc.sendWindowResponseForTest(coded, intent, 'de');
+      expect(r.message, contains(raiseHint()));
+
+      // Limit words without the code (not a refusal the user lifts in
+      // «Политика»): no hint.
+      final plain = svc.sendWindowResponseForTest(
         AssistantResponse.error('Over the per-transfer limit.'),
         intent,
         'ru',
       );
+      expect(plain.message, isNot(contains(raiseHint())));
       await Future<void>.delayed(Duration.zero);
-      expect(r.type, ResponseType.error);
-      expect(r.message, contains('Over the per-transfer limit.'));
-      expect(r.message, contains('поднимите порог в «Политике»'));
       expect(dispatched, isEmpty);
-      expect(r.uiCommands, isEmpty);
     });
 
     test('«Открытие окон» off: says so, nothing prefilled', () async {
@@ -479,16 +539,35 @@ void main() {
           executionPath: ExecutionPath.localProtected,
         );
 
-    setUp(() {
+    setUp(() async {
       AiControlService.instance.setSettingsForTest(
         const AiControlSettings(mode: AiMode.fullAutonomy),
       );
       // CAKE has no price; stablecoins are 1:1.
       TxUsdValuer.priceOverrideForTest =
           (tx) => tx.tokenSymbol == 'CAKE' ? null : 1.0;
+      // An unlocked wallet with EPK on: the gate lets the window open.
+      FlutterSecureStorage.setMockInitialValues({});
+      IBITIVaultService.instance.setVaultCreatedForTest(evmAddress: self);
+      await EPKPolicyManager.instance.resumeProtection();
     });
 
     tearDown(() => TxUsdValuer.priceOverrideForTest = null);
+
+    test('EPK paused: no window, the reason and the way to do it yourself',
+        () async {
+      await EPKPolicyManager.instance.emergencyPause();
+      addTearDown(EPKPolicyManager.instance.resumeProtection);
+      final r = svc.chatUnknownValueWindowForTest(
+          preview(cakeSend, vettedCake), cakeSend, 'ru');
+      await Future<void>.delayed(Duration.zero);
+      expect(r, isNotNull);
+      expect(r!.type, ResponseType.info);
+      expect(r.message, contains('EPK'));
+      expect(r.message, contains('wallet window'));
+      expect(r.message, isNot(contains('Открываю заполненное окно')));
+      expect(dispatched, isEmpty);
+    });
 
     test('an unpriced transfer: the reason and the filled send window, no '
         'card to run', () async {

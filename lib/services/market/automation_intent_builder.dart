@@ -5,6 +5,7 @@ import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/models/wallet_asset.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 import 'package:ibiti_guardian/services/adapters/wallet_adapter.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/market/token_registry_service.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
 import 'package:ibiti_guardian/services/swap/zerox_swap_provider.dart';
@@ -69,6 +70,9 @@ class AutomationIntentBlocked extends AutomationIntentResult {
 /// airdropped look-alike has the same symbol, and wallet prices are looked
 /// up by symbol. A token that is not vetted is blocked with a reason
 /// meaning "cannot be resolved reliably" (D17: the window opens instead).
+/// For «Делегировать AI» ([buildBuyForSymbol]) the reason is the queue
+/// item's user-facing text: the coin is not in the verified token list,
+/// and the user can buy it in the Wallet / Market window.
 ///
 /// ## Safety
 /// - Unknown chainId → blocked (no silent eth fallback — Phase 5d fix).
@@ -165,9 +169,18 @@ class AutomationIntentBuilder {
     );
 
     if (!targetResolution.found) {
+      // «Делегировать AI» shows this as the item's reason: say plainly why
+      // the AI does not buy it, and that the user still can (D17).
+      final network = _networkName(sourceChainKey);
       return AutomationIntentBlocked(
-        '$symbol cannot be resolved reliably on '
-        '${_networkName(sourceChainKey)}: it is not in the vetted token list.',
+        LocalizationService.instance.t('dispatchTokenNotVerified', {
+          'asset': symbol,
+          'network': network,
+          'default': '$symbol is not in the app\'s verified token list on '
+              '$network, so the AI does not buy it by itself (a fake token '
+              'can have the same name). You can buy it yourself in the '
+              'Wallet or Market window.',
+        }),
       );
     }
 
