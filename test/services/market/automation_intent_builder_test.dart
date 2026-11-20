@@ -184,7 +184,8 @@ void main() {
       );
     });
 
-    test('a network outside «AI Мандат» is refused', () {
+    test('a network outside «AI Мандат» is refused (a refusal, no window)',
+        () {
       AiControlService.instance.setSettingsForTest(const AiControlSettings(
         mode: AiMode.fullAutonomy,
         mandate: AutonomyMandate(allowedNetworks: ['eth']),
@@ -192,11 +193,135 @@ void main() {
       _portfolio([
         _asset(symbol: 'USDT', address: _usdtBsc, balance: 200, price: 1),
       ]);
+      final r = AutomationIntentBuilder.buildTrade(
+          symbol: 'CAKE', isBuy: true, amountUsd: 10);
+      expect(r, isA<AutomationIntentBlocked>());
+      expect((r as AutomationIntentBlocked).outsideMandate, isTrue);
+    });
+
+    test('a coin that cannot be resolved is a D17 block, not a refusal', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 200, price: 1),
+      ]);
+      final r = AutomationIntentBuilder.buildTrade(
+          symbol: 'NOSUCHCOIN', isBuy: true, amountUsd: 10);
+      expect((r as AutomationIntentBlocked).outsideMandate, isFalse);
+      expect(r.reason, contains('cannot be resolved reliably'));
+    });
+  });
+
+  group('look-alike tokens are never traded by the AI', () {
+    // An airdropped fake: same symbol, its own contract. Wallet prices are
+    // looked up by symbol, so it even shows the real coin's price.
+    const fakeCake = '0x5ca3000000000000000000000000000000005ca3';
+    const fakeUsdt = '0xfa4e000000000000000000000000000000000001';
+
+    test('a buy targets the vetted contract, not a held look-alike', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 200, price: 1),
+        _asset(symbol: 'CAKE', address: fakeCake, balance: 1e9, price: 2),
+      ]);
+      final r = AutomationIntentBuilder.buildTrade(
+          symbol: 'CAKE', isBuy: true, amountUsd: 20);
+      final ready = r as AutomationIntentReady;
+      expect(ready.intent.targetTokenAddress, _cakeBsc);
+      expect(ready.intent.targetTokenDecimals, 18);
+    });
+
+    test('selling only a look-alike cannot be resolved reliably (D17)', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 5, price: 1),
+        _asset(symbol: 'CAKE', address: fakeCake, balance: 100, price: 2),
+      ]);
+      final r = AutomationIntentBuilder.buildTrade(
+          symbol: 'CAKE', isBuy: false, quantity: 10);
+      expect(r, isA<AutomationIntentBlocked>());
+      expect((r as AutomationIntentBlocked).reason,
+          contains('cannot be resolved reliably'));
+      expect(r.outsideMandate, isFalse);
+    });
+
+    test('selling the real one ignores a look-alike next to it', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 5, price: 1),
+        _asset(symbol: 'CAKE', address: fakeCake, balance: 1e9, price: 2),
+        _asset(symbol: 'CAKE', address: _cakeBsc, balance: 10, price: 2),
+      ]);
+      final r = AutomationIntentBuilder.buildTrade(
+          symbol: 'CAKE', isBuy: false, quantity: 4);
+      final ready = r as AutomationIntentReady;
+      expect(ready.intent.sourceTokenAddress, _cakeBsc);
+      expect(ready.sourceAsset?.address, _cakeBsc);
+      // More than the real balance is refused, whatever the fake holds.
       expect(
         AutomationIntentBuilder.buildTrade(
-            symbol: 'CAKE', isBuy: true, amountUsd: 10),
+            symbol: 'CAKE', isBuy: false, quantity: 50),
         isA<AutomationIntentBlocked>(),
       );
+    });
+
+    test('a fake "USDT" never pays and never receives', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: fakeUsdt, balance: 1e6, price: 1),
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 50, price: 1),
+        _asset(symbol: 'CAKE', address: _cakeBsc, balance: 10, price: 2),
+      ]);
+      final buy = AutomationIntentBuilder.buildTrade(
+          symbol: 'CAKE', isBuy: true, amountUsd: 20) as AutomationIntentReady;
+      expect(buy.intent.sourceTokenAddress, _usdtBsc);
+
+      final sell = AutomationIntentBuilder.buildTrade(
+          symbol: 'CAKE', isBuy: false, quantity: 2) as AutomationIntentReady;
+      expect(sell.intent.targetTokenAddress, _usdtBsc);
+
+      // Only the fake one held: the sale goes into the vetted USDT.
+      _portfolio([
+        _asset(symbol: 'USDT', address: fakeUsdt, balance: 1e6, price: 1),
+        _asset(symbol: 'CAKE', address: _cakeBsc, balance: 10, price: 2),
+      ]);
+      final onlyFake = AutomationIntentBuilder.buildTrade(
+          symbol: 'CAKE', isBuy: false, quantity: 2) as AutomationIntentReady;
+      expect(onlyFake.intent.targetTokenAddress, _usdtBsc);
+      // … and a buy has nothing real to pay with.
+      expect(
+        AutomationIntentBuilder.buildTrade(
+            symbol: 'CAKE', isBuy: true, amountUsd: 20),
+        isA<AutomationIntentBlocked>(),
+      );
+    });
+
+    test('a token named like the native coin is not the native balance', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 50, price: 1),
+        _asset(
+            symbol: 'BNB',
+            address: '0xb7b0000000000000000000000000000000000b7b',
+            balance: 1000,
+            price: 600),
+      ]);
+      expect(
+        AutomationIntentBuilder.buildTrade(
+            symbol: 'BNB', isBuy: false, quantity: 1),
+        isA<AutomationIntentBlocked>(),
+      );
+    });
+
+    test('a held token that is not vetted is not traded by the AI (D17)', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 50, price: 1),
+        _asset(
+            symbol: 'FLOKI',
+            address: '0xfb5b838b6cfeedc2873ab27866079ac55363d37e',
+            balance: 1000,
+            price: 0.0001),
+      ]);
+      for (final isBuy in [true, false]) {
+        final r = AutomationIntentBuilder.buildTrade(
+            symbol: 'FLOKI', isBuy: isBuy, quantity: 10);
+        expect(r, isA<AutomationIntentBlocked>(), reason: 'isBuy $isBuy');
+        expect((r as AutomationIntentBlocked).reason,
+            contains('cannot be resolved reliably'));
+      }
     });
   });
 
@@ -211,6 +336,76 @@ void main() {
       expect(ready.sourceAsset?.symbol, 'USDT');
       expect(ready.intent.amount, 100); // default max position $100
       expect(ready.valueUsd, 100);
+    });
+
+    test('«Делегировать AI» buys the vetted token, not a held look-alike', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 500, price: 1),
+        // Valued by its symbol: it must not use up the position either.
+        _asset(
+            symbol: 'CAKE',
+            address: '0x5ca3000000000000000000000000000000005ca3',
+            balance: 1e9,
+            price: 2),
+      ]);
+      final ready =
+          AutomationIntentBuilder.buildBuyForSymbol('CAKE') as AutomationIntentReady;
+      expect(ready.intent.targetTokenAddress, _cakeBsc);
+      expect(ready.intent.amount, 100);
+    });
+
+    test('the real position counts against the max position', () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 500, price: 1),
+        _asset(symbol: 'CAKE', address: _cakeBsc, balance: 30, price: 2),
+      ]);
+      final ready =
+          AutomationIntentBuilder.buildBuyForSymbol('CAKE') as AutomationIntentReady;
+      expect(ready.intent.amount, closeTo(40, 1e-9)); // $100 − $60 held
+    });
+
+    test('a fake "USDT" is never the paying token', () {
+      _portfolio([
+        _asset(
+            symbol: 'USDT',
+            address: '0xfa4e000000000000000000000000000000000001',
+            balance: 1e6,
+            price: 1),
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 80, price: 1),
+      ]);
+      final ready =
+          AutomationIntentBuilder.buildBuyForSymbol('CAKE') as AutomationIntentReady;
+      expect(ready.sourceAsset?.address, _usdtBsc);
+      expect(ready.intent.sourceTokenAddress, _usdtBsc);
+      expect(ready.intent.amount, 80); // the real balance, not the fake's
+    });
+
+    test('a token that is not vetted is blocked, never taken from holdings',
+        () {
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 500, price: 1),
+        _asset(
+            symbol: 'FLOKI',
+            address: '0xfb5b838b6cfeedc2873ab27866079ac55363d37e',
+            balance: 1000,
+            price: 0.0001),
+      ]);
+      final r = AutomationIntentBuilder.buildBuyForSymbol('FLOKI');
+      expect(r, isA<AutomationIntentBlocked>());
+      expect((r as AutomationIntentBlocked).reason,
+          contains('cannot be resolved reliably'));
+    });
+
+    test('a network outside «AI Мандат» is a refusal', () {
+      AiControlService.instance.setSettingsForTest(const AiControlSettings(
+        mode: AiMode.fullAutonomy,
+        mandate: AutonomyMandate(allowedNetworks: ['eth']),
+      ));
+      _portfolio([
+        _asset(symbol: 'USDT', address: _usdtBsc, balance: 500, price: 1),
+      ]);
+      final r = AutomationIntentBuilder.buildBuyForSymbol('CAKE');
+      expect((r as AutomationIntentBlocked).outsideMandate, isTrue);
     });
   });
 }

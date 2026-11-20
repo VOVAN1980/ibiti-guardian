@@ -3,6 +3,9 @@
 //
 // Run: flutter test test/services/market/automation_dispatch_gate_test.dart
 
+import 'dart:async';
+
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ibiti_guardian/models/assistant_response.dart';
@@ -20,6 +23,7 @@ import 'package:ibiti_guardian/services/market/market_data_service.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
 import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
+import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -170,6 +174,7 @@ void main() {
     nextResult = (_) => const AiExecResult(
           executed: false,
           cancelled: true,
+          declined: true,
           message: 'Cancelled. Nothing was done.',
           gateOutcome: AiGateOutcome.cancelled,
         );
@@ -203,6 +208,145 @@ void main() {
     final item = enqueue();
     await dispatch.processNextForTest();
     expect(current(item.id).status, DispatchStatus.pending);
+  });
+
+  test(
+      'a card closed by the app going to the background, or unanswered '
+      'until it timed out, is not a decline: the item stays pending',
+      () async {
+    for (final why in [
+      'The confirmation was closed (the app or the AI mode changed).',
+      'The confirmation expired. Nothing was done.',
+    ]) {
+      nextResult = (_) => AiExecResult(
+            executed: false,
+            interrupted: true,
+            message: why,
+            gateOutcome: AiGateOutcome.cancelled,
+          );
+      final item = enqueue();
+      await dispatch.processNextForTest();
+      final after = current(item.id);
+      expect(after.status, DispatchStatus.pending, reason: why);
+      expect(after.blockReason, isNull, reason: why);
+      dispatch.cancelItem(item.id); // make room for the next round
+    }
+  });
+
+  test('a stop that is not a «нет» keeps its own reason', () async {
+    const why = 'The AI mode is no longer «Autonomous». Nothing was sent.';
+    nextResult = (_) => const AiExecResult(
+          executed: false,
+          cancelled: true,
+          message: why,
+          gateOutcome: AiGateOutcome.execute,
+        );
+    final item = enqueue();
+    await dispatch.processNextForTest();
+    final resolved = current(item.id);
+    expect(resolved.status, DispatchStatus.blocked);
+    expect(resolved.blockReason, why);
+  });
+
+  group('end to end through the real executor and gate', () {
+    late List<String> sent;
+
+    setUp(() async {
+      sent = [];
+      await EPKPolicyManager.instance.resumeProtection();
+      dispatch.executeOverride = null;
+      final executor = AiOnchainExecutor.instance;
+      executor.resetForTest();
+      executor.privySessionOverride = () async => true;
+      executor.preflightOverride = (_) => null;
+      Future<AssistantResponse> record(TransactionRequest step) async {
+        sent.add(step.type.name);
+        return const AssistantResponse(
+          message: 'sent',
+          type: ResponseType.action,
+          detail: '0x5a5',
+        );
+      }
+
+      executor.txRunnerOverride =
+          (tx, path, {required requireTrustedTarget}) => record(tx);
+      executor.swapStepRunnerOverride =
+          (step, path, {required requireTrustedTarget}) => record(step);
+      AiActionGate.instance.foregroundOverride = () => true;
+      AiActionGate.instance.notifyOverride = (title, body) {};
+    });
+
+    tearDown(() {
+      AiOnchainExecutor.instance.resetForTest();
+      AiActionGate.instance.resetForTest();
+    });
+
+    test('the app goes to the background while the card is open: pending',
+        () async {
+      final binding = TestWidgetsFlutterBinding.instance;
+      addTearDown(() =>
+          binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed));
+      AiActionGate.instance.confirmUiOverride = (_) {
+        // The user locks the phone while the card is on the screen.
+        binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+        return Completer<bool>().future;
+      };
+      final item = enqueue();
+      await dispatch.processNextForTest();
+      final after = current(item.id);
+      expect(after.status, DispatchStatus.pending);
+      expect(after.blockReason, isNull);
+      expect(sent, isEmpty);
+      expect(AiActionGate.instance.isBusy, isFalse);
+    });
+
+    test('the card is left unanswered until it times out: pending', () async {
+      AiActionGate.instance.cardTimeoutOverride =
+          const Duration(milliseconds: 20);
+      AiActionGate.instance.confirmUiOverride =
+          (_) => Completer<bool>().future;
+      final item = enqueue();
+      await dispatch.processNextForTest();
+      expect(current(item.id).status, DispatchStatus.pending);
+      expect(sent, isEmpty);
+    });
+
+    test('the mode switched while the card was open: not a decline',
+        () async {
+      AiActionGate.instance.confirmUiOverride = (_) {
+        AiControlService.instance.setSettingsForTest(const AiControlSettings(
+          mode: AiMode.guarded,
+          dailyLimit: 10000,
+        ));
+        return Completer<bool>().future;
+      };
+      final item = enqueue();
+      await dispatch.processNextForTest();
+      final resolved = current(item.id);
+      expect(resolved.status, DispatchStatus.blocked);
+      expect(resolved.blockReason, isNot('Declined by user.'));
+      expect(sent, isEmpty);
+    });
+
+    test('«Отмена» on the card: "Declined by user."', () async {
+      AiActionGate.instance.confirmUiOverride = (_) async => false;
+      final item = enqueue();
+      await dispatch.processNextForTest();
+      final resolved = current(item.id);
+      expect(resolved.status, DispatchStatus.blocked);
+      expect(resolved.blockReason, 'Declined by user.');
+      expect(sent, isEmpty);
+    });
+
+    test('confirmed on the card: the swap is sent and the item is done',
+        () async {
+      AiActionGate.instance.confirmUiOverride = (_) async => true;
+      final item = enqueue();
+      await dispatch.processNextForTest();
+      expect(current(item.id).status, DispatchStatus.done);
+      expect(sent, ['swap']);
+      expect(AiActionGate.instance.isBusy, isFalse);
+    });
   });
 
   test("the user's Cancel while the card is open wins (C18)", () async {

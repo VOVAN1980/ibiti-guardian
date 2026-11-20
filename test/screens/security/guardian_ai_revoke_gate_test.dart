@@ -27,14 +27,18 @@ import 'package:shared_preferences/shared_preferences.dart';
 const _wallet = '0x1111111111111111111111111111111111111111';
 const _token = '0x2222222222222222222222222222222222222222';
 
+const _spender2 = '0x4444444444444444444444444444444444444444';
+
 /// A risky approval: Safe mode lists and preselects it.
-ApprovalData _approval() => ApprovalData(
-    token: _token,
-    spenderAddress: '0x3333333333333333333333333333333333333333',
-    spender: 'Test spender',
-    allowance: BigInt.from(10),
-    tokenSymbol: 'TEST',
-    walletAddress: _wallet);
+ApprovalData _approval(
+        {String spender = '0x3333333333333333333333333333333333333333'}) =>
+    ApprovalData(
+        token: _token,
+        spenderAddress: spender,
+        spender: 'Test spender',
+        allowance: BigInt.from(10),
+        tokenSymbol: 'TEST',
+        walletAddress: _wallet);
 
 /// Answers every scan at once with one risky approval.
 class _Source implements ApprovalSource {
@@ -42,6 +46,15 @@ class _Source implements ApprovalSource {
   Future<List<ApprovalData>> fetch(String wallet,
           {required int chainId, String? targetTokenAddress}) async =>
       [_approval()];
+}
+
+/// Two risky approvals: the queue waits 600 ms between the two revokes, so
+/// the window can be closed while the queue is still revoking.
+class _TwoSource implements ApprovalSource {
+  @override
+  Future<List<ApprovalData>> fetch(String wallet,
+          {required int chainId, String? targetTokenAddress}) async =>
+      [_approval(), _approval(spender: _spender2)];
 }
 
 void main() {
@@ -365,6 +378,68 @@ void main() {
       expect(revokeStarted(), isTrue);
       gate.release(held);
     });
+
+    // Review finding (guardian_control_screen.dart:316): closing the window
+    // (Android Back / «закрой» = maybePop) while the gated revokes run must
+    // neither free the AI lock early nor drop the report — the queue keeps
+    // revoking in the TransactionQueue singleton.
+    testWidgets(
+        '«Автономный»: closing the window mid-queue keeps the AI lock and '
+        'the report still comes when the queue finishes', (tester) async {
+      setMode(AiMode.fullAutonomy, pin: false);
+      ApprovalScanService.sourceOverride = _TwoSource();
+      await openByAi(tester);
+      expect(
+          find.text(LocalizationService.instance
+              .t('guardianBtnRevokeSelected', {'count': '2'})),
+          findsOneWidget);
+
+      await tester.tap(find.byType(ElevatedButton));
+      await tester.pump();
+      // The first revoke has its answer; the queue waits 600 ms before the
+      // second one.
+      expect(TransactionQueue().isRunning, isTrue);
+      expect(gate.isBusy, isTrue, reason: 'the gated queue holds the AI lock');
+      expect(aiAuditLabels(), isEmpty);
+
+      // What Android Back and the shell's «закрой» do.
+      final badge = find.textContaining('AI · ');
+      expect(badge, findsOneWidget);
+      final navigator =
+          Navigator.of(tester.element(badge), rootNavigator: true);
+      expect(await navigator.maybePop(), isTrue);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('AI · '), findsNothing,
+          reason: 'the window is closed');
+
+      // Still revoking: the lock is held and nothing is reported yet.
+      expect(TransactionQueue().isRunning, isTrue);
+      expect(gate.isBusy, isTrue, reason: 'closing must not free the lock');
+      expect(aiAuditLabels(), isEmpty);
+      final other = await gate.confirm(revokeSummary);
+      expect(other.outcome, AiGateOutcome.busy,
+          reason: 'one AI money action at a time (D13)');
+
+      // The queue finishes without the window: the report still comes, once.
+      for (var i = 0; i < 3; i++) {
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(TransactionQueue().isRunning, isFalse);
+      expect(
+          TransactionQueue()
+              .currentJobs
+              .where((j) => j.status == RevokeJobStatus.failed),
+          hasLength(2),
+          reason: 'both revokes ran (offline: both failed)');
+      expect(
+          aiAuditLabels().where((l) => l == 'AI_EXECUTION_FAILED'), hasLength(1));
+      expect(notified, isEmpty, reason: 'nothing was revoked');
+      expect(gate.isBusy, isFalse, reason: 'the report released the lock');
+      final next = await gate.confirm(revokeSummary);
+      expect(next.outcome, AiGateOutcome.execute);
+      gate.release(next);
+    });
   });
 
   group('GuardianFlowController.confirmAction', () {
@@ -404,6 +479,56 @@ void main() {
       expect(results.single.successCount, 0);
       expect(results.single.failedCount, 1);
       controller.dispose();
+    });
+
+    test('the window closing (dispose) mid-queue does not drop the report',
+        () async {
+      final controller = GuardianFlowController();
+      final results = <RevokeProgress>[];
+      var progressEvents = 0;
+      final first = _approval();
+      final second = _approval(spender: _spender2);
+      controller.model = GuardianFlowModel(
+        mode: GuardianMode.safe,
+        state: GuardianFlowState.readyReview,
+        all: [first, second],
+        warnings: [first, second],
+        selected: [first, second],
+      );
+
+      expect(
+          controller.confirmAction(
+            onFinished: results.add,
+            onProgress: (_) => progressEvents++,
+          ),
+          isTrue);
+      expect(controller.isQueueActive, isTrue);
+      expect(controller.startedJobs.map((j) => j.approval),
+          [same(first), same(second)]);
+      // The window closes while the queue is still revoking.
+      controller.dispose();
+      expect(TransactionQueue().isRunning, isTrue);
+
+      await Future<void>.delayed(const Duration(seconds: 2));
+
+      expect(results, hasLength(1), reason: 'reported once, after dispose');
+      expect(results.single.failedCount, 2);
+      expect(progressEvents, greaterThan(0),
+          reason: 'progress kept flowing (the AI lock is kept alive by it)');
+      expect(controller.isQueueActive, isFalse);
+      expect(
+          controller.startedJobs
+              .every((j) => j.status == RevokeJobStatus.failed),
+          isTrue);
+      expect(TransactionQueue().isRunning, isFalse);
+    });
+
+    test('dispose without a running queue stops everything at once', () {
+      final controller = GuardianFlowController();
+      expect(controller.isQueueActive, isFalse);
+      controller.dispose();
+      expect(controller.confirmAction(), isFalse);
+      expect(TransactionQueue().currentJobs, isEmpty);
     });
   });
 }

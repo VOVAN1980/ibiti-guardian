@@ -132,14 +132,56 @@ void main() {
     expect(find.text('777'), findsOneWidget);
   });
 
-  testWidgets('a card\'s own history has no exchange orders or chip',
+  // D10 + review finding (wallet_transaction_history_screen.dart:71): orders
+  // are not tied to a card address. The history the user opens by hand
+  // (Wallet → card → «История транзакций», with the card's address) shows
+  // them — the AI's and the user's own — and the «Биржа» chip too.
+  testWidgets(
+      'a card\'s history (opened by hand) shows exchange orders and the chip',
       (tester) async {
+    // Real async storage work must run outside the widget test's fake clock.
+    await tester.runAsync(() => store.record(
+      exchange: 'binance',
+      symbol: 'ETH',
+      quote: 'USDT',
+      isBuy: true,
+      amount: 15,
+      price: 3000,
+      executedQty: 0.005,
+      status: ExchangeOrderRecord.statusFilled,
+      byAi: false, // the user's own order from the Market window
+      orderId: '888',
+      time: DateTime.utc(2026, 10, 10, 0, 0, 10),
+    ));
     await tester.pumpWidget(const MaterialApp(
         home: WalletTransactionHistoryScreen(walletAddress: _wallet)));
     await tester.pumpAndSettle();
-    expect(find.text(bought('SOL')), findsNothing);
-    expect(find.text(t.t('txFilterExchange', {'default': 'Exchange'})),
-        findsNothing);
+    expect(find.text(bought('SOL')), findsOneWidget, reason: 'the AI order');
+    expect(find.text(bought('ETH')), findsOneWidget, reason: 'the user order');
     expect(find.text(receivedRow()), findsOneWidget);
+
+    final chip = t.t('txFilterExchange', {'default': 'Exchange'});
+    final chipList = find.byWidgetPredicate(
+        (w) => w is ListView && w.scrollDirection == Axis.horizontal);
+    await tester.dragUntilVisible(
+        find.descendant(of: chipList, matching: find.text(chip)),
+        chipList,
+        const Offset(-120, 0));
+    await tester.pumpAndSettle();
+    await tester.tap(find.descendant(of: chipList, matching: find.text(chip)));
+    await tester.pumpAndSettle();
+    expect(find.text(bought('SOL')), findsOneWidget);
+    expect(find.text(bought('ETH')), findsOneWidget);
+    expect(find.text(receivedRow()), findsNothing);
+  });
+
+  testWidgets('a card\'s history also opens the order the notification names',
+      (tester) async {
+    await tester.pumpWidget(MaterialApp(
+        home: WalletTransactionHistoryScreen(
+            walletAddress: _wallet, focusId: orderId)));
+    await tester.pumpAndSettle();
+    expect(find.text(detailTitle()), findsOneWidget);
+    expect(find.text('777'), findsOneWidget);
   });
 }

@@ -117,7 +117,7 @@ class GuardianExecutionController {
     }
   }
 
-  // в”Ђв”Ђв”Ђ Phase 6 Orchestration Pipeline в”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђв”Ђ
+  // ─── Phase 6 Orchestration Pipeline ─────────────────────────────────────────
 
   /// A complete send the builder still refused: the token does not exist on
   /// the active network (e.g. SOL while on BSC). Explain instead of a bare
@@ -184,9 +184,13 @@ class GuardianExecutionController {
       return AssistantResponse.error('Could not build this transaction.',
           intent: intent);
     }
+    // A preview never measures the AI limits in token units: without a
+    // price the AI's own run is refused in [aiPreflight], and an operation
+    // the user confirms is checked again when it is confirmed.
     final aiTxGate = _checkAiTransactionControl(
       tx,
       TransactionSimulator.analyze(tx),
+      quantityFallback: false,
     );
     if (aiTxGate != null) {
       return aiTxGate;
@@ -301,6 +305,14 @@ class GuardianExecutionController {
     required String sandboxReason,
     required AssistantResponse Function() demote,
   }) async {
+    // The AI never acts on an unknown USD value: the daily limit and the
+    // position cap are dollars, and a token quantity is not (D7). The user
+    // reviews it instead (D17): no card, no lock, nothing reserved.
+    if (aiValueUnknown(tx)) {
+      _log.w('automation demoted: no USD value for ${tx.displaySummary}');
+      return demote();
+    }
+
     // The AI action gate comes FIRST (C2): a card left open must not
     // hold a budget reservation, whose TTL would silently free it.
     // The gate holds the one AI money-action lock until reportExecuted.
@@ -333,11 +345,25 @@ class GuardianExecutionController {
         return AssistantResponse.error(noPinBlock, intent: intent);
       }
     }
+    // Signing can take a while: the one AI money-action lock stays with
+    // this decision until the result is reported (D13). A decision that is
+    // no longer live (timed out, released) sends nothing.
+    if (!gate.keepAlive(aiDecision)) {
+      gate.release(aiDecision);
+      return AssistantResponse.error(
+        LocalizationService.instance.t('aiExecNotBound', {
+          'default':
+              'The confirmation does not match this operation. Nothing was sent.',
+        }),
+        intent: intent,
+      );
+    }
 
     // Reserve daily budget BEFORE execution (atomic lock), in dollars
-    // like every other daily-limit check (a token quantity is not $).
+    // like every other daily-limit check (a token quantity is not $; an
+    // unknown value never gets here).
     final reservationKey = _delegation.generateReservationKey(tx);
-    final txAmount = TxUsdValuer.limitAmount(tx);
+    final txAmount = TxUsdValuer.usdValue(tx) ?? 0.0;
     if (txAmount > 0) {
       final reserved = _delegation.reserveSpend(reservationKey, txAmount);
       if (reserved == null) {
@@ -796,10 +822,13 @@ class GuardianExecutionController {
         intent: resolvedIntent,
       );
     }
+    // A preview never measures the AI limits in token units (see
+    // [orchestrate]); the confirmation checks again.
     if (plan.approveStep != null) {
       final approveGate = _checkAiTransactionControl(
         plan.approveStep!,
         TransactionSimulator.analyze(plan.approveStep!),
+        quantityFallback: false,
       );
       if (approveGate != null) {
         return approveGate;
@@ -810,7 +839,8 @@ class GuardianExecutionController {
     if (kDebugMode)
       print('[SwapOrchestrator] staticSim risk=${staticSim.risk}, '
           'isEvmChain=${plan.swapStep.isEvmChain}');
-    final swapGate = _checkAiTransactionControl(plan.swapStep, staticSim);
+    final swapGate = _checkAiTransactionControl(plan.swapStep, staticSim,
+        quantityFallback: false);
     if (swapGate != null) {
       if (kDebugMode)
         print('[SwapOrchestrator] ❌ AI control gate blocked swap preview');
@@ -1094,34 +1124,72 @@ class GuardianExecutionController {
   // ── P0 Safety: Daily limit pre-check ────────────────────────────────────────
   // Enforces AiControlSettings.dailyLimit BEFORE execution, not just after.
   // DelegationController tracks cumulative spend; this gates the pipeline.
+  //
+  // The limit is in dollars. The AI never runs an operation by itself with
+  // an unknown USD value ([aiPreflight] and the automation path refuse it
+  // first). An operation the user confirms themselves (the Buy / Sell
+  // window, a chat card in «Ручной») keeps the old stand-in when there is
+  // no price: the token quantity is compared as if it were dollars — never
+  // looser than before — and the message says so instead of showing the
+  // quantity as "$".
   AssistantResponse? _checkDailyLimit(TransactionRequest tx) {
-    final amount = TxUsdValuer.limitAmount(tx);
+    // Daily TRADING limit only — the user's own wallet window is bounded by
+    // the wallet send/swap/approve limits, not the trading budget.
+    if (GuardianPolicyEngine.isUserWalletTx(tx)) return null;
+
+    final usd = _finiteUsd(TxUsdValuer.usdValue(tx));
+    final amount = usd ?? tx.amount ?? 0.0;
     if (amount <= 0) return null;
 
-    // Daily TRADING limit only — plain wallet operations are bounded by their
-    // own send/swap limits, not the trading budget.
-    if (tx.sourceIntent.origin == IntentOrigin.wallet) return null;
+    // DelegationController is the authoritative accumulator (committed
+    // usage + in-flight reservations).
+    if (_delegation.canSpend(amount)) return null;
 
-    final settings = AiControlService.instance.settings;
-    final dailyLimit = settings.dailyLimit;
-
-    // Check if adding this amount would exceed the daily limit.
-    // DelegationController._usedTodayUsd is the authoritative accumulator.
-    if (!_delegation.canSpend(amount)) {
-      return AssistantResponse.error(
-        'This transaction (\$${amount.toStringAsFixed(2)}) would exceed your '
-        'daily AI limit of \$${dailyLimit.toStringAsFixed(0)}. '
-        '${_delegation.usageSummary()}',
-        intent: tx.sourceIntent,
-      );
+    final remaining = _delegation.remainingBudgetUsd;
+    final left = _usd(remaining < 0 ? 0 : remaining);
+    final loc = LocalizationService.instance;
+    final String message;
+    if (usd != null) {
+      final value = _usd(usd);
+      message = loc.t('aiGateBlockedDaily', {
+        'value': value,
+        'left': left,
+        'default':
+            'Over the daily trading limit: this needs $value, $left left today.',
+      });
+    } else {
+      final token = _symbolOf(tx);
+      final quantity = _fmtQuantity(amount);
+      final asUsd = _usd(amount);
+      message = loc.t('aiDailyLimitNoPrice', {
+        'token': token,
+        'amount': quantity,
+        'amountUsd': asUsd,
+        'left': left,
+        'default': 'Over the daily trading limit: $token has no price, so '
+            '$quantity $token is counted as $asUsd; $left left today.',
+      });
     }
-    return null;
+    return AssistantResponse.error(message, intent: tx.sourceIntent);
   }
 
   AssistantResponse? _checkAiIntentControl(IntentData intent) {
+    final settings = AiControlService.instance.settings;
+
+    // «Советник»: the AI starts no scan either (D2). Only the assistant
+    // comes through here; the user runs Safe Scan in «Защита» themselves.
+    if (intent.type == IntentType.scanApprovals &&
+        settings.mode == AiMode.manual) {
+      final message = LocalizationService.instance.t('aiAdvisorNoScan', {
+        'default': 'The «Advisor» mode is on: I can explain the risks but do '
+            'not run the scan. Start Safe Scan in the «Security» tab '
+            'yourself, or choose «Manual».',
+      });
+      return AssistantResponse.info(message, intent: intent);
+    }
+
     if (!intent.isExecutionIntent) return null;
 
-    final settings = AiControlService.instance.settings;
     if (settings.mode == AiMode.manual) {
       return AssistantResponse(
         message: 'Advisor mode is on: the AI only advises and will not act. '
@@ -1158,24 +1226,175 @@ class GuardianExecutionController {
   /// budget. Before, only the pre-check ran, so every operation saw a fresh
   /// budget and the "daily" limit was really a per-operation one.
   void _commitDailyUsage(TransactionRequest tx, AssistantResponse result) {
-    if (tx.sourceIntent.origin == IntentOrigin.wallet) return;
+    if (result.type == ResponseType.error) return;
+    final usd = dailyUsageUsd(tx);
+    if (usd != null) {
+      _delegation.commitUsage(usd);
+    } else if (!GuardianPolicyEngine.isUserWalletTx(tx) &&
+        (tx.type == TransactionType.send || tx.type == TransactionType.swap) &&
+        (tx.amount ?? 0) > 0) {
+      _log.w('daily usage not counted: no USD value for ${tx.displaySummary}');
+    }
+  }
+
+  /// What a successful [tx] adds to today's trading budget, in dollars, or
+  /// null when it adds nothing: the user's own wallet window, approvals and
+  /// revokes, and an unknown USD value — a token quantity is never added to
+  /// the dollar budget.
+  @visibleForTesting
+  static double? dailyUsageUsd(TransactionRequest tx) {
+    if (GuardianPolicyEngine.isUserWalletTx(tx)) return null;
     if (tx.type == TransactionType.approve ||
         tx.type == TransactionType.revoke) {
-      return;
+      return null;
     }
-    if (result.type == ResponseType.error) return;
-    final usd = TxUsdValuer.limitAmount(tx);
-    if (usd > 0) _delegation.commitUsage(usd);
+    final usd = _finiteUsd(TxUsdValuer.usdValue(tx));
+    return usd != null && usd > 0 ? usd : null;
   }
+
+  /// The daily-limit check of an operation the user confirms (chat card,
+  /// Buy / Sell window): see [_checkDailyLimit].
+  @visibleForTesting
+  AssistantResponse? checkDailyLimitForTest(TransactionRequest tx) =>
+      _checkDailyLimit(tx);
+
+  /// AI Control for a preview / an operation the user confirms: see
+  /// [_checkAiTransactionControl] (token-quantity stand-in without a price).
+  @visibleForTesting
+  AssistantResponse? checkAiTransactionControlForTest(TransactionRequest tx) =>
+      _checkAiTransactionControl(tx, TransactionSimulator.analyze(tx));
 
   // ── AI execution checks (public for AiOnchainExecutor) ─────────────────────
 
-  /// The controller's AI checks for [tx] before anything is shown or signed:
-  /// the daily trading limit, then AI Control (permissions, actions,
-  /// «AI Мандат», trusted scope). Null when the AI may go on.
+  /// `detail` of the [aiPreflight] refusal for an unknown USD value: the
+  /// caller hands the operation to the user in the prefilled window
+  /// instead (D17).
+  static const String aiUnknownValueCode = 'ai_unknown_usd_value';
+
+  /// The controller's AI checks for [tx] before the AI runs it by itself
+  /// (before any card): AI Control (permissions, «AI Мандат», trusted
+  /// scope), then the USD value, then the daily trading limit. Null when
+  /// the AI may go on.
+  ///
+  /// The AI never acts on an unknown USD value: its limits are dollars and
+  /// a token quantity is not (D7). That refusal carries [aiUnknownValueCode]
+  /// in `detail`, so the caller can open the prefilled window for the user
+  /// instead (D17). Permissions and «AI Мандат» are checked first: those
+  /// are plain refusals, never a reason to open a window (D6).
   AssistantResponse? aiPreflight(TransactionRequest tx) {
-    return _checkDailyLimit(tx) ??
-        _checkAiTransactionControl(tx, TransactionSimulator.analyze(tx));
+    final control = _checkAiTransactionControl(
+      tx,
+      TransactionSimulator.analyze(tx),
+      quantityFallback: false,
+    );
+    if (control != null) return control;
+    if (aiValueUnknown(tx)) return _aiUnknownValueResponse(tx);
+    return _checkDailyLimit(tx);
+  }
+
+  /// Whether the AI would act on [tx] without knowing its USD value (no
+  /// price, no amount). A revoke moves no money (D11) and never counts.
+  static bool aiValueUnknown(TransactionRequest tx) {
+    if (tx.type == TransactionType.revoke) return false;
+    return _finiteUsd(TxUsdValuer.usdValue(tx)) == null;
+  }
+
+  AssistantResponse _aiUnknownValueResponse(TransactionRequest tx) {
+    final token = _symbolOf(tx);
+    final message = LocalizationService.instance.t('aiExecUnknownValue', {
+      'token': token,
+      'default': '$token has no price, so the dollar value of this operation '
+          'is unknown and the AI will not carry it out by itself. Do it '
+          'yourself in the wallet window.',
+    });
+    _log.w('AI refused: no USD value for ${tx.displaySummary}');
+    return AssistantResponse(
+      message: message,
+      speechText: message,
+      type: ResponseType.error,
+      detail: aiUnknownValueCode,
+      sourceIntent: tx.sourceIntent,
+    );
+  }
+
+  /// The stablecoins a swap is priced against, as in AiOnchainExecutor: a
+  /// swap from a coin into one of them is a sell.
+  static const Set<String> _stablecoins = {
+    'USDT', 'USDC', 'DAI', 'BUSD', 'FDUSD', 'TUSD', 'USDD', 'USDE', 'PYUSD',
+  };
+
+  static bool _isStablecoin(String? symbol) =>
+      symbol != null && _stablecoins.contains(symbol.trim().toUpperCase());
+
+  /// Whether «AI Мандат» max position bounds [tx]: buys only (D6), as
+  /// ExchangeOrderService and AiActionGate apply it. A buy is any swap that
+  /// is not a sell (coin → stablecoin) — the split AiOnchainExecutor makes
+  /// for the card. Sends, sells, approvals and revokes are bounded by the
+  /// daily trading limit, the policy and EPK, not by the position cap.
+  static bool maxPositionAppliesTo(TransactionRequest tx) {
+    if (tx.type != TransactionType.swap) return false;
+    final sell =
+        !_isStablecoin(tx.tokenSymbol) && _isStablecoin(tx.targetTokenSymbol);
+    return !sell;
+  }
+
+  /// Over «AI Мандат» max position. [priced] false: [value] is the token
+  /// quantity stand-in (no USD price), which the message says plainly.
+  static String _maxPositionMessage(
+    TransactionRequest tx,
+    double value, {
+    required bool priced,
+    required double cap,
+  }) {
+    final loc = LocalizationService.instance;
+    final capLabel = _usd(cap);
+    if (priced) {
+      final v = _usd(value);
+      return loc.t('aiGateBlockedMaxPosition', {
+        'value': v,
+        'cap': capLabel,
+        'default': 'Over the AI position cap: $v, the cap is $capLabel.',
+      });
+    }
+    final token = _symbolOf(tx);
+    final quantity = _fmtQuantity(value);
+    final asUsd = _usd(value);
+    return loc.t('aiMaxPositionNoPrice', {
+      'token': token,
+      'amount': quantity,
+      'amountUsd': asUsd,
+      'cap': capLabel,
+      'default': 'Over the AI position cap: $token has no price, so '
+          '$quantity $token is counted as $asUsd; the cap is $capLabel.',
+    });
+  }
+
+  static double? _finiteUsd(double? v) =>
+      (v == null || v.isNaN || v.isInfinite || v < 0) ? null : v;
+
+  static String _usd(double v) => '\$${v.toStringAsFixed(2)}';
+
+  /// A contract address for a message: '0x0000…2734' (display only).
+  static String _shortAddress(String address) {
+    final a = address.trim();
+    if (a.length <= 14) return a;
+    return '${a.substring(0, 6)}…${a.substring(a.length - 4)}';
+  }
+
+  static String _symbolOf(TransactionRequest tx) {
+    final symbol = (tx.tokenSymbol ?? '').trim().toUpperCase();
+    return symbol.isEmpty ? '?' : symbol;
+  }
+
+  /// A token quantity without trailing zeros (2.5, 0.00012).
+  static String _fmtQuantity(double v) {
+    if (v == 0) return '0';
+    var s = v.toStringAsFixed(v.abs() >= 1 ? 4 : 8);
+    if (s.contains('.')) {
+      s = s.replaceFirst(RegExp(r'0+$'), '');
+      if (s.endsWith('.')) s = s.substring(0, s.length - 1);
+    }
+    return s;
   }
 
   /// Why the AI may NOT run [tx] without the PIN, or null when it may (D6,
@@ -1271,14 +1490,25 @@ class GuardianExecutionController {
     );
   }
 
+  /// AI Control for an AI / market / automation transaction: permissions,
+  /// «AI Мандат» (network, assets, max position for buys, venue), unknown
+  /// contracts and the trusted scope. Null when it passes.
+  ///
+  /// [quantityFallback]: without a USD price, compare the token quantity
+  /// with the max position as before — only when the user confirms the
+  /// operation themselves ([orchestrateConfirmation] / [orchestrateSwapStep]
+  /// for the Buy / Sell window or a «Ручной» chat card). False for previews
+  /// and for the AI's own execution, which [aiPreflight] refuses on an
+  /// unknown value instead of measuring it in token units.
   AssistantResponse? _checkAiTransactionControl(
     TransactionRequest tx,
-    SimulationResult staticSim,
-  ) {
+    SimulationResult staticSim, {
+    bool quantityFallback = true,
+  }) {
     // The AI mandate bounds what the AI does. Operations the user starts in
-    // the wallet are bounded by the wallet limits in the policy engine; the
-    // AI's $100 position cap must not block a manual send.
-    if (tx.sourceIntent.origin == IntentOrigin.wallet) return null;
+    // their own wallet window are bounded by the wallet limits in the policy
+    // engine; the AI's position cap must not block a manual send.
+    if (GuardianPolicyEngine.isUserWalletTx(tx)) return null;
 
     final settings = AiControlService.instance.settings;
 
@@ -1289,23 +1519,37 @@ class GuardianExecutionController {
     // which asks for the card + PIN when the AI revoke permission is off.
     if (tx.type == TransactionType.revoke) return null;
 
+    // The refusals use the gate's texts (AiActionGate), so voice, chat and
+    // the card say the same thing in the user's language.
+    final loc = LocalizationService.instance;
     if (!settings.isActive) {
+      // «Советник» is not an expiry: say which one it is.
       return AssistantResponse.error(
-        'AI permissions are off or have expired. Renew them in Security → AI Control.',
+        settings.mode == AiMode.manual
+            ? loc.t('aiGateAdvisorOnly', {
+                'default': 'In «Advisor» mode the AI only advises: it opens '
+                    'and prepares nothing. To let it act, choose «Manual» or '
+                    '«Autonomous» in AI Center.',
+              })
+            : loc.t('aiGateBlockedExpired', {
+                'default': 'AI permissions are off or have expired. Renew '
+                    'them in AI Center.',
+              }),
         intent: tx.sourceIntent,
       );
     }
     final mandate = settings.mandate;
     final profile = _profileStore.current;
-    final amount = TxUsdValuer.limitAmount(tx);
 
     final requiredAction = _requiredAiActionForTx(tx.type);
     if (requiredAction != null &&
         !settings.allowedActions.contains(requiredAction)) {
+      final message = loc.t('aiGateBlockedPermission', {
+        'default': 'This action is turned off for the AI in AI Center.',
+      });
       return AssistantResponse(
-        message:
-            'AI is not allowed to perform ${tx.typeLabel.toLowerCase()} operations under the current AI Control policy.',
-        speechText: 'This action is blocked by AI Control.',
+        message: message,
+        speechText: message,
         type: ResponseType.error,
         sourceIntent: tx.sourceIntent,
         uiCommands: const [
@@ -1315,34 +1559,55 @@ class GuardianExecutionController {
     }
 
     if (!mandate.allowsNetwork(tx.chainKey)) {
+      final name = tx.chainKey.trim().toUpperCase();
       return AssistantResponse.error(
-        'This network is outside the active AI autonomy mandate.',
+        loc.t('aiGateBlockedMandateNetwork', {
+          'network': name,
+          'default': '$name is outside the «AI Mandate» networks.',
+        }),
         intent: tx.sourceIntent,
       );
     }
 
     final sourceAsset = tx.tokenSymbol;
     final targetAsset = tx.targetTokenSymbol;
-    if (!mandate.allowsAsset(sourceAsset) ||
-        !mandate.allowsAsset(targetAsset)) {
-      return AssistantResponse.error(
-        'This asset is outside the active AI autonomy mandate.',
-        intent: tx.sourceIntent,
-      );
+    for (final asset in [sourceAsset, targetAsset]) {
+      if (!mandate.allowsAsset(asset)) {
+        final name = asset!.trim().toUpperCase();
+        return AssistantResponse.error(
+          loc.t('aiGateBlockedMandateAsset', {
+            'asset': name,
+            'default': '$name is outside the «AI Mandate» assets.',
+          }),
+          intent: tx.sourceIntent,
+        );
+      }
     }
 
-    if (amount > 0 && amount > mandate.maxPositionUsd) {
-      return AssistantResponse.error(
-        'This action exceeds your autonomy position cap of \$${mandate.maxPositionUsd.toStringAsFixed(2)}.',
-        intent: tx.sourceIntent,
-      );
+    // «AI Мандат» max position: buys only (D6), in dollars. Sends, sells,
+    // approvals and revokes are bounded by the daily trading limit, the
+    // policy and EPK instead (as in ExchangeOrderService / AiActionGate).
+    if (maxPositionAppliesTo(tx)) {
+      final usd = _finiteUsd(TxUsdValuer.usdValue(tx));
+      final value = usd ?? (quantityFallback ? tx.amount : null);
+      if (value != null && value > 0 && value > mandate.maxPositionUsd) {
+        return AssistantResponse.error(
+          _maxPositionMessage(tx, value,
+              priced: usd != null, cap: mandate.maxPositionUsd),
+          intent: tx.sourceIntent,
+        );
+      }
     }
 
     final contractTarget = _contractTarget(tx);
     final venueTarget = tx.routerAddress ?? tx.spenderAddress;
     if (!mandate.allowsVenue(venueTarget)) {
+      final name = _shortAddress(venueTarget!);
       return AssistantResponse.error(
-        'This venue is outside the active AI autonomy mandate.',
+        loc.t('aiGateBlockedMandateVenue', {
+          'venue': name,
+          'default': '$name is outside the «AI Mandate» venues.',
+        }),
         intent: tx.sourceIntent,
       );
     }

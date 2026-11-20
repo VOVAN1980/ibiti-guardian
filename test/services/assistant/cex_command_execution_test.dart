@@ -30,7 +30,9 @@ import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/models/autonomy_mandate.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_order_history_store.dart';
 import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
+import 'package:ibiti_guardian/services/vault/epk_policy_manager.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class MockExchangeExecutionAdapter implements ExchangeExecutionAdapter {
@@ -77,6 +79,24 @@ class MockExchangeExecutionAdapter implements ExchangeExecutionAdapter {
   }
 }
 
+/// Holds the order at the exchange until [release] completes: shows whether
+/// the assistant waits for the order inside its turn.
+class SlowExchangeExecutionAdapter extends MockExchangeExecutionAdapter {
+  final release = Completer<void>();
+
+  @override
+  Future<ExchangeOrderResult> executeMarketOrder({
+    required String symbol,
+    required bool isBuy,
+    required double amount,
+    required double price,
+  }) async {
+    await release.future;
+    return super.executeMarketOrder(
+        symbol: symbol, isBuy: isBuy, amount: amount, price: price);
+  }
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
@@ -91,15 +111,18 @@ void main() {
     late List<String> notified;
     final gate = AiActionGate.instance;
 
-    setUp(() {
+    setUp(() async {
       dispatchedCommands = [];
       SharedPreferences.setMockInitialValues({});
+      FlutterSecureStorage.setMockInitialValues({});
       ExchangeOrderHistoryStore.instance.resetForTest();
-      // An unlocked wallet in the foreground: with «Подтверждать действия
-      // ИИ ПИН-кодом» OFF the gate lets an AI order run without the card.
+      // An unlocked wallet in the foreground with EPK on: with «Подтверждать
+      // действия ИИ ПИН-кодом» OFF the gate lets an AI order run without
+      // the card (with EPK paused an exchange order needs the card, D6).
       IBITIVaultService.instance.setVaultCreatedForTest(
         evmAddress: '0x9999999999999999999999999999999999999999',
       );
+      await EPKPolicyManager.instance.resumeProtection();
       gate.resetForTest();
       gate.foregroundOverride = () => true;
       notified = [];
@@ -226,13 +249,21 @@ void main() {
         source: AssistantInputSource.voice,
       );
 
+      // By voice the order is placed after the turn, never inside the 30 s
+      // voice turn: «Ставлю ордер…» at once, the result afterwards.
       expect(response.type, ResponseType.info);
-      expect(response.message, contains('Ордер успешно выполнен'));
+      expect(response.message, contains('Ставлю ордер'));
+      expect(response.speechText, 'Ставлю ордер.');
+      await GuardianAssistantService.instance.pendingAiActionForTest();
       expect(mockMexc.ordersPlaced.length, 1);
       expect(mockMexc.ordersPlaced[0]['isBuy'], true);
       expect(mockMexc.ordersPlaced[0]['amount'], 20.0); // buy SOL for 20 USDT
-      // PIN OFF: no card, then «ИИ выполнил: …».
+      // PIN OFF: no card, then «ИИ выполнил: …» and the result window.
       expect(notified, hasLength(1));
+      await Future<void>.delayed(Duration.zero);
+      final result =
+          dispatchedCommands.lastWhere((c) => c.target == 'cex_trade');
+      expect(result.payload?['isSuccess'], true);
     });
 
     test('Full Autonomy Sell Execution (all / 50% / quantity / \$ value)', () async {
@@ -260,12 +291,14 @@ void main() {
       expect(mockMexc.ordersPlaced, isEmpty);
       expect(dispatchedCommands.last.payload?['initialAmount'], 5.0);
 
-      // 3. sell 2 SOL
+      // 3. sell 2 SOL (by voice the order runs after the turn)
       response = await GuardianAssistantService.instance.process(
         'sell 2 SOL',
         source: AssistantInputSource.voice,
       );
       expect(response.type, ResponseType.info);
+      await GuardianAssistantService.instance.pendingAiActionForTest();
+      expect(mockMexc.ordersPlaced, hasLength(1));
       expect(mockMexc.ordersPlaced.last['amount'], 2.0); // 2.0 SOL
 
       // 4. sell SOL for 200 dollars
@@ -274,6 +307,8 @@ void main() {
         source: AssistantInputSource.voice,
       );
       expect(response.type, ResponseType.info);
+      await GuardianAssistantService.instance.pendingAiActionForTest();
+      expect(mockMexc.ordersPlaced, hasLength(2));
       expect(mockMexc.ordersPlaced.last['amount'], 2.0); // 200 / 100.0 = 2.0 SOL
     });
 
@@ -421,12 +456,19 @@ void main() {
         source: AssistantInputSource.voice,
       );
 
-      print('DEBUG OKX RESPONSE: ${response.type} | ${response.message}');
       expect(response.type, ResponseType.info);
-      expect(response.message, contains('Ордер успешно выполнен на OKX'));
+      // By voice: «Ставлю ордер … OKX …» at once, the order after the turn.
+      expect(response.message, contains('Ставлю ордер'));
+      expect(response.message, contains('OKX'));
+      await GuardianAssistantService.instance.pendingAiActionForTest();
       expect(mockOkx.ordersPlaced.length, 1);
       // symbol passed to executeMarketOrder is resolved as SOLUSDC
       expect(mockOkx.ordersPlaced[0]['symbol'], 'SOLUSDC');
+      await Future<void>.delayed(Duration.zero);
+      final result =
+          dispatchedCommands.lastWhere((c) => c.target == 'cex_trade');
+      expect(result.payload?['isSuccess'], true);
+      expect(result.payload?['exchangeId'], 'okx');
     });
 
     test('General chat trades under the same rules; automated never does', () async {
@@ -793,7 +835,10 @@ void main() {
         'sell 2 SOL',
         source: AssistantInputSource.voice,
       );
-      expect(autoRes.message, anyOf(contains('успешно выполнен'), contains('executed')));
+      // By voice the order runs after the turn.
+      expect(autoRes.message,
+          anyOf(contains('Ставлю ордер'), contains('Placing the order')));
+      await GuardianAssistantService.instance.pendingAiActionForTest();
       expect(mockMexc.ordersPlaced.length, 1);
       expect(mockMexc.ordersPlaced[0]['isBuy'], false);
     });
@@ -878,7 +923,9 @@ void main() {
         source: AssistantInputSource.voice,
       );
 
-      expect(response.message, anyOf(contains('Ордер успешно выполнен'), contains('executed successfully')));
+      // By voice the order runs after the turn.
+      expect(response.message, contains('Ставлю ордер'));
+      await GuardianAssistantService.instance.pendingAiActionForTest();
       expect(mockMexc.ordersPlaced.length, 1);
       expect(mockMexc.ordersPlaced[0]['isBuy'], true);
       expect(mockMexc.ordersPlaced[0]['amount'], 50.0);
@@ -1252,6 +1299,8 @@ void main() {
         'купи SOL на 20',
         source: AssistantInputSource.voice,
       );
+      // By voice the AI order is placed after the turn.
+      await GuardianAssistantService.instance.pendingAiActionForTest();
       final own = await ExchangeOrderService.instance.placeMarketOrder(
         exchangeId: 'mexc',
         symbol: 'SOL',
@@ -1293,6 +1342,351 @@ void main() {
       expect(cardsShown, 0);
       expect(dispatchedCommands.last.target, 'cex_trade');
       expect(dispatchedCommands.last.payload?['isSuccess'], isNull);
+    });
+
+    test('PIN OFF, by voice: the order is not awaited inside the voice turn; '
+        'the result comes afterwards', () async {
+      setLivePrice('mexc', 'SOL', 'USDT', 100.0);
+      final slow = SlowExchangeExecutionAdapter();
+      slow.balances['USDT'] = 500.0;
+      ExchangeOrderService.instance.setAdapterForTest('mexc', slow);
+
+      // The exchange has not answered yet, and the voice turn is over.
+      final response = await GuardianAssistantService.instance
+          .process('купи SOL на 20', source: AssistantInputSource.voice)
+          .timeout(const Duration(seconds: 5));
+      expect(response.speechText, 'Ставлю ордер.');
+      expect(response.message, contains('Ставлю ордер'));
+      expect(response.message, contains('MEXC'));
+      expect(response.message, contains('20 USDT'));
+      expect(slow.ordersPlaced, isEmpty);
+      expect(notified, isEmpty);
+
+      slow.release.complete();
+      await GuardianAssistantService.instance.pendingAiActionForTest();
+      expect(slow.ordersPlaced, hasLength(1));
+      expect(slow.ordersPlaced.single['amount'], 20.0);
+      expect(notified, hasLength(1));
+      await Future<void>.delayed(Duration.zero);
+      final result =
+          dispatchedCommands.lastWhere((c) => c.target == 'cex_trade');
+      expect(result.payload?['isSuccess'], true);
+      expect(gate.isBusy, false);
+    });
+
+    test('PIN OFF, general chat: the order still answers in the turn',
+        () async {
+      setLivePrice('mexc', 'SOL', 'USDT', 100.0);
+      mockMexc.balances['USDT'] = 500.0;
+      final response = await GuardianAssistantService.instance.process(
+        'купи SOL на 20',
+        source: AssistantInputSource.generalChat,
+      );
+      expect(response.message, contains('Ордер успешно выполнен'));
+      expect(mockMexc.ordersPlaced, hasLength(1));
+    });
+
+    test('PIN OFF, by voice: when the checks took most of the voice turn, no '
+        'order is placed (the voice may already have said «try again»)',
+        () async {
+      setLivePrice('mexc', 'SOL', 'USDT', 100.0);
+      mockMexc.balances['USDT'] = 500.0;
+      final svc = GuardianAssistantService.instance;
+      final deadline = svc.voiceActDeadline;
+      // Any time spent in the turn is past this deadline.
+      svc.voiceActDeadline = const Duration(microseconds: -1);
+      addTearDown(() => svc.voiceActDeadline = deadline);
+
+      final response = await svc.process(
+        'купи SOL на 20',
+        source: AssistantInputSource.voice,
+      );
+      expect(response.message, contains('слишком много времени'));
+      expect(response.message, contains('Повторите команду'));
+      expect(response.message, isNot(contains('Ставлю ордер')));
+      await svc.pendingAiActionForTest();
+      expect(mockMexc.ordersPlaced, isEmpty);
+      expect(notified, isEmpty);
+      expect(gate.isBusy, false);
+
+      // The general chat has no 30 s voice turn: it is not affected.
+      final chat = await svc.process(
+        'купи SOL на 20',
+        source: AssistantInputSource.generalChat,
+      );
+      expect(chat.message, contains('Ордер успешно выполнен'));
+      expect(mockMexc.ordersPlaced, hasLength(1));
+    });
+
+    test('PIN ON, by voice: a long turn still shows the card (it asks first)',
+        () async {
+      AiControlService.instance.setSettingsForTest(const AiControlSettings(
+        mode: AiMode.fullAutonomy,
+        activeSources: ['mexc'],
+        dailyLimit: 500000.0,
+      ));
+      setLivePrice('mexc', 'SOL', 'USDT', 100.0);
+      mockMexc.balances['USDT'] = 500.0;
+      final svc = GuardianAssistantService.instance;
+      final deadline = svc.voiceActDeadline;
+      svc.voiceActDeadline = const Duration(microseconds: -1);
+      addTearDown(() => svc.voiceActDeadline = deadline);
+      var cardsShown = 0;
+      gate.confirmUiOverride = (_) async {
+        cardsShown++;
+        return true;
+      };
+
+      final response = await svc.process(
+        'купи SOL на 20',
+        source: AssistantInputSource.voice,
+      );
+      expect(response.message, contains('Карточка ордера'));
+      await svc.pendingAiActionForTest();
+      expect(cardsShown, 1);
+      expect(mockMexc.ordersPlaced, hasLength(1));
+    });
+
+    test('another AI money action holding the lock (no card open): "busy" '
+        'at once, nothing placed', () async {
+      setLivePrice('mexc', 'SOL', 'USDT', 100.0);
+      mockMexc.balances['USDT'] = 500.0;
+      // Another AI action passed its card and PIN and is executing: it holds
+      // the lock, but no card is open.
+      final held = await gate.confirm(ExchangeOrderService.aiOrderSummary(
+        exchangeId: 'mexc',
+        symbol: 'SOL',
+        isBuy: true,
+        valueUsd: 5.0,
+        source: 'voice',
+      ));
+      expect(held.mayExecute, true);
+      expect(gate.hasOpenCard, false);
+      expect(gate.isBusy, true);
+
+      for (final source in [
+        AssistantInputSource.voice,
+        AssistantInputSource.generalChat,
+      ]) {
+        final response = await GuardianAssistantService.instance.process(
+          'купи SOL на 20',
+          source: source,
+        );
+        expect(response.message, contains('Другая операция ИИ'),
+            reason: source.name);
+        // Never «карточка на экране, скажите «да»» for a card that never
+        // comes, nor «ставлю ордер».
+        expect(response.message, isNot(contains('Карточка ордера')),
+            reason: source.name);
+        expect(response.message, isNot(contains('Ставлю ордер')),
+            reason: source.name);
+      }
+      await GuardianAssistantService.instance.pendingAiActionForTest();
+      expect(mockMexc.ordersPlaced, isEmpty);
+      gate.release(held);
+      expect(gate.isBusy, false);
+    });
+
+    test('«Советник»: a trade without the amount gets the Advisor answer, '
+        'not «Укажите сумму»', () async {
+      AiControlService.instance.setSettingsForTest(const AiControlSettings(
+        mode: AiMode.manual,
+        allowedActions: [],
+        activeSources: ['mexc'],
+      ));
+      dispatchedCommands.clear();
+      for (final text in ['купи SOL', 'купи на 50 долларов']) {
+        final response = await GuardianAssistantService.instance.process(
+          text,
+          source: AssistantInputSource.voice,
+        );
+        expect(response.message, contains('«Советник»'), reason: text);
+        expect(response.message, isNot(contains('Укажите')), reason: text);
+      }
+      await Future<void>.delayed(Duration.zero);
+      expect(dispatchedCommands, isEmpty);
+      expect(mockMexc.ordersPlaced, isEmpty);
+    });
+
+    group('«Автономный», a wallet (non-exchange) coin the AI cannot buy '
+        'itself', () {
+      void listBnbOnCoinGecko() {
+        MarketDataService.instance.mergeExchangeData({
+          'coingecko:BNB': MarketAsset(
+            id: 'binancecoin',
+            symbol: 'BNB',
+            name: 'BNB',
+            imageUrl: '',
+            price: 300.0,
+            change24h: 1.5,
+            marketCap: 50000000.0,
+            volume: 200000.0,
+            rank: 4,
+            sparkline: const [],
+            high24h: 305.0,
+            low24h: 298.0,
+            change7d: 3.0,
+            change30d: 6.0,
+            networkGroup: 'BNB Chain',
+            sourceId: 'coingecko',
+            sourcePair: '',
+            sourceUpdatedAt: DateTime.now(),
+          ),
+        });
+        // No stablecoin to pay with on BNB Chain: the AI cannot build the
+        // buy itself (D17).
+        VaultPortfolioListener.instance.setSummaryForTest(PortfolioSummary(
+          totalBalanceUsd: 0,
+          assetsCount: 0,
+          allAssets: const [],
+          address: '0x9999999999999999999999999999999999999999',
+          networkName: 'BSC',
+          chainKey: 'bsc',
+        ));
+      }
+
+      bool opensTradeWindow() => dispatchedCommands.any((c) =>
+          c.type == UICommandType.openModal &&
+          (c.target == 'wallet_buy' || c.target == 'wallet_sell'));
+
+      test('within «AI Мандат» and the limits: the prefilled window (D17)',
+          () async {
+        listBnbOnCoinGecko();
+        dispatchedCommands.clear();
+        final response = await GuardianAssistantService.instance.process(
+          'купи BNB на 50 долларов',
+          source: AssistantInputSource.voice,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(opensTradeWindow(), true);
+        expect(response.message, contains('Открываю заполненное окно'));
+      });
+
+      test('outside the «AI Мандат» networks: refused with the «Политика» '
+          'hint, no window (D6)', () async {
+        AiControlService.instance.setSettingsForTest(const AiControlSettings(
+          mode: AiMode.fullAutonomy,
+          activeSources: ['mexc'],
+          dailyLimit: 500000.0,
+          aiPinConfirm: false,
+          mandate: AutonomyMandate(allowedNetworks: ['tron']),
+        ));
+        listBnbOnCoinGecko();
+        dispatchedCommands.clear();
+        for (final source in [
+          AssistantInputSource.voice,
+          AssistantInputSource.marketChat,
+          AssistantInputSource.generalChat,
+        ]) {
+          final response = await GuardianAssistantService.instance.process(
+            'купи BNB на 50 долларов',
+            source: source,
+          );
+          await Future<void>.delayed(Duration.zero);
+          expect(response.message, contains('AI Mandate'), reason: source.name);
+          expect(response.message, contains('Policy'), reason: source.name);
+          expect(response.message, isNot(contains('Открываю заполненное')),
+              reason: source.name);
+          expect(opensTradeWindow(), false, reason: source.name);
+        }
+      });
+
+      test('over the position cap: refused with the «Политика» hint, no '
+          'window (D6)', () async {
+        AiControlService.instance.setSettingsForTest(const AiControlSettings(
+          mode: AiMode.fullAutonomy,
+          activeSources: ['mexc'],
+          dailyLimit: 500000.0,
+          aiPinConfirm: false,
+          mandate: AutonomyMandate(maxPositionUsd: 10),
+        ));
+        listBnbOnCoinGecko();
+        dispatchedCommands.clear();
+        final response = await GuardianAssistantService.instance.process(
+          'купи BNB на 50 долларов',
+          source: AssistantInputSource.voice,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(response.message, contains('position cap'));
+        expect(response.message, contains('Policy'));
+        expect(opensTradeWindow(), false);
+      });
+
+      test('outside the «AI Мандат» assets: refused, no window', () async {
+        AiControlService.instance.setSettingsForTest(const AiControlSettings(
+          mode: AiMode.fullAutonomy,
+          activeSources: ['mexc'],
+          dailyLimit: 500000.0,
+          aiPinConfirm: false,
+          mandate: AutonomyMandate(allowedAssets: ['ETH']),
+        ));
+        listBnbOnCoinGecko();
+        dispatchedCommands.clear();
+        final response = await GuardianAssistantService.instance.process(
+          'купи BNB на 50 долларов',
+          source: AssistantInputSource.voice,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(response.message, contains('AI Mandate'));
+        expect(opensTradeWindow(), false);
+      });
+
+      test('«Ручной» still opens the prefilled window (the user confirms)',
+          () async {
+        AiControlService.instance.setSettingsForTest(const AiControlSettings(
+          mode: AiMode.guarded,
+          activeSources: ['mexc'],
+          mandate: AutonomyMandate(allowedNetworks: ['tron']),
+        ));
+        listBnbOnCoinGecko();
+        dispatchedCommands.clear();
+        await GuardianAssistantService.instance.process(
+          'купи BNB на 50 долларов',
+          source: AssistantInputSource.voice,
+        );
+        await Future<void>.delayed(Duration.zero);
+        expect(opensTradeWindow(), true);
+      });
+    });
+
+    test('«Автономный»: a transfer outside the «AI Мандат» networks is refused '
+        'with the reason and the «Политика» hint from every source, no '
+        'window (D6)', () async {
+      AiControlService.instance.setSettingsForTest(const AiControlSettings(
+        mode: AiMode.fullAutonomy,
+        activeSources: ['mexc'],
+        dailyLimit: 500000.0,
+        aiPinConfirm: false,
+        mandate: AutonomyMandate(allowedNetworks: ['tron']),
+      ));
+      for (final source in [
+        AssistantInputSource.generalChat,
+        AssistantInputSource.voice,
+        AssistantInputSource.marketChat,
+      ]) {
+        dispatchedCommands.clear();
+        final response = await GuardianAssistantService.instance.process(
+          'отправь 10 USDT на 0x1111111111111111111111111111111111111111',
+          source: source,
+        );
+        await GuardianAssistantService.instance.pendingAiActionForTest();
+        await Future<void>.delayed(Duration.zero);
+        // Never a card the chat would carry out, never «Выполняю».
+        expect(response.type, isNot(ResponseType.preview), reason: source.name);
+        expect(response.message, contains('AI Mandate'), reason: source.name);
+        expect(
+            response.message,
+            anyOf(contains('поднимите порог в «Политике»'),
+                contains('Raise the threshold in Policy'),
+                contains('«Policy»')),
+            reason: source.name);
+        expect(response.message, isNot(contains('Выполняю')),
+            reason: source.name);
+        expect(dispatchedCommands.where((c) => c.target == 'wallet_send'),
+            isEmpty,
+            reason: source.name);
+      }
+      expect(gate.isBusy, false);
     });
 
     test('Voice CEX trade parses decimals with comma "купи SOL на 0,50"', () async {
@@ -2058,6 +2452,8 @@ void main() {
               languageCode: 'ru',
               source: entry.value,
             );
+            // By voice the order is placed after the turn.
+            await GuardianAssistantService.instance.pendingAiActionForTest();
             expect(mockMexc.ordersPlaced, hasLength(1), reason: entry.key);
             expect(mockMexc.ordersPlaced.single['isBuy'], true,
                 reason: entry.key);

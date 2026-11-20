@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/screens/assistant/assistant_home_screen.dart';
@@ -24,6 +25,7 @@ import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/market/automation_dispatch_service.dart';
 import 'package:ibiti_guardian/services/market/automation_engine.dart';
 import 'package:ibiti_guardian/services/exchanges/exchange_registry.dart';
+import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 import 'package:ibiti_guardian/services/voice/voice_turn_controller.dart';
 import 'package:ibiti_guardian/services/assistant/assistant_session_context.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
@@ -41,7 +43,51 @@ class GuardianAppShell extends StatefulWidget {
   /// How many main screens are mounted (normally one). Notification taps
   /// wait for it, so they never open anything over the unlock screen.
   static int _mountedCount = 0;
-  static bool get isMounted => _mountedCount > 0;
+  static bool get isMounted => debugIsMountedOverride ?? _mountedCount > 0;
+
+  /// Tests: stands for "the main screen is mounted" (null = the real count),
+  /// so notification routing can be tested without the whole main screen.
+  @visibleForTesting
+  static bool? debugIsMountedOverride;
+
+  /// Whether the floating mic bubble shows. Normally only during a voice
+  /// session and off the AI Voice tab (index 0, which has its own mic
+  /// button). While an AI confirmation card is open it shows on EVERY tab,
+  /// with or without a session: the card is a root modal sheet whose
+  /// barrier covers every tab's own mic button (the AI Voice tab's too), and
+  /// it tells the user they can answer «да» / «нет» by voice (D5). The
+  /// bubble is drawn above all routes, so it stays reachable.
+  @visibleForTesting
+  static bool micBubbleVisible({
+    required bool sessionActive,
+    required int tabIndex,
+    required bool aiCardOpen,
+  }) =>
+      aiCardOpen || (sessionActive && tabIndex != 0);
+
+  /// Whether an AI confirmation card is open ([AiActionGate.hasOpenCard]),
+  /// as seen after the last frame. The card is a root modal sheet, so a
+  /// frame always runs when it opens or closes (its slide animation): a
+  /// check after each frame catches both, with no timer polling. Persistent
+  /// frame callbacks cannot be removed, so the watch is installed once, on
+  /// the first call, and lives as long as the app.
+  static ValueListenable<bool> aiCardOpenWatch() {
+    if (!_aiCardWatchInstalled) {
+      _aiCardWatchInstalled = true;
+      WidgetsBinding.instance.addPersistentFrameCallback((_) {
+        if (_aiCardOpen.value == AiActionGate.instance.hasOpenCard) return;
+        // Mid-frame: the listeners rebuild widgets, so tell them right
+        // after this frame.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _aiCardOpen.value = AiActionGate.instance.hasOpenCard;
+        });
+      });
+    }
+    return _aiCardOpen;
+  }
+
+  static final ValueNotifier<bool> _aiCardOpen = ValueNotifier<bool>(false);
+  static bool _aiCardWatchInstalled = false;
 
   @override
   State<GuardianAppShell> createState() => _GuardianAppShellState();
@@ -116,6 +162,8 @@ class _GuardianAppShellState extends State<GuardianAppShell>
     // OverlayEntry is created ONCE after the first frame and never removed.
     // Visibility is controlled via Opacity + IgnorePointer inside the bubble.
     _voice.sessionNotifier.addListener(_onSessionChanged);
+    // An AI confirmation card opening / closing shows / hides the bubble.
+    GuardianAppShell.aiCardOpenWatch().addListener(_updateBubbleVisibility);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       _bubbleOverlay = OverlayEntry(
@@ -142,6 +190,8 @@ class _GuardianAppShellState extends State<GuardianAppShell>
   @override
   void dispose() {
     GuardianAppShell._mountedCount--;
+    GuardianAppShell.aiCardOpenWatch()
+        .removeListener(_updateBubbleVisibility);
     DappLinkService.instance.detach();
     _cmdSub?.cancel();
     _bubbleOverlay?.remove();
@@ -186,11 +236,16 @@ class _GuardianAppShellState extends State<GuardianAppShell>
     _updateBubbleVisibility();
   }
 
-  /// Compute and push bubble visibility to the ValueNotifier.
-  /// Bubble is visible only when session is active AND we are NOT on the
-  /// AI Voice tab (index 0) — which has its own PTT button.
+  /// Compute and push bubble visibility to the ValueNotifier: during a voice
+  /// session off the AI Voice tab (index 0 has its own PTT button), and on
+  /// every tab while an AI confirmation card is open
+  /// ([GuardianAppShell.micBubbleVisible]).
   void _updateBubbleVisibility() {
-    final visible = _voice.isSessionActive && _currentIndex != 0;
+    final visible = GuardianAppShell.micBubbleVisible(
+      sessionActive: _voice.isSessionActive,
+      tabIndex: _currentIndex,
+      aiCardOpen: AiActionGate.instance.hasOpenCard,
+    );
     if (_bubbleVisible.value != visible) {
       _bubbleVisible.value = visible;
     }

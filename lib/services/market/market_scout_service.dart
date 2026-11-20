@@ -423,11 +423,18 @@ class MarketScoutService {
         ? t.t('marketScoutAnyNetwork', {'default': 'any network'})
         : mandate.allowedNetworks.join(', ');
     final daily = '\$${settings.dailyLimit.toStringAsFixed(0)}';
+    // «AI Мандат» max position: it caps buys only (sends and sells are
+    // bounded by the daily limit, the policy and EPK).
+    final capUsd = mandate.maxPositionUsd;
+    final cap = capUsd == capUsd.roundToDouble()
+        ? '\$${capUsd.toStringAsFixed(0)}'
+        : '\$${capUsd.toStringAsFixed(2)}';
     final args = <String, dynamic>{
       'assets': assets,
       'networks': networks,
       'actions': actions,
       'daily': daily,
+      'cap': cap,
     };
 
     // A missing key returns the default as is, so the defaults carry the
@@ -460,16 +467,30 @@ class MarketScoutService {
                 'without your request.',
           });
         }
+        // D6, exactly: no card only when ALL hold; a new address / unknown
+        // price / locked wallet → the user confirms with the PIN (the card;
+        // a wallet trade of a coin without a price: its filled-in window,
+        // D17);
+        // over a limit or outside the mandate → refused with the «Политика»
+        // hint (never a card or a window that lets the user go over).
         return t.t('marketScoutNoteAutoNoPin', {
           ...args,
           'default': '«Autonomous» mode: I carry out the trades you ask for, '
               'within your mandate: $assets on $networks. Allowed actions: '
-              '$actions. Daily limit: $daily. PIN confirmation is off: I '
-              'trade without the card only within the daily limit and the '
-              'mandate, at a known price; anything else gets the card and '
-              'your PIN, and after each trade you get the notification «AI '
-              'did: …». I never go over a limit and never trade on my own '
-              'without your request.',
+              '$actions. Daily limit: $daily; one buy at most $cap. PIN '
+              'confirmation is off: I act without the card only when all of '
+              'this holds: within the daily limit and the «AI Mandate», EPK '
+              'protection on, a trusted recipient (a trusted address or '
+              'contract, or your own wallet), a known USD price, and the app '
+              'open with the wallet unlocked. A new address, an unknown price '
+              'or a locked wallet: I ask you first — the card and your PIN '
+              '(a wallet trade of a coin without a price opens in the '
+              'filled-in window instead). Over a limit or outside the mandate '
+              'I refuse; '
+              'to allow more, raise the limit in «Policy» (needs your PIN). '
+              'After each trade you get the notification «AI did: …». I never '
+              'go over a limit and never trade on my own without your '
+              'request.',
         });
     }
   }

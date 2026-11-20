@@ -66,31 +66,26 @@ class _WalletTransactionHistoryScreenState
   bool _focusHandled = false;
   bool _ordersLoaded = false;
 
-  /// Exchange orders belong to the common history, not to the history of
-  /// one card address.
-  bool get _showOrders => widget.walletAddress == null;
+  // Exchange (CEX) orders — the AI's and the user's own — are not tied to a
+  // card address, so EVERY entry point shows them with the «Биржа» chip
+  // (D10): the common history, a card's «История транзакций» (the one the
+  // user opens by hand) and the «ИИ выполнил» notification.
 
   @override
   void initState() {
     super.initState();
-    if (_showOrders) {
-      ExchangeOrderHistoryStore.instance.addListener(_onOrdersChanged);
-      ExchangeOrderHistoryStore.instance.ensureLoaded().whenComplete(() {
-        if (!mounted) return;
-        setState(() => _ordersLoaded = true);
-        _tryFocus();
-      });
-    } else {
-      _ordersLoaded = true;
-    }
+    ExchangeOrderHistoryStore.instance.addListener(_onOrdersChanged);
+    ExchangeOrderHistoryStore.instance.ensureLoaded().whenComplete(() {
+      if (!mounted) return;
+      setState(() => _ordersLoaded = true);
+      _tryFocus();
+    });
     _loadHistory();
   }
 
   @override
   void dispose() {
-    if (_showOrders) {
-      ExchangeOrderHistoryStore.instance.removeListener(_onOrdersChanged);
-    }
+    ExchangeOrderHistoryStore.instance.removeListener(_onOrdersChanged);
     super.dispose();
   }
 
@@ -108,8 +103,7 @@ class _WalletTransactionHistoryScreenState
       _focusHandled = true;
       return;
     }
-    final order =
-        _showOrders ? ExchangeOrderHistoryStore.instance.byId(id) : null;
+    final order = ExchangeOrderHistoryStore.instance.byId(id);
     if (order != null) {
       _focusHandled = true;
       setState(() => _filter = _TxFilter.exchange);
@@ -250,7 +244,7 @@ class _WalletTransactionHistoryScreenState
   }
 
   List<ExchangeOrderRecord> get _orders =>
-      _showOrders ? ExchangeOrderHistoryStore.instance.orders : const [];
+      ExchangeOrderHistoryStore.instance.orders;
 
   /// The rows on screen, newest first. "All" puts exchange orders among
   /// the transactions by time; while older on-chain pages are not loaded,
@@ -306,7 +300,6 @@ class _WalletTransactionHistoryScreenState
           // ── Filter tabs ───────────────────────────────────────────────
           _FilterRow(
             current: _filter,
-            showExchange: _showOrders,
             onChanged: (f) => setState(() => _filter = f),
           ),
 
@@ -421,13 +414,11 @@ class _WalletTransactionHistoryScreenState
 
 class _FilterRow extends StatelessWidget {
   final _TxFilter current;
-  final bool showExchange;
   final ValueChanged<_TxFilter> onChanged;
 
   const _FilterRow({
     required this.current,
     required this.onChanged,
-    this.showExchange = true,
   });
 
   @override
@@ -439,8 +430,7 @@ class _FilterRow extends StatelessWidget {
       (_TxFilter.received, t.t('txFilterReceived')),
       (_TxFilter.approvals, t.t('txFilterApprovals')),
       (_TxFilter.swaps, t.t('txFilterSwaps')),
-      if (showExchange)
-        (_TxFilter.exchange, t.t('txFilterExchange', {'default': 'Exchange'})),
+      (_TxFilter.exchange, t.t('txFilterExchange', {'default': 'Exchange'})),
     ];
 
     return SizedBox(

@@ -19,7 +19,9 @@ import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
 import 'package:ibiti_guardian/services/policy/tx_usd_valuer.dart';
 import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
+import 'package:ibiti_guardian/services/swap/zerox_swap_provider.dart';
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
+import 'package:ibiti_guardian/utils/address_key.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
 /// What happened to an on-chain operation the AI tried to run.
@@ -27,17 +29,31 @@ class AiExecResult {
   const AiExecResult({
     required this.executed,
     this.cancelled = false,
+    this.declined = false,
+    this.interrupted = false,
     required this.message,
     this.txHash,
     this.chainId,
     this.gateOutcome,
-  });
+  }) : assert(!declined || cancelled, 'declined implies cancelled');
 
   /// The transaction (for a swap: the swap step) was sent to the network.
   final bool executed;
 
-  /// The user said no (card, PIN, sign-in) or withdrew the request.
+  /// Stopped before (the rest) was sent: the user said no ([declined]),
+  /// withdrew the request (the queue's Cancel), switched the mode, or the
+  /// confirmation lapsed.
   final bool cancelled;
+
+  /// The user said no: card «Отмена» / voice «нет», the PIN was not
+  /// confirmed, or the sign-in was declined. Not a queue Cancel, a mode
+  /// change or a lapsed confirmation (those carry their own [message]).
+  final bool declined;
+
+  /// The confirmation card closed without an answer (the app went to the
+  /// background, or nobody answered in time). Nothing ran and the user did
+  /// not say no: [deferred], safe to ask again later.
+  final bool interrupted;
 
   /// User-facing, localized.
   final String message;
@@ -50,13 +66,14 @@ class AiExecResult {
   /// operation; [executed] then tells whether it went through.
   final AiGateOutcome? gateOutcome;
 
-  /// Nothing ran because nobody could be asked right now (app in the
-  /// background, no screen) or another AI operation holds the lock. Safe to
-  /// try again later.
+  /// Nothing ran because nobody could be asked or answered right now (app
+  /// in the background, no screen, the card closed unanswered or timed out)
+  /// or another AI operation holds the lock. Safe to try again later.
   bool get deferred =>
       !executed &&
       !cancelled &&
-      (gateOutcome == AiGateOutcome.unavailable ||
+      (interrupted ||
+          gateOutcome == AiGateOutcome.unavailable ||
           gateOutcome == AiGateOutcome.busy);
 
   /// The gate allowed it, but sending failed.
@@ -78,9 +95,17 @@ enum _Session { ok, declined, unavailable }
 /// wait → swap) → [AiActionGate.reportExecuted].
 ///
 /// The gate holds one global AI money-action lock from the card to the
-/// result, so two AI operations never race for the same daily budget.
-/// With no PIN the controller also re-checks, right before signing, that the
-/// target is trusted and EPK is on (defense in depth, C4).
+/// result, so two AI operations never race for the same daily budget. The
+/// executor keeps that lock alive while it works ([AiActionGate.keepAlive])
+/// and always frees it at the end, also when something throws.
+///
+/// Right before EVERY dispatch (the first transaction and, for a swap, again
+/// between the approve receipt and the swap) it checks again that the
+/// request is still wanted (the queue's Cancel wins), the mode is still
+/// «Автономный», the decision is still live and the gate would still allow
+/// it (permissions, «AI Мандат», limits, EPK). With no PIN the controller
+/// also re-checks, right before signing, that the target is trusted and EPK
+/// is on (defense in depth, C4).
 class AiOnchainExecutor {
   AiOnchainExecutor._();
   static final AiOnchainExecutor instance = AiOnchainExecutor._();
@@ -88,7 +113,9 @@ class AiOnchainExecutor {
   static const _log = GuardianLogger('AiExecutor');
 
   static const Duration _receiptTimeout = Duration(seconds: 120);
-  static const Duration _receiptInterval = Duration(seconds: 2);
+  static const Duration _defaultReceiptPollTimeout = Duration(seconds: 10);
+  static const Duration _defaultReceiptPollInterval = Duration(seconds: 2);
+  static const Duration _defaultKeepAliveInterval = Duration(seconds: 30);
 
   static const Set<String> _stablecoins = {
     'USDT', 'USDC', 'DAI', 'BUSD', 'FDUSD', 'TUSD', 'USDD', 'USDE', 'PYUSD',
@@ -120,6 +147,26 @@ class AiOnchainExecutor {
   @visibleForTesting
   AssistantResponse? Function(TransactionRequest tx)? preflightOverride;
 
+  /// Replaces one RPC receipt poll inside [waitForReceipt]: true / false =
+  /// mined with that status, null = not mined yet.
+  @visibleForTesting
+  Future<bool?> Function(TransactionRequest tx, String txHash)?
+      receiptFetchOverride;
+
+  /// Longest a single receipt / allowance poll may take: a stalled request
+  /// (half-open socket after a network switch) must not hold the loop past
+  /// its deadline.
+  @visibleForTesting
+  Duration receiptPollTimeout = _defaultReceiptPollTimeout;
+
+  /// Pause between receipt / allowance polls.
+  @visibleForTesting
+  Duration receiptPollInterval = _defaultReceiptPollInterval;
+
+  /// How often the gate lock is refreshed while an allowed operation works.
+  @visibleForTesting
+  Duration keepAliveInterval = _defaultKeepAliveInterval;
+
   @visibleForTesting
   void resetForTest() {
     txRunnerOverride = null;
@@ -127,6 +174,10 @@ class AiOnchainExecutor {
     receiptWaiterOverride = null;
     privySessionOverride = null;
     preflightOverride = null;
+    receiptFetchOverride = null;
+    receiptPollTimeout = _defaultReceiptPollTimeout;
+    receiptPollInterval = _defaultReceiptPollInterval;
+    keepAliveInterval = _defaultKeepAliveInterval;
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -136,9 +187,10 @@ class AiOnchainExecutor {
   ///
   /// [context]: the caller's screen, when it has one (chat). Voice, market
   /// chat and the delegate queue pass none; the gate then uses the root
-  /// navigator. [stillWanted] is asked after the card: false withdraws the
-  /// operation (the delegate queue's Cancel wins). [announce] shows the
-  /// result as a snack bar; by default only for callers without a context.
+  /// navigator. [stillWanted] is asked after the card and again before every
+  /// dispatch: false withdraws the operation (the delegate queue's Cancel
+  /// wins). [announce] shows the result as a snack bar; by default only for
+  /// callers without a context.
   Future<AiExecResult> executePreview(
     AssistantResponse preview, {
     required String source,
@@ -190,7 +242,9 @@ class AiOnchainExecutor {
   /// [TxStatusPoller], which any other transaction would cancel, C7).
   /// True only for a successful receipt. A Tron approval is confirmed by
   /// reading the allowance. Solana / Tron sends have no receipt API here:
-  /// an accepted hash counts. [onTick] runs on every poll.
+  /// an accepted hash counts. [onTick] runs on every poll. Every poll has
+  /// its own timeout ([receiptPollTimeout], never past the deadline), so a
+  /// stalled request cannot hold the wait past [timeout].
   Future<bool> waitForReceipt(
     TransactionRequest tx,
     String? txHash, {
@@ -206,30 +260,59 @@ class AiOnchainExecutor {
     if (txHash == null || txHash.isEmpty) return false;
     if (!tx.isEvmChain) return true;
 
-    final rpcUrl = PrivyChainRegistry.getChain(tx.chainKey).rpcUrl;
-    if (rpcUrl == null || rpcUrl.isEmpty) return false;
-    final client = Web3Client(rpcUrl, http.Client());
+    final fetchOverride = receiptFetchOverride;
+    http.Client? httpClient;
+    Web3Client? client;
+    if (fetchOverride == null) {
+      final rpcUrl = PrivyChainRegistry.getChain(tx.chainKey).rpcUrl;
+      if (rpcUrl == null || rpcUrl.isEmpty) return false;
+      httpClient = http.Client();
+      client = Web3Client(rpcUrl, httpClient);
+    }
+    final rpc = client;
+    final String hash = txHash;
+    Future<bool?> poll() async {
+      if (fetchOverride != null) return fetchOverride(tx, hash);
+      final receipt = await rpc!.getTransactionReceipt(hash);
+      if (receipt == null) return null;
+      return receipt.status ?? false;
+    }
+
     final deadline = DateTime.now().add(timeout);
     try {
-      while (DateTime.now().isBefore(deadline)) {
+      while (true) {
+        final left = deadline.difference(DateTime.now());
+        if (left <= Duration.zero) break;
         try {
-          final receipt = await client.getTransactionReceipt(txHash);
-          if (receipt != null) return receipt.status ?? false;
+          final mined = await poll().timeout(_shorter(left, receiptPollTimeout));
+          if (mined != null) return mined;
+        } on TimeoutException {
+          // A stalled request: give up on it and poll again.
+          _log.w('receipt poll timed out');
         } catch (e) {
           // Network hiccup: keep polling until the deadline.
           _log.w('receipt poll failed: $e');
         }
         onTick?.call();
-        await Future<void>.delayed(_receiptInterval);
+        final rest = deadline.difference(DateTime.now());
+        if (rest <= Duration.zero) break;
+        await Future<void>.delayed(_shorter(rest, receiptPollInterval));
       }
       _log.w('no receipt for $txHash after ${timeout.inSeconds}s');
       return false;
     } finally {
       try {
-        await client.dispose();
+        await client?.dispose();
+      } catch (_) {}
+      // Web3Client.dispose does not close the HTTP client; closing it also
+      // drops a request that is still hanging.
+      try {
+        httpClient?.close();
       } catch (_) {}
     }
   }
+
+  static Duration _shorter(Duration a, Duration b) => a < b ? a : b;
 
   // ── Flow ──────────────────────────────────────────────────────────────────
 
@@ -280,7 +363,9 @@ class AiOnchainExecutor {
     for (final step in steps) {
       final stop = (preflightOverride ??
           GuardianExecutionController.instance.aiPreflight)(step);
-      if (stop != null) return _refused(_withLimitHint(stop.message, step));
+      if (stop != null) {
+        return _refused(_withLimitHint(stop.message, step, source));
+      }
     }
 
     final summary = summaryFor(preview, source: source);
@@ -299,26 +384,63 @@ class AiOnchainExecutor {
 
     if (!decision.mayExecute) return _fromGate(decision);
 
-    // From here the gate holds the lock: every exit reports or releases.
-    if (!decision.matches(summary)) {
+    // From here the gate holds the lock. It is kept alive while this works
+    // (sign-in, approve receipt) and ALWAYS freed at the end — on every
+    // return and on an exception — so a failure here never leaves every
+    // other AI money action "busy" (D13). release() is idempotent and never
+    // frees a newer holder.
+    final keepAlive = Timer.periodic(keepAliveInterval, (t) {
+      if (!gate.keepAlive(decision)) t.cancel();
+    });
+    try {
+      return await _runAllowed(
+        plan: plan,
+        tx: tx,
+        path: path,
+        decision: decision,
+        summary: summary,
+        context: context,
+        stillWanted: stillWanted,
+      );
+    } finally {
+      keepAlive.cancel();
       gate.release(decision);
+    }
+  }
+
+  /// Everything after the gate allowed the operation: sign-in, then the
+  /// dispatch(es), each right after [_stopBeforeDispatch], then the report.
+  Future<AiExecResult> _runAllowed({
+    required SwapExecutionPlan? plan,
+    required TransactionRequest tx,
+    required ExecutionPath path,
+    required AiGateDecision decision,
+    required AiActionSummary summary,
+    required BuildContext? context,
+    required bool Function()? stillWanted,
+  }) async {
+    if (!decision.matches(summary)) {
       return _refused(_t('aiExecNotBound',
           'The confirmation does not match this operation. Nothing was sent.'));
     }
-    if (stillWanted != null && !stillWanted()) {
-      gate.release(decision);
-      return _cancelled();
-    }
+    final early = _stopBeforeDispatch(decision, summary, stillWanted);
+    if (early != null) return early;
 
-    final session = await _ensureSession(context);
+    _Session session;
+    try {
+      session = await _ensureSession(context);
+    } catch (e, st) {
+      _log.e('sign-in check threw: $e\n$st');
+      session = _Session.unavailable;
+    }
     if (session != _Session.ok) {
-      gate.release(decision);
       final message = _t('aiExecSessionExpired',
           'Sign in again so the AI can sign this operation. Nothing was sent.');
       return session == _Session.declined
           ? AiExecResult(
               executed: false,
               cancelled: true,
+              declined: true,
               message: message,
               gateOutcome: AiGateOutcome.cancelled,
             )
@@ -329,10 +451,14 @@ class AiOnchainExecutor {
             );
     }
 
+    // The sign-in may have taken minutes: check again before sending.
+    final stop = _stopBeforeDispatch(decision, summary, stillWanted);
+    if (stop != null) return stop;
+
     AiExecResult outcome;
     try {
       outcome = plan != null
-          ? await _runSwap(plan, path, decision, summary)
+          ? await _runSwap(plan, path, decision, summary, stillWanted)
           : await _runTx(tx, path, decision, summary);
     } catch (e, st) {
       _log.e('AI exec threw: $e\n$st');
@@ -340,7 +466,7 @@ class AiOnchainExecutor {
     }
 
     try {
-      await gate.reportExecuted(
+      await AiActionGate.instance.reportExecuted(
         summary,
         decision,
         success: outcome.executed,
@@ -348,10 +474,59 @@ class AiOnchainExecutor {
         historyId: outcome.txHash,
       );
     } catch (e) {
+      // The caller's finally frees the lock.
       _log.w('reportExecuted failed: $e');
-      gate.release(decision);
     }
     return outcome;
+  }
+
+  /// Checked right before every dispatch. Null = go on (and the lock was
+  /// refreshed). Otherwise nothing more may be sent:
+  /// - the request was withdrawn (the queue's Cancel wins, D14/C18);
+  /// - the mode is no longer «Автономный» (or an emergency stop);
+  /// - the decision is no longer live (released, the lock timed out, held
+  ///   for [AiActionGate.lockMaxHold], or another action took it);
+  /// - the gate would refuse it now (permissions, «AI Мандат», limits, EPK).
+  /// [approveSent]: the swap's approval already went out.
+  AiExecResult? _stopBeforeDispatch(
+    AiGateDecision decision,
+    AiActionSummary summary,
+    bool Function()? stillWanted, {
+    bool approveSent = false,
+  }) {
+    final gate = AiActionGate.instance;
+    String? why;
+    var cancelled = true;
+    if (stillWanted != null && !stillWanted()) {
+      why = _t('aiExecStopWithdrawn', 'The operation was cancelled.');
+    } else if (AiControlService.instance.settings.mode != AiMode.fullAutonomy) {
+      why = _t('aiExecStopModeChanged',
+          'The AI mode is no longer «Autonomous».');
+    } else if (!gate.keepAlive(decision) || !decision.matches(summary)) {
+      why = _t('aiExecStopLapsed', 'The confirmation has expired.');
+    } else {
+      final again = gate.precheck(summary);
+      if (!again.mayExecute) {
+        why = again.reason ??
+            _t('aiExecBlocked', 'The AI may not do this operation.');
+        cancelled = false;
+      }
+    }
+    if (why == null) return null;
+    _log.i('stopped before dispatch (approve sent: $approveSent): $why');
+    final message = approveSent
+        ? _t(
+            'aiExecStoppedAfterApprove',
+            'Stopped after the token approval; the swap was not sent. $why',
+            {'reason': why})
+        : '$why ${_t('aiExecNothingSent', 'Nothing was sent.')}';
+    return AiExecResult(
+      executed: false,
+      cancelled: cancelled,
+      message: message,
+      // The gate had allowed it; the stop came afterwards (not a «нет»).
+      gateOutcome: cancelled ? AiGateOutcome.execute : AiGateOutcome.blocked,
+    );
   }
 
   Future<AiExecResult> _runTx(
@@ -367,13 +542,14 @@ class AiOnchainExecutor {
     return _sent(summary, r.detail, tx.chainId);
   }
 
-  /// Approve (when needed) → wait for its receipt → swap, under the one
-  /// confirmation the gate already gave.
+  /// Approve (when needed) → wait for its receipt → check again → swap,
+  /// under the one confirmation the gate already gave.
   Future<AiExecResult> _runSwap(
     SwapExecutionPlan plan,
     ExecutionPath path,
     AiGateDecision decision,
     AiActionSummary summary,
+    bool Function()? stillWanted,
   ) async {
     final runner = swapStepRunnerOverride ??
         GuardianExecutionController.instance.orchestrateSwapStep;
@@ -390,6 +566,11 @@ class AiOnchainExecutor {
               'The token approval was not confirmed in time, so the swap was not sent.'),
         );
       }
+      // Up to 2 minutes passed: a Cancel in the queue, a mode switch or a
+      // lapsed lock must stop the swap here (D13, D14).
+      final stop = _stopBeforeDispatch(decision, summary, stillWanted,
+          approveSent: true);
+      if (stop != null) return stop;
     }
     final s = await runner(plan.swapStep, path,
         requireTrustedTarget: decision.withoutPin);
@@ -434,19 +615,27 @@ class AiOnchainExecutor {
           'https://api.trongrid.io',
     );
     final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
+    while (true) {
+      final left = deadline.difference(DateTime.now());
+      if (left <= Duration.zero) break;
       try {
-        final allowance = await client.getAllowance(
-          ownerAddress: tx.fromAddress,
-          spenderAddress: spender,
-          tokenContract: token,
-        );
+        final allowance = await client
+            .getAllowance(
+              ownerAddress: tx.fromAddress,
+              spenderAddress: spender,
+              tokenContract: token,
+            )
+            .timeout(_shorter(left, receiptPollTimeout));
         if (allowance >= needed) return true;
+      } on TimeoutException {
+        _log.w('tron allowance poll timed out');
       } catch (e) {
         _log.w('tron allowance poll failed: $e');
       }
       onTick?.call();
-      await Future<void>.delayed(_receiptInterval);
+      final rest = deadline.difference(DateTime.now());
+      if (rest <= Duration.zero) break;
+      await Future<void>.delayed(_shorter(rest, receiptPollInterval));
     }
     return false;
   }
@@ -483,7 +672,29 @@ class AiOnchainExecutor {
   AiExecResult _fromGate(AiGateDecision d) {
     switch (d.outcome) {
       case AiGateOutcome.cancelled:
-        return _cancelled(d.reason);
+        // The card closed unanswered (app in the background, timeout):
+        // not a «нет» — the caller may ask again later.
+        if (d.interrupted) {
+          return AiExecResult(
+            executed: false,
+            interrupted: true,
+            message: d.reason ?? _unavailableMessage(),
+            gateOutcome: AiGateOutcome.cancelled,
+          );
+        }
+        // The card was closed because the mode left «Автономный»: stopped,
+        // but not a «нет» on the card.
+        if (AiControlService.instance.settings.mode != AiMode.fullAutonomy) {
+          return AiExecResult(
+            executed: false,
+            cancelled: true,
+            message: d.reason ??
+                _t('aiExecStopModeChanged',
+                    'The AI mode is no longer «Autonomous».'),
+            gateOutcome: AiGateOutcome.cancelled,
+          );
+        }
+        return _declined(d.reason);
       case AiGateOutcome.unavailable:
         return AiExecResult(
           executed: false,
@@ -524,9 +735,11 @@ class AiOnchainExecutor {
         gateOutcome: AiGateOutcome.blocked,
       );
 
-  static AiExecResult _cancelled([String? reason]) => AiExecResult(
+  /// The user said no on the card (or by voice), or the PIN failed.
+  static AiExecResult _declined([String? reason]) => AiExecResult(
         executed: false,
         cancelled: true,
+        declined: true,
         message: reason ?? _t('aiExecCancelled', 'Cancelled. Nothing was sent.'),
         gateOutcome: AiGateOutcome.cancelled,
       );
@@ -562,18 +775,33 @@ class AiOnchainExecutor {
         {'tx': _short(hash)});
   }
 
-  /// Over-limit refusals carry the way out: raising the threshold needs the
-  /// PIN in Policy (D6). Never a bypass.
-  static String _withLimitHint(String message, TransactionRequest tx) {
+  /// Refusals over a limit or outside «AI Мандат» carry the way out:
+  /// raising the threshold needs the PIN in Policy (D6). Never a bypass.
+  /// The position cap counts for buys only (as in [AiActionGate] and
+  /// ExchangeOrderService); the daily limit for every send / trade. A
+  /// quantity is never taken for dollars.
+  static String _withLimitHint(
+      String message, TransactionRequest tx, String source) {
     if (tx.type == TransactionType.approve ||
         tx.type == TransactionType.revoke) {
       return message;
     }
-    final usd = TxUsdValuer.limitAmount(tx);
-    final cap = AiControlService.instance.settings.mandate.maxPositionUsd;
-    final overLimit =
-        usd > 0 && (usd > cap || !DelegationController.instance.canSpend(usd));
-    if (!overLimit) return message;
+    final mandate = AiControlService.instance.settings.mandate;
+    final outsideMandate = !mandate.allowsNetwork(tx.chainKey) ||
+        !mandate.allowsAsset(tx.tokenSymbol) ||
+        (tx.type == TransactionType.swap &&
+            !mandate.allowsAsset(tx.targetTokenSymbol));
+    var overLimit = false;
+    final usd = TxUsdValuer.usdValue(tx);
+    if (usd != null && usd > 0) {
+      final kind = _kindFor(tx, source);
+      final isBuy = kind == AiActionKind.onChainBuy ||
+          kind == AiActionKind.onChainSwap ||
+          kind == AiActionKind.delegatedTrade;
+      overLimit = (isBuy && usd > mandate.maxPositionUsd) ||
+          !DelegationController.instance.canSpend(usd);
+    }
+    if (!outsideMandate && !overLimit) return message;
     final hint = _t('aiExecLimitHint',
         'Want more? Raise the threshold in «Policy» (PIN needed).');
     return '$message $hint';
@@ -641,15 +869,20 @@ class AiOnchainExecutor {
     }
   }
 
+  /// The amount is not in the title: the card's «Amount» row, the chat line
+  /// and the «ИИ выполнил» body show [AiActionSummary.amountLabel]. Trades
+  /// name the contract of the token received, so the card shows WHICH token
+  /// the AI trades (a look-alike has another contract).
   static String _titleFor(AiActionKind kind, TransactionRequest tx) {
-    final amount = _fmtAmount(tx.amount);
     final token = tx.tokenSymbol ?? '';
     final from = token;
     final to = tx.targetTokenSymbol ?? '';
+    final contract = _receivedContract(tx);
     switch (kind) {
       case AiActionKind.onChainSend:
-        return _t('aiActSendTitle', 'Send $amount $token',
-            {'amount': amount, 'token': token});
+        final recipient = _shortAddress(tx.toAddress);
+        return _t('aiActSendToTitle', 'Send $token to $recipient',
+            {'token': token, 'to': recipient});
       case AiActionKind.approve:
         return _t('aiActApproveTitle', 'Allow $token spending',
             {'token': token});
@@ -657,19 +890,58 @@ class AiOnchainExecutor {
         return _t('aiActRevokeTitle', 'Revoke $token approval',
             {'token': token});
       case AiActionKind.onChainBuy:
-        return _t('aiActBuyTitle', 'Buy $to for $from',
-            {'from': from, 'to': to});
+        return contract == null
+            ? _t('aiActBuyTitle', 'Buy $to for $from',
+                {'from': from, 'to': to})
+            : _t('aiActBuyTokenTitle', 'Buy $to ($contract) for $from',
+                {'from': from, 'to': to, 'contract': contract});
       case AiActionKind.onChainSell:
-        return _t('aiActSellTitle', 'Sell $from for $to',
-            {'from': from, 'to': to});
+        return contract == null
+            ? _t('aiActSellTitle', 'Sell $from for $to',
+                {'from': from, 'to': to})
+            : _t('aiActSellTokenTitle', 'Sell $from for $to ($contract)',
+                {'from': from, 'to': to, 'contract': contract});
       case AiActionKind.delegatedTrade:
-        return _t('aiActDelegatedTitle', 'Buy $to (delegated to AI)',
-            {'to': to});
+        return contract == null
+            ? _t('aiActDelegatedTitle', 'Buy $to (delegated to AI)',
+                {'to': to})
+            : _t('aiActDelegatedTokenTitle',
+                'Buy $to ($contract), delegated to AI',
+                {'to': to, 'contract': contract});
       case AiActionKind.onChainSwap:
       case AiActionKind.cexOrder:
-        return _t('aiActSwapTitle', 'Swap $from → $to',
-            {'from': from, 'to': to});
+        return contract == null
+            ? _t('aiActSwapTitle', 'Swap $from → $to',
+                {'from': from, 'to': to})
+            : _t('aiActSwapTokenTitle', 'Swap $from → $to ($contract)',
+                {'from': from, 'to': to, 'contract': contract});
     }
+  }
+
+  /// The received token's contract, short (0x1234…abcd); null for the
+  /// network's native coin (it has no contract) or when unknown.
+  static String? _receivedContract(TransactionRequest tx) {
+    final address = tx.targetTokenAddress?.trim() ?? '';
+    if (address.isEmpty || address.toLowerCase() == 'native') return null;
+    if (AddressKey.same(address, ZeroXSwapProvider.nativeTokenSentinel)) {
+      return null;
+    }
+    final native =
+        PrivyChainRegistry.getChain(tx.chainKey).nativeSymbol?.toUpperCase();
+    final symbol = tx.targetTokenSymbol?.trim().toUpperCase();
+    // SOL is swapped as the wSOL mint, TRX by its symbol: still the coin.
+    if (native != null && symbol == native) return null;
+    // Not an address (e.g. a symbol used as a native reference).
+    if (address.length < 26) return null;
+    return _shortAddress(address);
+  }
+
+  /// '0x1234…abcd' for EVM, 'Abcd…wxyz' for base58 (Solana, Tron).
+  static String _shortAddress(String address) {
+    final a = address.trim();
+    final head = a.startsWith('0x') || a.startsWith('0X') ? 6 : 4;
+    if (a.length <= head + 6) return a;
+    return '${a.substring(0, head)}…${a.substring(a.length - 4)}';
   }
 
   static String? _swapFeeLabel(SwapExecutionPlan plan) {

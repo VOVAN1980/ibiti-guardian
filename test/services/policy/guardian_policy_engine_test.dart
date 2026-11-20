@@ -19,6 +19,26 @@ import 'package:ibiti_guardian/services/swap/swap_provider.dart'
 IntentData _intent([String raw = 'test']) =>
     IntentData(type: IntentType.unknown, rawInput: raw);
 
+/// The user's own Send / Swap window (wallet_send_modal / wallet_swap_modal).
+const _walletSend = IntentData(
+  type: IntentType.sendAsset,
+  rawInput: 'send',
+  origin: IntentOrigin.wallet,
+);
+const _walletSwap = IntentData(
+  type: IntentType.swapAsset,
+  rawInput: 'swap',
+  origin: IntentOrigin.wallet,
+);
+
+/// The AI (chat, voice, market chat) — origin market, the default.
+const _aiSend = IntentData(type: IntentType.sendAsset, rawInput: 'send');
+const _aiSwap = IntentData(type: IntentType.swapAsset, rawInput: 'swap');
+
+/// «Советник» after the emergency stop: mode manual, no AI permissions.
+AiControlSettings _emergencyStopped() =>
+    const AiControlSettings(mode: AiMode.manual, allowedActions: []);
+
 /// Default AI settings: guarded mode with all relevant actions allowed.
 AiControlSettings _guardedSettings({
   List<AiAction>? allowedActions,
@@ -43,6 +63,7 @@ AiControlSettings _guardedSettings({
 TransactionRequest _sendTx({
   double? amount,
   String toAddress = '0xRecipient',
+  IntentData? intent,
 }) {
   return TransactionRequest(
     type: TransactionType.send,
@@ -51,7 +72,7 @@ TransactionRequest _sendTx({
     amount: amount,
     chainId: 56,
     chainKey: 'bsc',
-    sourceIntent: _intent(),
+    sourceIntent: intent ?? _intent(),
   );
 }
 
@@ -59,6 +80,7 @@ TransactionRequest _swapTx({
   double? amount,
   Map<String, dynamic>? quoteSummary,
   String? routerAddress,
+  IntentData? intent,
 }) {
   return TransactionRequest(
     type: TransactionType.swap,
@@ -71,7 +93,7 @@ TransactionRequest _swapTx({
     targetTokenSymbol: 'BNB',
     routerAddress: routerAddress,
     quoteSummary: quoteSummary,
-    sourceIntent: _intent(),
+    sourceIntent: intent ?? _intent(),
   );
 }
 
@@ -79,6 +101,7 @@ TransactionRequest _approveTx({
   double? amount,
   bool isUnlimited = false,
   String? spenderAddress,
+  IntentData? intent,
 }) {
   return TransactionRequest(
     type: TransactionType.approve,
@@ -89,7 +112,7 @@ TransactionRequest _approveTx({
     spenderAddress: spenderAddress,
     chainId: 56,
     chainKey: 'bsc',
-    sourceIntent: _intent(),
+    sourceIntent: intent ?? _intent(),
   );
 }
 
@@ -148,7 +171,8 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 1. Manual mode → always blocks
+  // 1. «Советник» (code name manual) → blocks every AI / market transaction
+  //    (the user's own wallet window: see 2b)
   // ═══════════════════════════════════════════════════════════════════════════
   group('AI Mode Gate', () {
     test('manual mode blocks any transaction type', () {
@@ -243,6 +267,251 @@ void main() {
       // TransactionType.unknown handler at the bottom of checkV3.
       expect(result.blocked, isTrue);
       expect(result.appliedRules, isNot(contains('AI_ACTION_NOT_ALLOWED')));
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 2b. The user's own wallet window (origin wallet) is not the AI (D2): the
+  //     AI mode and the AI permissions never stop it; the wallet limits do.
+  // ═══════════════════════════════════════════════════════════════════════════
+  group('User wallet window (origin wallet)', () {
+    PolicyResult check(
+      TransactionRequest tx, {
+      SimulationResult? sim,
+      RpcSimulationResult? rpc,
+      PolicyProfile? profile,
+      ExecutionPath path = ExecutionPath.localProtected,
+    }) =>
+        GuardianPolicyEngine.checkV3(
+          tx,
+          sim ?? _cleanSim(),
+          rpc ?? _rpcOk(),
+          profile ?? _safeProfile(),
+          path,
+        );
+
+    test('isUserWalletTx: only the wallet window, never automation', () {
+      expect(
+          GuardianPolicyEngine.isUserWalletTx(
+              _sendTx(amount: 1, intent: _walletSend)),
+          isTrue);
+      expect(
+          GuardianPolicyEngine.isUserWalletTx(
+              _swapTx(amount: 1, intent: _walletSwap)),
+          isTrue);
+      expect(
+          GuardianPolicyEngine.isUserWalletTx(
+              _sendTx(amount: 1, intent: _aiSend)),
+          isFalse);
+      expect(GuardianPolicyEngine.isUserWalletTx(_sendTx(amount: 1)), isFalse);
+      // An automation intent that claims the wallet origin is still the AI.
+      expect(
+        GuardianPolicyEngine.isUserWalletTx(_sendTx(
+          amount: 1,
+          intent: const IntentData(
+            type: IntentType.sendAsset,
+            rawInput: '_AUTO_ send',
+            origin: IntentOrigin.wallet,
+            sourceTrigger: 'rule_1',
+          ),
+        )),
+        isFalse,
+      );
+    });
+
+    test('«Советник»: the own send within the send limit is allowed', () {
+      AiControlService.instance
+          .setSettingsForTest(_guardedSettings(mode: AiMode.manual));
+
+      final result = check(_sendTx(amount: 10, intent: _walletSend));
+
+      expect(result.blocked, isFalse);
+      expect(result.allowed, isTrue);
+      expect(result.requiresConfirmation, isTrue);
+      expect(result.appliedRules, contains('USER_WALLET_ORIGIN'));
+      expect(result.appliedRules, contains('SEND_STANDARD_CONFIRM'));
+      expect(result.appliedRules, isNot(contains('AI_MODE_MANUAL_BLOCK')));
+    });
+
+    test('«Советник»: the own swap within the swap limit is allowed', () {
+      AiControlService.instance
+          .setSettingsForTest(_guardedSettings(mode: AiMode.manual));
+
+      final result = check(_swapTx(
+        amount: 100,
+        quoteSummary: {'slippageBps': 50},
+        intent: _walletSwap,
+      ));
+
+      expect(result.blocked, isFalse);
+      expect(result.appliedRules, contains('SWAP_STANDARD_CONFIRM'));
+      expect(result.appliedRules, isNot(contains('AI_MODE_MANUAL_BLOCK')));
+    });
+
+    test('«Советник»: the approve step of the own swap is allowed', () {
+      AiControlService.instance
+          .setSettingsForTest(_guardedSettings(mode: AiMode.manual));
+
+      final result = check(_approveTx(
+        amount: 50,
+        spenderAddress: '0xSpender',
+        intent: _walletSwap,
+      ));
+
+      expect(result.blocked, isFalse);
+      expect(result.appliedRules, contains('APPROVE_CONFIRM'));
+    });
+
+    test('after the emergency stop the own send and swap still work', () {
+      AiControlService.instance.setSettingsForTest(_emergencyStopped());
+
+      final send = check(_sendTx(amount: 10, intent: _walletSend));
+      final swap = check(_swapTx(
+        amount: 100,
+        quoteSummary: {'slippageBps': 50},
+        intent: _walletSwap,
+      ));
+
+      expect(send.blocked, isFalse);
+      expect(send.appliedRules, isNot(contains('AI_MODE_MANUAL_BLOCK')));
+      expect(send.appliedRules, isNot(contains('AI_ACTION_NOT_ALLOWED')));
+      expect(swap.blocked, isFalse);
+      expect(swap.appliedRules, isNot(contains('AI_MODE_MANUAL_BLOCK')));
+      expect(swap.appliedRules, isNot(contains('AI_ACTION_NOT_ALLOWED')));
+    });
+
+    test('AI permissions off: the own send passes, the AI send is blocked',
+        () {
+      AiControlService.instance
+          .setSettingsForTest(_guardedSettings(allowedActions: []));
+
+      final own = check(_sendTx(amount: 10, intent: _walletSend));
+      final ai = check(_sendTx(amount: 10, intent: _aiSend));
+
+      expect(own.blocked, isFalse);
+      expect(own.appliedRules, isNot(contains('AI_ACTION_NOT_ALLOWED')));
+      expect(ai.blocked, isTrue);
+      expect(ai.appliedRules, contains('AI_ACTION_NOT_ALLOWED'));
+    });
+
+    test('«Советник»: the AI send and swap are still blocked', () {
+      AiControlService.instance
+          .setSettingsForTest(_guardedSettings(mode: AiMode.manual));
+
+      final send = check(_sendTx(amount: 10, intent: _aiSend));
+      final swap = check(_swapTx(
+        amount: 100,
+        quoteSummary: {'slippageBps': 50},
+        intent: _aiSwap,
+      ));
+
+      expect(send.blocked, isTrue);
+      expect(send.appliedRules, contains('AI_MODE_MANUAL_BLOCK'));
+      expect(send.appliedRules, isNot(contains('USER_WALLET_ORIGIN')));
+      expect(swap.blocked, isTrue);
+      expect(swap.appliedRules, contains('AI_MODE_MANUAL_BLOCK'));
+    });
+
+    test('«Советник»: automation claiming the wallet origin is still blocked',
+        () {
+      AiControlService.instance
+          .setSettingsForTest(_guardedSettings(mode: AiMode.manual));
+
+      final result = check(_sendTx(
+        amount: 10,
+        intent: const IntentData(
+          type: IntentType.sendAsset,
+          rawInput: '_AUTO_ send',
+          origin: IntentOrigin.wallet,
+          sourceTrigger: 'rule_1',
+        ),
+      ));
+
+      expect(result.blocked, isTrue);
+      expect(result.appliedRules, contains('AI_MODE_MANUAL_BLOCK'));
+    });
+
+    test('the own send still obeys the send limit (in every mode)', () {
+      for (final settings in [
+        _guardedSettings(),
+        _guardedSettings(mode: AiMode.manual),
+        _emergencyStopped(),
+      ]) {
+        AiControlService.instance.setSettingsForTest(settings);
+        final result = check(_sendTx(amount: 100, intent: _walletSend));
+        expect(result.blocked, isTrue, reason: settings.mode.name);
+        expect(result.appliedRules, contains('PROFILE_LIMIT_EXCEEDED'));
+      }
+    });
+
+    test('the own swap still obeys the swap limit and the slippage cap', () {
+      AiControlService.instance.setSettingsForTest(_emergencyStopped());
+
+      final overLimit = check(_swapTx(
+        amount: 600, // safe profile swap limit is 500
+        quoteSummary: {'slippageBps': 50},
+        intent: _walletSwap,
+      ));
+      final overSlippage = check(_swapTx(
+        amount: 10,
+        quoteSummary: {'slippageBps': SwapSlippagePolicy.maxBps + 1},
+        intent: _walletSwap,
+      ));
+
+      expect(overLimit.blocked, isTrue);
+      expect(overLimit.appliedRules, contains('SWAP_PROFILE_LIMIT_EXCEEDED'));
+      expect(overSlippage.blocked, isTrue);
+      expect(overSlippage.appliedRules, contains('SWAP_SLIPPAGE_CAP_EXCEEDED'));
+    });
+
+    test('the own approve: unlimited and unknown contracts still blocked', () {
+      AiControlService.instance.setSettingsForTest(_emergencyStopped());
+
+      final unlimited =
+          check(_approveTx(isUnlimited: true, intent: _walletSwap));
+      final unknown = check(
+        _approveTx(
+          amount: 10,
+          spenderAddress: '0xUnknownSpender',
+          intent: _walletSwap,
+        ),
+        sim: _unknownContractSim(),
+      );
+
+      expect(unlimited.blocked, isTrue);
+      expect(unlimited.appliedRules, contains('APPROVE_LIMIT_EXCEEDED'));
+      expect(unknown.blocked, isTrue);
+      expect(unknown.appliedRules, contains('PROFILE_UNKNOWN_CONTRACT_DENIED'));
+    });
+
+    test('the own send: simulation and critical risk still block', () {
+      AiControlService.instance.setSettingsForTest(_emergencyStopped());
+
+      final reverted = check(
+        _sendTx(amount: 10, intent: _walletSend),
+        rpc: _rpcRevert('ERC20: transfer amount exceeds balance'),
+      );
+      final critical = check(
+        _sendTx(amount: 10, toAddress: '0xUntrusted', intent: _walletSend),
+        sim: _criticalSim(),
+      );
+
+      expect(reverted.blocked, isTrue);
+      expect(reverted.appliedRules, contains('RPC_REVERT_DETECTED'));
+      expect(critical.blocked, isTrue);
+      expect(critical.appliedRules, contains('STATIC_CRITICAL_BLOCK'));
+    });
+
+    test('the own send over \$1000 still needs EPK', () {
+      AiControlService.instance.setSettingsForTest(_emergencyStopped());
+
+      final result = check(
+        _sendTx(amount: 1500, intent: _walletSend),
+        profile: _defiProfile().copyWith(sendLimitUsd: 5000),
+      );
+
+      expect(result.blocked, isTrue);
+      expect(result.appliedRules, contains('EPK_REQUIRED_UNAVAILABLE'));
     });
   });
 

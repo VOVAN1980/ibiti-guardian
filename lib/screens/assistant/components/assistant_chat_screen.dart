@@ -30,6 +30,19 @@ import 'package:ibiti_guardian/models/app_intent.dart';
 import 'package:ibiti_guardian/services/intents/intent_prompt_mapper.dart';
 import 'dart:async';
 
+/// How the chat shows the result of an operation the AI carried out
+/// («Автономный»): done = an action; not done, but nothing went wrong
+/// either = a note: the user said no (cancelled), or the card closed
+/// without an answer — the app went to the background, it timed out — or
+/// another AI operation was running (deferred, safe to ask again). Only a
+/// refusal or a failure is shown as an error.
+@visibleForTesting
+ResponseType aiExecResultResponseType(AiExecResult result) {
+  if (result.executed) return ResponseType.action;
+  if (result.cancelled || result.deferred) return ResponseType.info;
+  return ResponseType.error;
+}
+
 enum _MessageRole { user, assistant }
 
 class _ChatMessage {
@@ -382,18 +395,19 @@ class _AssistantChatScreenState extends State<AssistantChatScreen> {
     }
     if (!mounted) return;
 
+    final responseType = aiExecResultResponseType(result);
     setState(() {
       _isThinking = false;
-      _coreState = result.executed
-          ? AICoreState.safe
-          : (result.cancelled ? AICoreState.idle : AICoreState.danger);
+      _coreState = switch (responseType) {
+        ResponseType.action => AICoreState.safe,
+        ResponseType.error => AICoreState.danger,
+        _ => AICoreState.idle,
+      };
     });
     _addMessage(_ChatMessage(
       text: result.message,
       role: _MessageRole.assistant,
-      responseType: result.executed
-          ? ResponseType.action
-          : (result.cancelled ? ResponseType.info : ResponseType.error),
+      responseType: responseType,
     ));
 
     final hash = result.txHash;

@@ -83,6 +83,43 @@ class WalletTradeModal extends StatefulWidget {
     );
   }
 
+  /// The swap this window asks for. The window is the user's own (owner
+  /// decisions D2 / D3): the user picks or checks the coins and the amount
+  /// and confirms with the PIN — also when the AI opened and filled it in
+  /// «Ручной». So it is origin [IntentOrigin.wallet], like the Send and
+  /// Swap windows (`GuardianPolicyEngine.isUserWalletTx`): the AI mode, the
+  /// AI permissions, «AI Мандат» and the daily trading limit do not stop it
+  /// (it works in «Советник» and after the emergency stop), while the wallet
+  /// swap / approve limits, the slippage cap, unknown contracts, the
+  /// simulation and EPK still apply to it. The AI's own trades never come
+  /// through here: AutomationIntentBuilder builds them (origin market) and
+  /// AiActionGate confirms them on the AI card.
+  @visibleForTesting
+  static IntentData swapIntent({
+    required double amount,
+    required String fromSymbol,
+    required String fromAddress,
+    required String toSymbol,
+    required String toAddress,
+    required int fromDecimals,
+    required int toDecimals,
+    required double slippagePercent,
+  }) {
+    return IntentData(
+      type: IntentType.swapAsset,
+      rawInput: 'swap $amount $fromSymbol to $toSymbol',
+      amount: amount,
+      sourceTokenSymbol: fromSymbol,
+      sourceTokenAddress: fromAddress.isEmpty ? fromSymbol : fromAddress,
+      targetTokenSymbol: toSymbol,
+      targetTokenAddress: toAddress.isEmpty ? toSymbol : toAddress,
+      sourceTokenDecimals: fromDecimals,
+      targetTokenDecimals: toDecimals,
+      slippageBps: (slippagePercent * 100).toInt(),
+      origin: IntentOrigin.wallet,
+    );
+  }
+
   @override
   State<WalletTradeModal> createState() => _WalletTradeModalState();
 
@@ -373,20 +410,17 @@ class _WalletTradeModalState extends State<WalletTradeModal> {
         'decimals=${_toAsset?.decimals} (resolved=$dstDecimals)');
     print('[SwapModal] amount=$_inputAmount chain=$_swapChainKey');
 
-    // Build IntentData for the swap pipeline
-    final intent = IntentData(
-      type: IntentType.swapAsset,
-      rawInput: 'swap $_inputAmount $fromSymbol to $toSymbol',
+    // Build IntentData for the swap pipeline: the user's own window
+    // (origin wallet, see [WalletTradeModal.swapIntent]).
+    final intent = WalletTradeModal.swapIntent(
       amount: _inputAmount,
-      sourceTokenSymbol: fromSymbol,
-      sourceTokenAddress:
-          resolvedFromAddr.isEmpty ? fromSymbol : resolvedFromAddr,
-      targetTokenSymbol: toSymbol,
-      targetTokenAddress: resolvedToAddr.isEmpty ? toSymbol : resolvedToAddr,
-      sourceTokenDecimals: srcDecimals,
-      targetTokenDecimals: dstDecimals,
-      slippageBps: (_slippage * 100).toInt(),
-      origin: IntentOrigin.market,
+      fromSymbol: fromSymbol,
+      fromAddress: resolvedFromAddr,
+      toSymbol: toSymbol,
+      toAddress: resolvedToAddr,
+      fromDecimals: srcDecimals,
+      toDecimals: dstDecimals,
+      slippagePercent: _slippage,
     );
 
     setState(() {

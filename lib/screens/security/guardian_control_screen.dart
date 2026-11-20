@@ -254,12 +254,6 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
   /// Why an AI-opened revoke did not start (shown above the button).
   String? _revokeNote;
 
-  /// «Автономный»: the gate's decision for the running revoke queue. It is
-  /// reported to AiActionGate when the queue finishes, and released if the
-  /// window closes first.
-  AiActionSummary? _gateSummary;
-  AiGateDecision? _gateDecision;
-
   @override
   void initState() {
     super.initState();
@@ -310,10 +304,11 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
 
   @override
   void dispose() {
-    final pending = _gateDecision;
-    _gateDecision = null;
-    _gateSummary = null;
-    if (pending != null) AiActionGate.instance.release(pending);
+    // An AI-gated revoke queue that is still running is NOT released here:
+    // the queue keeps revoking after the window closes, so the AI lock stays
+    // held (kept alive by its progress) and the report — audit +
+    // «ИИ выполнил: …», releasing the lock — follows when it finishes
+    // (GuardianFlowController keeps listening after dispose).
     _controller.removeListener(_updateVisualStep);
     AiControlService.instance.removeListener(_onAiModeChanged);
     _pulseCtrl.dispose();
@@ -410,13 +405,15 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
               {'default': 'The confirmation expired. Nothing was done.'}));
           return;
         }
-        _gateSummary = summary;
-        _gateDecision = d;
-        if (!_controller.confirmAction(onFinished: _reportAiRevoke)) {
-          _gateSummary = null;
-          _gateDecision = null;
-          gate.release(d);
-        }
+        // The report and the lock belong to the queue, not to this window:
+        // closing the window does not stop the queue (see dispose).
+        final controller = _controller;
+        final started = controller.confirmAction(
+          onProgress: (_) => gate.keepAlive(d),
+          onFinished: (result) =>
+              _reportAiRevoke(summary, d, result, controller.startedJobs),
+        );
+        if (!started) gate.release(d);
       case AiGateOutcome.prepareOnly:
       case AiGateOutcome.busy:
       case AiGateOutcome.unavailable:
@@ -464,28 +461,37 @@ class _LiveSecurityModalState extends State<_LiveSecurityModal>
     );
   }
 
-  /// The queue of an AI-gated revoke finished: audit + «ИИ выполнил: …».
-  /// The System status card is updated by the flow controller, as before.
-  void _reportAiRevoke(RevokeProgress result) {
-    final s = _gateSummary;
-    final d = _gateDecision;
-    _gateSummary = null;
-    _gateDecision = null;
-    if (s == null || d == null) return;
+  /// The queue of an AI-gated revoke finished: audit + «ИИ выполнил: …»,
+  /// and the AI lock is released. Static: it may run after the window
+  /// closed. Counts and the tx hash come from this revoke's own [jobs] (the
+  /// queue may also hold jobs of an earlier run). The System status card is
+  /// updated by the flow controller, as before.
+  static void _reportAiRevoke(
+    AiActionSummary s,
+    AiGateDecision d,
+    RevokeProgress result,
+    List<RevokeJob> jobs,
+  ) {
+    bool revoked(RevokeJob j) =>
+        j.status == RevokeJobStatus.submitted ||
+        j.status == RevokeJobStatus.confirmed;
+    final ok = jobs.isEmpty ? result.successCount : jobs.where(revoked).length;
+    // Not revoked = failed, or never reached (the queue stopped first).
+    final notDone = jobs.isEmpty ? result.failedCount : jobs.length - ok;
     String? hash;
-    for (final job in TransactionQueue().currentJobs) {
+    for (final job in jobs) {
       final h = job.txHash;
-      if (h != null && h.isNotEmpty) {
+      if (revoked(job) && h != null && h.isNotEmpty) {
         hash = h;
         break;
       }
     }
-    final done = '${result.successCount}';
-    final failed = '${result.failedCount}';
+    final done = '$ok';
+    final failed = '$notDone';
     unawaited(AiActionGate.instance.reportExecuted(
       s,
       d,
-      success: result.successCount > 0,
+      success: ok > 0,
       detail: LocalizationService.instance.t('aiRevokeResult', {
         'done': done,
         'failed': failed,

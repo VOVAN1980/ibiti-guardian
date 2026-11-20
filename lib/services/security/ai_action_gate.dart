@@ -33,17 +33,23 @@ import 'package:ibiti_guardian/utils/guardian_logger.dart';
 //       (tap or voice «да») → PIN → execute → «ИИ выполнил: …».
 //     • PIN setting OFF → executes without the card only when ALL hold:
 //       daily trading limit, «AI Мандат» (asset, network, venue, max position
-//       for buys), EPK active (on-chain), trusted recipient (trusted
-//       addresses/contracts, own cards, self, official swap routers), known
-//       USD value, app in the foreground, vault unlocked. A new address, an
-//       unknown price or a locked vault fall back to the card + PIN.
-//   Over a limit / outside the mandate / EPK paused → blocked in every case,
-//   with the reason and a hint to raise the limit in «Политика» (PIN).
+//       for buys), EPK active, trusted recipient (trusted addresses/contracts,
+//       own cards, self, official swap routers), known USD value, app in the
+//       foreground, vault unlocked. A new address, an unknown price, a locked
+//       vault, or an exchange order while EPK is paused fall back to the
+//       card + PIN.
+//   Over a limit / outside the mandate → blocked in every case, with the
+//   reason and a hint to raise the limit in «Политика» (PIN).
+//   EPK paused → every on-chain action is blocked; an exchange order (not
+//   on-chain, EPK cannot stop it) needs the card + PIN even with the PIN
+//   setting off.
 //   Revoke only lowers allowances: never blocked by EPK pause, expired AI
 //   permissions, limits or the mandate (at most it asks for the card + PIN).
 //
 // One AI money action at a time: a global lock is held from the card through
-// execution until reportExecuted / release (or a timeout).
+// execution until reportExecuted / release (or a timeout). An executing
+// action keeps it alive while it waits (sign-in, receipts) with [keepAlive],
+// up to [AiActionGate.lockMaxHold].
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// What kind of money action the AI wants to run.
@@ -133,6 +139,7 @@ class AiGateDecision {
     this.outcome, {
     this.pinConfirmed = false,
     this.reason,
+    this.interrupted = false,
     AiActionSummary? bound,
     int? token,
     List<String> cardNotes = const [],
@@ -145,6 +152,13 @@ class AiGateDecision {
 
   /// Localized, user-facing.
   final String? reason;
+
+  /// With [AiGateOutcome.cancelled] only: the card closed WITHOUT the user's
+  /// answer — the app went to the background, or nobody answered in time.
+  /// Nothing ran and the user did not say no, so it is safe to ask again
+  /// later (the «Делегировать AI» queue keeps the item pending). False for
+  /// an explicit «Отмена» / voice «нет», a failed PIN or a mode change.
+  final bool interrupted;
 
   final AiActionSummary? _bound;
   final int? _token;
@@ -202,7 +216,18 @@ bool _valueWithin(double? actual, double? confirmed) {
   return actual <= confirmed * 1.01 + 0.01;
 }
 
-enum _CardResult { confirmed, declined, timedOut, aborted, unavailable, pinFailed }
+/// How a card session ended. [timedOut] and [background] are not answers
+/// from the user (→ [AiGateDecision.interrupted]); [aborted] is the AI mode
+/// changing while the card was open.
+enum _CardResult {
+  confirmed,
+  declined,
+  timedOut,
+  background,
+  aborted,
+  unavailable,
+  pinFailed,
+}
 
 class _CardSession {
   final Completer<bool> result = Completer<bool>();
@@ -257,10 +282,17 @@ class AiActionGate {
   static const _log = GuardianLogger('AiGate');
 
   /// The lock is released after this long without a result (card + PIN,
-  /// then again from the moment execution is allowed).
+  /// then again from the moment execution is allowed, or from the last
+  /// [keepAlive]).
   static const Duration lockTimeout = Duration(minutes: 3);
 
-  /// An unanswered card closes itself (= cancel).
+  /// [keepAlive] stops extending the lock this long after execution was
+  /// allowed, so a holder that hangs (a sign-in dialog left open, a stuck
+  /// request) frees the lock at the latest [lockTimeout] later.
+  static const Duration lockMaxHold = Duration(minutes: 10);
+
+  /// An unanswered card closes itself. Not an answer from the user: the
+  /// decision is [AiGateDecision.interrupted].
   static const Duration cardTimeout = Duration(minutes: 2);
 
   /// Official swap routers count as trusted contracts for AI swaps, so
@@ -291,10 +323,15 @@ class AiActionGate {
   int _seq = 0;
   int? _lockToken;
   DateTime? _lockSince;
+
+  /// When execution was allowed ([_granted]); bounds [keepAlive].
+  DateTime? _grantedAt;
   _CardSession? _card;
 
   /// Tests: stands for the card AND the PIN (true = confirmed with PIN).
-  /// Checked before the context / foreground checks.
+  /// Checked before the context / foreground checks. The card session's
+  /// rules still apply: [cardTimeout] (see [cardTimeoutOverride]) and the
+  /// app going to the background close it as [AiGateDecision.interrupted].
   @visibleForTesting
   Future<bool> Function(AiActionSummary s)? confirmUiOverride;
 
@@ -306,9 +343,41 @@ class AiActionGate {
   @visibleForTesting
   bool Function()? foregroundOverride;
 
+  /// Tests: replaces [cardTimeout].
+  @visibleForTesting
+  Duration? cardTimeoutOverride;
+
   /// A confirmation card is waiting for an answer (voice «да»/«нет» can
   /// answer it).
   bool get hasOpenCard => _card != null;
+
+  /// Another AI money action is in progress: its card is open, or it holds
+  /// the lock (PIN step, execution, waiting for a receipt). [confirm] would
+  /// answer [AiGateOutcome.busy] now, so callers can say so right away.
+  bool get isBusy => _card != null || _lockLive();
+
+  /// Extends the lock while the action [d] allowed to execute is still
+  /// working (a sign-in dialog, waiting for a receipt), so the timeout only
+  /// frees a holder that stopped responding. False — and the lock is NOT
+  /// extended — when [d] is no longer live (reported, released, the lock
+  /// timed out, another action holds it) or it has held the lock for
+  /// [lockMaxHold]: the caller must stop before sending anything more.
+  /// A revoke queue is not cut off by [lockMaxHold]: it only lowers
+  /// allowances and must never be stopped half-way (D11).
+  bool keepAlive(AiGateDecision d) {
+    final token = d._token;
+    if (!d.mayExecute || token == null || !_isLive(token)) return false;
+    final granted = _grantedAt;
+    if (d._bound?.kind != AiActionKind.revoke &&
+        granted != null &&
+        DateTime.now().difference(granted) >= lockMaxHold) {
+      _log.w('AI action held the lock for ${lockMaxHold.inMinutes} min: '
+          'not extended');
+      return false;
+    }
+    _lockSince = DateTime.now();
+    return true;
+  }
 
   /// Voice «да» = tap «Подтвердить» (the PIN still follows); «нет»/«отмена»
   /// = cancel. Does nothing when no card is open.
@@ -451,13 +520,22 @@ class AiActionGate {
   /// setting off). Empty = the AI may act by itself.
   List<String> _cardNotes(AiActionSummary s) => [
         if (_knownValue(s) == null)
-          _t('aiGateNoteUnknownValue',
-              'The USD value is unknown, so the AI asks you.'),
+          _t(
+              'aiGateNoteUnknownValue',
+              'The USD value is unknown, so the daily limit and the position '
+                  'cap cannot be checked. The AI asks you.'),
         if (_isOnChain(s.kind) && !_isTrustedTarget(s))
           _t(
               'aiGateNoteUntrusted',
               'New address: it is not in your trusted addresses, so the AI '
                   'asks you.'),
+        // D6 «EPK active»: EPK cannot stop an exchange order, so with EPK
+        // paused the AI asks before placing one (on-chain is blocked above).
+        if (s.kind == AiActionKind.cexOrder && !_epkActive())
+          _t(
+              'aiGateNoteEpkPausedCex',
+              'EPK protection is paused, so the AI asks you before placing '
+                  'this exchange order.'),
         if (!_vaultUnlocked()) _lockedNote(),
       ];
 
@@ -474,7 +552,7 @@ class AiActionGate {
       _log.i('${s.kind.name} from ${s.source}: ${pre.outcome.name}');
       return pre;
     }
-    if (_lockLive()) {
+    if (isBusy) {
       _log.i('${s.kind.name} from ${s.source}: busy');
       return AiGateDecision._(
         AiGateOutcome.busy,
@@ -532,10 +610,21 @@ class AiActionGate {
     _card = session;
     Timer? ttl;
     _LifecycleWatch? watch;
+    // An unanswered card and the app leaving the foreground close the card
+    // without an answer from the user (interrupted, not declined).
+    void watchSession() {
+      ttl = Timer(cardTimeoutOverride ?? cardTimeout,
+          () => session.resolve(false, why: _CardResult.timedOut));
+      watch = _LifecycleWatch(
+          () => session.resolve(false, why: _CardResult.background))
+        ..attach();
+    }
+
     try {
       final override = confirmUiOverride;
       if (override != null) {
         // Tests: the override stands for the card and the PIN.
+        watchSession();
         unawaited(Future<bool>.sync(() => override(s)).then(
               (yes) => session.resolve(yes, why: _CardResult.declined),
               onError: (Object _) =>
@@ -551,11 +640,7 @@ class AiActionGate {
       if (ctx == null || !await _waitForeground()) {
         return _CardResult.unavailable;
       }
-      ttl = Timer(cardTimeout,
-          () => session.resolve(false, why: _CardResult.timedOut));
-      watch = _LifecycleWatch(
-          () => session.resolve(false, why: _CardResult.aborted))
-        ..attach();
+      watchSession();
       unawaited(AiActionConfirmSheet.show(
         ctx,
         s,
@@ -592,8 +677,16 @@ class AiActionGate {
                 'Open the app to confirm this AI operation. Nothing was done.'));
       case _CardResult.timedOut:
         return AiGateDecision._(AiGateOutcome.cancelled,
+            interrupted: true,
             reason: _t('aiGateCardTimeout',
                 'The confirmation expired. Nothing was done.'));
+      case _CardResult.background:
+        return AiGateDecision._(AiGateOutcome.cancelled,
+            interrupted: true,
+            reason: _t(
+                'aiGateCardAborted',
+                'The confirmation was closed (the app or the AI mode '
+                    'changed). Nothing was done.'));
       case _CardResult.aborted:
         return AiGateDecision._(AiGateOutcome.cancelled,
             reason: _t(
@@ -670,6 +763,17 @@ class AiActionGate {
     confirmUiOverride = null;
     notifyOverride = null;
     foregroundOverride = null;
+    cardTimeoutOverride = null;
+  }
+
+  /// Tests: moves the lock's clocks back by [by], as if that much time had
+  /// passed since the grant / the last [keepAlive].
+  @visibleForTesting
+  void ageLockForTest(Duration by) {
+    final since = _lockSince;
+    if (since != null) _lockSince = since.subtract(by);
+    final granted = _grantedAt;
+    if (granted != null) _grantedAt = granted.subtract(by);
   }
 
   // ── Lock ───────────────────────────────────────────────────────────────────
@@ -701,6 +805,7 @@ class AiActionGate {
   void _clearLock() {
     _lockToken = null;
     _lockSince = null;
+    _grantedAt = null;
   }
 
   AiGateDecision _fail(int token, AiGateDecision d) {
@@ -711,7 +816,9 @@ class AiActionGate {
   AiGateDecision _granted(int token, AiActionSummary s,
       {required bool pinConfirmed}) {
     // The execution window starts now.
-    _lockSince = DateTime.now();
+    final now = DateTime.now();
+    _lockSince = now;
+    _grantedAt = now;
     return AiGateDecision._(
       AiGateOutcome.execute,
       pinConfirmed: pinConfirmed,

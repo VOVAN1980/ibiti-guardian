@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/widgets.dart' show AppLifecycleState;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ibiti_guardian/models/audit_log_entry.dart';
@@ -362,11 +363,30 @@ void main() {
       expect((await gate.confirm(send())).withoutPin, isTrue);
     });
 
-    test('EPK paused blocks on-chain actions, not exchange orders', () async {
+    test(
+        'EPK paused: on-chain is blocked; an exchange order needs the card '
+        '+ PIN even with the PIN setting off (D6 «EPK active»)', () async {
       await EPKPolicyManager.instance.emergencyPause();
+      cardAnswers(true);
       expect((await gate.confirm(send())).outcome, AiGateOutcome.blocked);
       expect((await gate.confirm(swap())).outcome, AiGateOutcome.blocked);
-      expect((await gate.confirm(cex())).withoutPin, isTrue);
+      expect(cardsShown, 0, reason: 'never a card for a refused action');
+
+      final asked = await gate.confirm(cex());
+      expect(cardsShown, 1);
+      expect(asked.mayExecute, isTrue);
+      expect(asked.pinConfirmed, isTrue);
+      expect(asked.withoutPin, isFalse);
+      gate.release(asked);
+
+      cardAnswers(false);
+      expect((await gate.confirm(cex())).outcome, AiGateOutcome.cancelled);
+
+      // EPK back on: the exchange order runs without the card again.
+      await EPKPolicyManager.instance.resumeProtection();
+      final free = await gate.confirm(cex());
+      expect(free.withoutPin, isTrue);
+      expect(cardsShown, 2);
     });
   });
 
@@ -450,6 +470,162 @@ void main() {
       // Releasing an old decision does not free the new holder.
       gate.release(d);
       expect((await gate.confirm(cex())).outcome, AiGateOutcome.busy);
+    });
+
+    test('isBusy: the open card, then the PIN-confirmed execution (no card)',
+        () async {
+      setMode(AiMode.fullAutonomy, pin: true);
+      expect(gate.isBusy, isFalse);
+      final answer = Completer<bool>();
+      gate.confirmUiOverride = (_) => answer.future;
+
+      final pending = gate.confirm(cex());
+      await pumpEventQueue();
+      expect(gate.hasOpenCard, isTrue);
+      expect(gate.isBusy, isTrue);
+
+      answer.complete(true);
+      final d = await pending;
+      expect(d.mayExecute, isTrue);
+      expect(gate.hasOpenCard, isFalse);
+      expect(gate.isBusy, isTrue,
+          reason: 'executing: no card, but the lock is held');
+
+      await gate.reportExecuted(cex(), d, success: true);
+      expect(gate.isBusy, isFalse);
+    });
+
+    test('isBusy is false after a refusal (no lock taken)', () async {
+      DelegationController.instance.commitUsage(1000);
+      expect((await gate.confirm(send())).outcome, AiGateOutcome.blocked);
+      expect(gate.isBusy, isFalse);
+    });
+  });
+
+  group('keepAlive: the lock lives while the action works', () {
+    test('a refreshed lock outlives lockTimeout; an unrefreshed one lapses',
+        () async {
+      final d = await gate.confirm(cex());
+      expect(d.withoutPin, isTrue);
+
+      gate.ageLockForTest(const Duration(minutes: 2, seconds: 50));
+      expect(gate.keepAlive(d), isTrue);
+      gate.ageLockForTest(const Duration(minutes: 2, seconds: 50));
+      expect(d.matches(cex()), isTrue, reason: 'refreshed 2:50 ago');
+      expect(gate.isBusy, isTrue);
+      expect((await gate.confirm(send())).outcome, AiGateOutcome.busy);
+
+      // No refresh: the lock lapses and is never revived.
+      gate.ageLockForTest(const Duration(seconds: 20));
+      expect(d.matches(cex()), isFalse);
+      expect(gate.keepAlive(d), isFalse);
+      expect(gate.isBusy, isFalse);
+      expect((await gate.confirm(send())).withoutPin, isTrue);
+    });
+
+    test('false for a precheck, a released and a reported decision', () async {
+      expect(gate.keepAlive(gate.precheck(cex())), isFalse);
+
+      final released = await gate.confirm(cex());
+      gate.release(released);
+      expect(gate.keepAlive(released), isFalse);
+      expect(gate.isBusy, isFalse);
+
+      final reported = await gate.confirm(cex());
+      await gate.reportExecuted(cex(), reported, success: true);
+      expect(gate.keepAlive(reported), isFalse);
+      expect(gate.isBusy, isFalse);
+
+      // An old decision never extends the new holder's lock.
+      final current = await gate.confirm(send());
+      expect(gate.keepAlive(released), isFalse);
+      expect(gate.keepAlive(current), isTrue);
+    });
+
+    test('not past lockMaxHold: a hung holder frees the lock at last',
+        () async {
+      final d = await gate.confirm(cex());
+      for (var i = 0; i < 3; i++) {
+        gate.ageLockForTest(const Duration(minutes: 2, seconds: 40));
+        expect(gate.keepAlive(d), isTrue, reason: 'round $i');
+      }
+      // 10:40 since the grant.
+      gate.ageLockForTest(const Duration(minutes: 2, seconds: 40));
+      expect(gate.keepAlive(d), isFalse);
+      expect(d.matches(cex()), isTrue,
+          reason: 'not extended, but not cut short either');
+      gate.ageLockForTest(const Duration(seconds: 30));
+      expect(gate.isBusy, isFalse);
+      expect(d.matches(cex()), isFalse);
+    });
+
+    test('a long revoke queue is never cut off (D11)', () async {
+      final d = await gate.confirm(revoke);
+      expect(d.mayExecute, isTrue);
+      for (var i = 0; i < 6; i++) {
+        gate.ageLockForTest(const Duration(minutes: 2, seconds: 40));
+        expect(gate.keepAlive(d), isTrue, reason: 'round $i');
+      }
+      // Still lapses when the holder stops refreshing.
+      gate.ageLockForTest(const Duration(minutes: 3));
+      expect(gate.isBusy, isFalse);
+    });
+  });
+
+  group('a card closed without an answer is interrupted, not declined', () {
+    setUp(() => setMode(AiMode.fullAutonomy, pin: true));
+
+    test('nobody answers in time', () async {
+      gate.cardTimeoutOverride = const Duration(milliseconds: 20);
+      final never = Completer<bool>();
+      gate.confirmUiOverride = (_) => never.future;
+      final d = await gate.confirm(cex());
+      expect(d.outcome, AiGateOutcome.cancelled);
+      expect(d.interrupted, isTrue);
+      expect(d.mayExecute, isFalse);
+      expect(d.reason, isNotNull);
+      expect(gate.hasOpenCard, isFalse);
+      expect(gate.isBusy, isFalse);
+    });
+
+    test('the app goes to the background while the card is open', () async {
+      final binding = TestWidgetsFlutterBinding.instance;
+      addTearDown(() =>
+          binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed));
+      final never = Completer<bool>();
+      gate.confirmUiOverride = (_) => never.future;
+
+      final pending = gate.confirm(cex());
+      await pumpEventQueue();
+      expect(gate.hasOpenCard, isTrue);
+      binding.handleAppLifecycleStateChanged(AppLifecycleState.paused);
+
+      final d = await pending;
+      expect(d.outcome, AiGateOutcome.cancelled);
+      expect(d.interrupted, isTrue);
+      expect(gate.isBusy, isFalse);
+    });
+
+    test('«Отмена», voice «нет» and a mode change are real answers', () async {
+      cardAnswers(false);
+      final tapped = await gate.confirm(cex());
+      expect(tapped.outcome, AiGateOutcome.cancelled);
+      expect(tapped.interrupted, isFalse);
+
+      final never = Completer<bool>();
+      gate.confirmUiOverride = (_) => never.future;
+      final voiced = gate.confirm(cex());
+      await pumpEventQueue();
+      gate.answerByVoice(false);
+      expect((await voiced).interrupted, isFalse);
+
+      final switched = gate.confirm(cex());
+      await pumpEventQueue();
+      AiControlService.instance.setSettingsForTest(
+          const AiControlSettings(mode: AiMode.guarded));
+      final d = await switched;
+      expect(d.outcome, AiGateOutcome.cancelled);
+      expect(d.interrupted, isFalse);
     });
   });
 

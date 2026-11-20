@@ -59,9 +59,9 @@ class AutomationDispatchService extends ChangeNotifier {
   static const int _historySize = 30;
   static const int _processingIntervalSeconds = 5;
 
-  /// Pause after the gate could not ask anybody (app in the background) or
-  /// another AI operation held the lock, so a waiting item is not re-quoted
-  /// every tick.
+  /// Pause after the gate could not ask anybody (app in the background), the
+  /// card closed unanswered, or another AI operation held the lock, so a
+  /// waiting item is not re-quoted every tick.
   static const Duration _deferDelay = Duration(seconds: 30);
 
   final List<DispatchItem> _queue = [];
@@ -286,7 +286,21 @@ class AutomationDispatchService extends ChangeNotifier {
     _resolveItem(i, status, blockReason, doneMessage: doneMessage);
   }
 
+  /// Runs one item. Whatever happens inside (an exception included), the
+  /// queue is free again afterwards and the item does not stay "processing".
   Future<void> _processItem(int index) async {
+    final id = _queue[index].id;
+    try {
+      await _processItemSteps(index);
+    } catch (e, st) {
+      _log.e('Processing $id threw\n$st', e);
+      _resolveById(id, DispatchStatus.failed, 'Processing failed: $e');
+    } finally {
+      _isProcessing = false;
+    }
+  }
+
+  Future<void> _processItemSteps(int index) async {
     _isProcessing = true;
     final now = DateTime.now();
 
@@ -456,14 +470,21 @@ class AutomationDispatchService extends ChangeNotifier {
               '${hash != null && hash.isNotEmpty ? ' tx $hash' : ''}',
         );
       } else if (result.deferred) {
-        // Nobody could be asked (app in the background) or another AI
-        // operation held the lock: try again later, do not burn the item.
+        // Nobody could be asked (app in the background, no screen), the card
+        // closed without an answer (the app went to the background, or it
+        // timed out), or another AI operation held the lock: the user did
+        // not say no — try again later, do not burn the item.
         _requeue(item.id, result.message);
       } else if (result.cancelled) {
+        // Only an explicit «Отмена» / «нет» (or a refused PIN / sign-in) is
+        // a decline. A mode switch or a lapsed confirmation keeps its own
+        // reason. (The queue's own Cancel already resolved the item.)
         _resolveById(
           item.id,
           DispatchStatus.blocked,
-          _t('dispatchDeclined', 'Declined by user.'),
+          result.declined
+              ? _t('dispatchDeclined', 'Declined by user.')
+              : result.message,
         );
       } else if (result.failed) {
         _resolveById(item.id, DispatchStatus.failed, result.message);

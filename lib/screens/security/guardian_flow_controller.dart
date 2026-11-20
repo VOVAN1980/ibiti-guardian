@@ -5,6 +5,7 @@ import 'package:ibiti_guardian/services/security/approval_scan_service.dart';
 import 'package:ibiti_guardian/services/transaction_queue.dart';
 import 'package:ibiti_guardian/services/adapters/wallet_adapter.dart';
 import 'package:ibiti_guardian/services/security/system_status_service.dart';
+import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
 enum GuardianMode {
   safe,
@@ -136,6 +137,8 @@ class GuardianFlowModel {
 }
 
 class GuardianFlowController extends ChangeNotifier {
+  static const _log = GuardianLogger('GuardianFlow');
+
   GuardianFlowModel model = const GuardianFlowModel(
     mode: GuardianMode.safe,
     state: GuardianFlowState.idle,
@@ -148,6 +151,25 @@ class GuardianFlowController extends ChangeNotifier {
   /// Called once when the queue started by [confirmAction] has an answer for
   /// every job (submitted or failed).
   void Function(RevokeProgress result)? _onFinished;
+
+  /// Called on every progress event of the queue started by [confirmAction]
+  /// until it finishes (an AI-gated revoke keeps the AI lock alive with it).
+  void Function(RevokeProgress progress)? _onProgress;
+
+  /// The jobs [confirmAction] put into the [TransactionQueue] singleton.
+  List<RevokeJob> _startedJobs = const [];
+
+  /// A queue started by [confirmAction] has not finished yet. The queue
+  /// lives in the [TransactionQueue] singleton and keeps revoking when the
+  /// window closes, so the controller keeps listening until it finishes
+  /// (see [dispose]).
+  bool _queueActive = false;
+
+  /// The jobs the last [confirmAction] started (empty before).
+  List<RevokeJob> get startedJobs => List.unmodifiable(_startedJobs);
+
+  /// A queue started by [confirmAction] is still revoking.
+  bool get isQueueActive => _queueActive;
 
   bool isCritical(ApprovalData a) {
     final isUnlimited = a.allowance > BigInt.from(1000000000);
@@ -176,7 +198,7 @@ class GuardianFlowController extends ChangeNotifier {
     String key(ApprovalData a) =>
         '${a.chainId}|${a.token.toLowerCase()}|${a.spenderAddress.toLowerCase()}';
     final revoked = {
-      for (final j in TransactionQueue().currentJobs)
+      for (final j in [..._startedJobs, ...TransactionQueue().currentJobs])
         if (j.status == RevokeJobStatus.submitted ||
             j.status == RevokeJobStatus.confirmed)
           key(j.approval),
@@ -184,17 +206,41 @@ class GuardianFlowController extends ChangeNotifier {
     final left = model.all
         .where((a) => a.assessment.shouldRevoke && !revoked.contains(key(a)))
         .length;
-    final wallet = WalletAdapter.instance;
-    SystemStatusService.instance
-        .recordScan(wallet.address, wallet.chainId, left);
+    // The scanned wallet and network: the window may be closed and the
+    // wallet or network switched before the queue finishes.
+    final scanned =
+        _startedJobs.isNotEmpty ? _startedJobs.first.approval : null;
+    final owner = scanned?.walletAddress;
+    final String walletAddress;
+    final int chainId;
+    if (scanned != null && owner != null && owner.isNotEmpty) {
+      walletAddress = owner;
+      chainId = scanned.chainId;
+    } else {
+      final wallet = WalletAdapter.instance;
+      walletAddress = wallet.address;
+      chainId = wallet.chainId; // StateError off EVM: caught by the caller.
+    }
+    unawaited(
+        SystemStatusService.instance.recordScan(walletAddress, chainId, left));
   }
 
+  /// Closing the window (Back, «закрой», a route reset) does not stop a
+  /// running revoke queue: it keeps revoking in the [TransactionQueue]
+  /// singleton. So the controller keeps listening until that queue finishes
+  /// — the System status card is updated and [confirmAction]'s
+  /// `onFinished` (the AI report: audit + «ИИ выполнил», releasing the AI
+  /// lock) still runs — but stops touching the model.
   @override
   void dispose() {
     _disposed = true;
     _scanGeneration++;
-    _progressSub?.cancel();
-    _onFinished = null;
+    if (!_queueActive) {
+      _progressSub?.cancel();
+      _progressSub = null;
+      _onFinished = null;
+      _onProgress = null;
+    }
     super.dispose();
   }
 
@@ -300,11 +346,16 @@ class GuardianFlowController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Starts revoking the reviewed approvals. [onFinished] runs once, when
+  /// Starts revoking the reviewed approvals. [onProgress] runs on every
+  /// progress event until the queue finishes; [onFinished] runs once, when
   /// every job of the queue has an answer (an AI-opened window reports the
-  /// result to AiActionGate with it). Returns false when nothing started
-  /// (not in review, or nothing to revoke).
-  bool confirmAction({void Function(RevokeProgress result)? onFinished}) {
+  /// result to AiActionGate with it). Both still run after [dispose]: the
+  /// queue does not stop when the window closes. Returns false when nothing
+  /// started (not in review, or nothing to revoke).
+  bool confirmAction({
+    void Function(RevokeProgress result)? onFinished,
+    void Function(RevokeProgress progress)? onProgress,
+  }) {
     if (_disposed) return false;
     if (model.state != GuardianFlowState.readyReview) return false;
     if (model.mode == GuardianMode.safe && model.selected.isEmpty) {
@@ -315,6 +366,7 @@ class GuardianFlowController extends ChangeNotifier {
     }
 
     _onFinished = onFinished;
+    _onProgress = onProgress;
     model = model.copyWith(state: GuardianFlowState.queuePrepared);
     notifyListeners();
 
@@ -325,8 +377,21 @@ class GuardianFlowController extends ChangeNotifier {
   void _finish(RevokeProgress result) {
     final callback = _onFinished;
     _onFinished = null;
+    _onProgress = null;
+    _queueActive = false;
+    if (_disposed) {
+      // Nobody shows this queue any more: stop listening.
+      _progressSub?.cancel();
+      _progressSub = null;
+    }
     callback?.call(result);
   }
+
+  /// Every job this controller started has an answer (submitted / failed).
+  bool get _startedJobsAnswered => _startedJobs.every((j) =>
+      j.status == RevokeJobStatus.submitted ||
+      j.status == RevokeJobStatus.confirmed ||
+      j.status == RevokeJobStatus.failed);
 
   void _startQueue() {
     if (model.state != GuardianFlowState.queuePrepared) return;
@@ -338,44 +403,64 @@ class GuardianFlowController extends ChangeNotifier {
     final queue =
         model.mode == GuardianMode.safe ? model.selected : model.critical;
 
-    TransactionQueue().clear();
-    TransactionQueue().addJobs(queue);
+    final transactions = TransactionQueue();
+    transactions.clear();
+    // clear() keeps the jobs of a queue that is still running; ours are
+    // appended after them and that run picks them up.
+    final before = transactions.totalJobs;
+    transactions.addJobs(queue);
+    _startedJobs = transactions.currentJobs.sublist(before);
+    _queueActive = true;
 
     _progressSub?.cancel();
-    _progressSub = TransactionQueue().progressStream.listen((p) {
-      // Update state if waiting for wallet vs executing
-      if (p.currentJob?.status == RevokeJobStatus.waitingWallet) {
-        if (model.state != GuardianFlowState.waitingWallet) {
-          model = model.copyWith(
-              state: GuardianFlowState.waitingWallet, progress: p);
-          notifyListeners();
+    _progressSub = transactions.progressStream.listen((p) {
+      if (!_queueActive) return;
+      if (!_disposed) {
+        // Update state if waiting for wallet vs executing
+        if (p.currentJob?.status == RevokeJobStatus.waitingWallet) {
+          if (model.state != GuardianFlowState.waitingWallet) {
+            model = model.copyWith(
+                state: GuardianFlowState.waitingWallet, progress: p);
+            notifyListeners();
+          } else {
+            model = model.copyWith(progress: p);
+            notifyListeners();
+          }
         } else {
-          model = model.copyWith(progress: p);
-          notifyListeners();
-        }
-      } else {
-        if (model.state != GuardianFlowState.executing) {
-          model =
-              model.copyWith(state: GuardianFlowState.executing, progress: p);
-          notifyListeners();
-        } else {
-          model = model.copyWith(progress: p);
-          notifyListeners();
+          if (model.state != GuardianFlowState.executing) {
+            model =
+                model.copyWith(state: GuardianFlowState.executing, progress: p);
+            notifyListeners();
+          } else {
+            model = model.copyWith(progress: p);
+            notifyListeners();
+          }
         }
       }
 
-      if (p.completed == p.total && p.total > 0) {
-        _recordAfterRevoke();
+      // Done: every job of ours has an answer, or the queue stopped before
+      // reaching them (the run's last event, with no current job).
+      final stopped = p.currentJob == null && !transactions.isRunning;
+      if (_startedJobsAnswered || stopped) {
+        try {
+          _recordAfterRevoke();
+        } catch (e) {
+          // The status card is a convenience; the report must still run.
+          _log.w('System status after revoke not recorded: $e');
+        }
         _finish(p);
         Future.delayed(const Duration(milliseconds: 600), () {
+          if (_disposed) return;
           model = model.copyWith(state: GuardianFlowState.completed);
           notifyListeners();
         });
+        return;
       }
+      _onProgress?.call(p);
     });
 
     try {
-      TransactionQueue().run();
+      unawaited(transactions.run());
     } catch (e) {
       model = model.copyWith(
           state: GuardianFlowState.failed,

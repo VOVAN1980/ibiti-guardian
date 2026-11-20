@@ -784,12 +784,139 @@ void main() {
       expect(r.message, contains('режим «Советник»'));
       expect(r.message, isNot(contains('Manual')));
 
-      // Already in «Советник»: nothing opens, and it says so.
+      // Already in «Советник» (the AI opens nothing there): the user's own
+      // phrase still opens the user's own Panic (D2).
       dispatched.clear();
       final again = await ask('эвакуация', source: AssistantInputSource.voice);
+      final panicAgain = dispatched.where(
+          (c) => c.type == UICommandType.openModal && c.target == 'panic');
+      expect(panicAgain, hasLength(1));
+      expect(panicAgain.single.payload?['byUserMacro'], true);
+      expect(again.message, isNot(contains('Откройте его сами')));
+      expect(AiControlService.instance.settings.mode, AiMode.manual);
+    });
+
+    test('a macro window is the user\'s own in every mode; the model cannot '
+        'mark one', () async {
+      await UserMemoryService.instance.init();
+      for (final settings in const [
+        AiControlSettings(mode: AiMode.manual, allowedActions: []),
+        AiControlSettings(mode: AiMode.guarded, allowedActions: []),
+        AiControlSettings(mode: AiMode.fullAutonomy),
+      ]) {
+        AiControlService.instance.setSettingsForTest(settings);
+        dispatched.clear();
+        final r = await ask('эвакуация', source: AssistantInputSource.voice);
+        final panic = dispatched.where(
+            (c) => c.type == UICommandType.openModal && c.target == 'panic');
+        expect(panic, hasLength(1), reason: settings.mode.name);
+        expect(panic.single.payload?['byUserMacro'], true,
+            reason: settings.mode.name);
+        expect(r.message, isNot(contains('Откройте его сами')),
+            reason: settings.mode.name);
+      }
+    });
+
+    test('an app-made (automated) macro input is not the user: its window is '
+        'not marked as the user\'s and keeps the AI window permission',
+        () async {
+      await UserMemoryService.instance.init();
+      // «Ручной» with «Открытие окон» on: the window opens as the AI's.
+      AiControlService.instance
+          .setSettingsForTest(const AiControlSettings(mode: AiMode.guarded));
+      dispatched.clear();
+      await ask('эвакуация', source: AssistantInputSource.automated);
+      final panic = dispatched.where(
+          (c) => c.type == UICommandType.openModal && c.target == 'panic');
+      expect(panic, hasLength(1));
+      expect(panic.single.payload?['byUserMacro'], isNot(true));
+
+      // «Советник»: the AI opens nothing.
+      AiControlService.instance.setSettingsForTest(
+        const AiControlSettings(mode: AiMode.manual, allowedActions: []),
+      );
+      dispatched.clear();
+      final r = await ask('эвакуация', source: AssistantInputSource.automated);
       expect(opensWindow(dispatched), false);
-      expect(dispatched, isEmpty);
-      expect(again.message, contains('Откройте его сами'));
+      expect(r.message, contains('Откройте его сами'));
+    });
+
+    test('«Советник» starts no Safe Scan from chat or voice', () async {
+      for (final source in [
+        AssistantInputSource.generalChat,
+        AssistantInputSource.marketChat,
+        AssistantInputSource.voice,
+      ]) {
+        for (final text in ['сканируй кошелёк', 'запусти скан', 'scan my wallet']) {
+          AiControlService.instance.setSettingsForTest(
+            const AiControlSettings(mode: AiMode.manual, allowedActions: []),
+          );
+          dispatched.clear();
+          final r = await ask(text, source: source);
+          final reason = '${source.name}: $text';
+          expect(r.message, anyOf(contains('«Советник»'), contains('Advisor')),
+              reason: reason);
+          expect(r.message, contains('Safe Scan'), reason: reason);
+          expect(r.uiCommands, isEmpty, reason: reason);
+          expect(opensWindow(dispatched), false, reason: reason);
+        }
+      }
+      // Even when the window permission was left on in «Советник».
+      AiControlService.instance
+          .setSettingsForTest(const AiControlSettings(mode: AiMode.manual));
+      dispatched.clear();
+      final r = await ask('запусти скан', source: AssistantInputSource.generalChat);
+      expect(r.message, contains('«Советник»'));
+      expect(dispatched.any((c) => c.target == 'safe'), false);
+    });
+
+    test('«Ручной», voice / market chat: a refused transfer prefills nothing',
+        () async {
+      AiControlService.instance
+          .setSettingsForTest(const AiControlSettings(mode: AiMode.guarded));
+      for (final source in [
+        AssistantInputSource.voice,
+        AssistantInputSource.marketChat,
+      ]) {
+        dispatched.clear();
+        // No wallet here: the controller refuses the transfer.
+        final r = await ask(
+            'отправь 10 USDT на 0x1111111111111111111111111111111111111111',
+            source: source);
+        expect(r.type, ResponseType.error, reason: source.name);
+        expect(
+            dispatched.where((c) =>
+                c.target == 'wallet_send' ||
+                c.target == 'send_token' ||
+                c.target == 'send_amount' ||
+                c.target == 'send_address' ||
+                c.target == 'wallet_send_preview'),
+            isEmpty,
+            reason: source.name);
+      }
+    });
+
+    test('«Ручной», voice / market chat: a transfer with nothing to preview '
+        'yet («отправь токены») still opens the send window', () async {
+      AiControlService.instance
+          .setSettingsForTest(const AiControlSettings(mode: AiMode.guarded));
+      for (final source in [
+        AssistantInputSource.voice,
+        AssistantInputSource.marketChat,
+      ]) {
+        dispatched.clear();
+        final r = await ask('отправь токены', source: source);
+        expect(
+            dispatched.any((c) =>
+                c.type == UICommandType.openModal && c.target == 'wallet_send'),
+            true,
+            reason: source.name);
+        expect(
+            r.uiCommands.any((c) =>
+                c.type == UICommandType.openModal && c.target == 'wallet_send'),
+            true,
+            reason: source.name);
+      }
     });
 
     for (final source in [
