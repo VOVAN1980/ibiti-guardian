@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "Yapay zeka işlemleri için PIN onayı açıldı, bu yüzden yapay zeka onayınız olmadan devam etmedi.",
   "aiExecStopVaultLocked": "Cüzdan kilitlendi, bu yüzden yapay zeka onayınız olmadan devam etmedi.",
   "aiExecStopBackground": "Uygulama arka plana geçti, bu yüzden yapay zeka onayınız olmadan devam etmedi.",
-  "dispatchTokenNotVerified": "{asset}, {network} ağında uygulamanın doğrulanmış token listesinde yok, bu yüzden yapay zeka onu kendisi satın almaz (sahte bir token aynı ada sahip olabilir). Onu «Cüzdan» veya «Pazar» sekmesinde kendiniz satın alabilirsiniz."
+  "dispatchTokenNotVerified": "{asset}, {network} ağında uygulamanın doğrulanmış token listesinde yok, bu yüzden yapay zeka onu kendisi satın almaz (sahte bir token aynı ada sahip olabilir). Onu «Cüzdan» veya «Pazar» sekmesinde kendiniz satın alabilirsiniz.",
+  "swapAiCoinUnavailable": "{symbol} bu ağda seçilemiyor. Coinleri seçip tutarı kendiniz girin.",
+  "swapAiQuoteNotChecked": "Coinleri ve tutarı kontrol edin, ardından takas düğmesine dokunun."
 }

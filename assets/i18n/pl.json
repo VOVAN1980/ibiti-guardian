@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "Włączono potwierdzanie działań AI kodem PIN, więc AI nie kontynuowała bez Twojego potwierdzenia.",
   "aiExecStopVaultLocked": "Portfel został zablokowany, więc AI nie kontynuowała bez Twojego potwierdzenia.",
   "aiExecStopBackground": "Aplikacja przeszła w tło, więc AI nie kontynuowała bez Twojego potwierdzenia.",
-  "dispatchTokenNotVerified": "{asset} nie ma na liście zweryfikowanych tokenów aplikacji w sieci {network}, więc AI nie kupuje go sama (fałszywy token może mieć taką samą nazwę). Możesz kupić go samodzielnie na karcie «Portfel» lub «Rynek»."
+  "dispatchTokenNotVerified": "{asset} nie ma na liście zweryfikowanych tokenów aplikacji w sieci {network}, więc AI nie kupuje go sama (fałszywy token może mieć taką samą nazwę). Możesz kupić go samodzielnie na karcie «Portfel» lub «Rynek».",
+  "swapAiCoinUnavailable": "Nie można wybrać {symbol} w tej sieci. Wybierz monety i wpisz kwotę samodzielnie.",
+  "swapAiQuoteNotChecked": "Sprawdź monety i kwotę, a potem naciśnij przycisk wymiany."
 }

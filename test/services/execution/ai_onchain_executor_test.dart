@@ -372,6 +372,23 @@ void main() {
       expect(check(_send(), chain: 'eth'), isNotNull);
     });
 
+    test('PIN turned on or wallet locked after the grant stops it (D6)', () {
+      String? recheck(TransactionRequest tx,
+              {bool pin = false, bool unlocked = true}) =>
+          GuardianExecutionController.aiNoPinBlockReason(
+            tx,
+            profile: PolicyProfile.safe().copyWith(trustedAddresses: [_trusted]),
+            epkActive: true,
+            activeChainKey: 'bsc',
+            ownAddresses: [_owner, _card2],
+            pinRequired: pin,
+            vaultUnlocked: unlocked,
+          );
+      expect(recheck(_send(to: _trusted)), isNull);
+      expect(recheck(_send(to: _trusted), pin: true), isNotNull);
+      expect(recheck(_send(to: _trusted), unlocked: false), isNotNull);
+    });
+
     test('an unknown USD value stops it', () {
       TxUsdValuer.priceOverrideForTest = (_) => null;
       expect(check(_send(symbol: 'CAKE')), isNotNull);

@@ -9,8 +9,11 @@ import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/models/autonomy_mandate.dart';
 import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/models/portfolio_summary.dart';
+import 'package:ibiti_guardian/models/wallet_asset.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
 import 'package:ibiti_guardian/services/assistant/guardian_assistant_service.dart';
+import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
+import 'package:ibiti_guardian/services/assistant/swap_voice_orchestrator.dart';
 import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
 import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
@@ -79,6 +82,10 @@ void main() {
     // BNB is priced in the portfolio; PEPE and CAKE are not.
     TxUsdValuer.priceOverrideForTest =
         (tx) => tx.tokenSymbol == 'BNB' ? 600.0 : null;
+    // No window open, nothing waiting on the bus, no quote approved.
+    ScreenContextService.instance.clearModal();
+    SwapWindowLink.instance.resetForTest();
+    UICommandBus.instance.backdateTimestamps(const Duration(minutes: 5));
     dispatched.clear();
     subscription = UICommandBus.instance.commands.listen(dispatched.add);
   });
@@ -86,9 +93,38 @@ void main() {
   tearDown(() async {
     TxUsdValuer.priceOverrideForTest = null;
     AiActionGate.instance.resetForTest();
+    ScreenContextService.instance.clearModal();
+    SwapWindowLink.instance.resetForTest();
     await subscription?.cancel();
     subscription = null;
   });
+
+  /// The wallet holds [symbols] on BNB Chain (no price of their own): the
+  /// swap and Buy windows can pick them there.
+  void holdOnBsc(List<String> symbols) {
+    VaultPortfolioListener.instance.setSummaryForTest(PortfolioSummary(
+      totalBalanceUsd: 0,
+      assetsCount: symbols.length,
+      allAssets: [
+        for (var i = 0; i < symbols.length; i++)
+          WalletAsset(
+            name: symbols[i],
+            symbol: symbols[i],
+            address: '0x${(i + 1).toRadixString(16).padLeft(40, 'a')}',
+            balance: 1000,
+            priceUsd: 0,
+            valueUsd: 0,
+            decimals: 18,
+            chainId: 56,
+            chainKey: 'bsc',
+            priceAvailable: false,
+          ),
+      ],
+      address: self,
+      networkName: 'BSC',
+      chainKey: 'bsc',
+    ));
+  }
 
   void autonomous({
     AutonomyMandate mandate = const AutonomyMandate(maxPositionUsd: 10000),
@@ -169,6 +205,8 @@ void main() {
     });
 
     test('a truly unknown price skips only the dollar checks', () {
+      // PEPE is in the wallet (so the window pays with it), without a price.
+      holdOnBsc(['PEPE']);
       autonomous(
           mandate: const AutonomyMandate(maxPositionUsd: 1), dailyLimit: 1);
       expect(
@@ -289,6 +327,8 @@ void main() {
     });
 
     test('within the cap it may be dispatched', () {
+      // USDT is in the wallet, so the Buy window pays with it.
+      holdOnBsc(['USDT']);
       autonomous(mandate: const AutonomyMandate(maxPositionUsd: 1000));
       expect(
           svc.preparedWindowRefusalForTest(

@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "La confirmation des actions de l’IA par code PIN a été activée : l’IA n’a donc pas continué sans votre confirmation.",
   "aiExecStopVaultLocked": "Le portefeuille a été verrouillé : l’IA n’a donc pas continué sans votre confirmation.",
   "aiExecStopBackground": "L’application est passée en arrière-plan : l’IA n’a donc pas continué sans votre confirmation.",
-  "dispatchTokenNotVerified": "{asset} ne figure pas dans la liste des jetons vérifiés de l’application sur {network} : l’IA ne l’achète donc pas d’elle-même (un faux jeton peut porter le même nom). Vous pouvez l’acheter vous-même dans l’onglet « Portefeuille » ou « Marché »."
+  "dispatchTokenNotVerified": "{asset} ne figure pas dans la liste des jetons vérifiés de l’application sur {network} : l’IA ne l’achète donc pas d’elle-même (un faux jeton peut porter le même nom). Vous pouvez l’acheter vous-même dans l’onglet « Portefeuille » ou « Marché ».",
+  "swapAiCoinUnavailable": "{symbol} ne peut pas être choisi sur ce réseau. Choisissez les jetons et saisissez le montant vous-même.",
+  "swapAiQuoteNotChecked": "Vérifiez les jetons et le montant, puis appuyez sur le bouton d’échange."
 }

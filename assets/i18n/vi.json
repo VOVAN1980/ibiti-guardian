@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "Xác nhận hành động AI bằng mã PIN đã được bật, nên AI không tiếp tục khi chưa có xác nhận của bạn.",
   "aiExecStopVaultLocked": "Ví đã bị khóa, nên AI không tiếp tục khi chưa có xác nhận của bạn.",
   "aiExecStopBackground": "Ứng dụng đã chuyển sang chạy nền, nên AI không tiếp tục khi chưa có xác nhận của bạn.",
-  "dispatchTokenNotVerified": "{asset} không có trong danh sách token đã xác minh của ứng dụng trên {network}, nên AI không tự mua (token giả có thể mang cùng tên). Bạn có thể tự mua trong thẻ “Ví” hoặc “Chợ”."
+  "dispatchTokenNotVerified": "{asset} không có trong danh sách token đã xác minh của ứng dụng trên {network}, nên AI không tự mua (token giả có thể mang cùng tên). Bạn có thể tự mua trong thẻ “Ví” hoặc “Chợ”.",
+  "swapAiCoinUnavailable": "Không thể chọn {symbol} trên mạng này. Hãy tự chọn coin và nhập số tiền.",
+  "swapAiQuoteNotChecked": "Hãy kiểm tra coin và số tiền, rồi nhấn nút hoán đổi."
 }

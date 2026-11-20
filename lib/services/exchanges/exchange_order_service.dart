@@ -8,6 +8,8 @@ import 'package:ibiti_guardian/services/exchanges/okx_exchange_service.dart';
 import 'package:ibiti_guardian/services/market/market_memory_service.dart';
 import 'package:ibiti_guardian/services/security/ai_action_gate.dart';
 import 'package:ibiti_guardian/services/security/ai_control_service.dart';
+import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
+import 'package:ibiti_guardian/services/localization_service.dart';
 import 'package:ibiti_guardian/services/policy/delegation_controller.dart';
 import 'package:ibiti_guardian/utils/guardian_logger.dart';
 
@@ -409,6 +411,24 @@ class ExchangeOrderService {
             reason: msg,
             rawInput: 'CEX spot order on $exchangeId',
           );
+          return ExchangeOrderResult(isSuccess: false, errorMessage: msg);
+        }
+      }
+
+      // 5b. An AI order granted without the PIN: the PIN setting may have been
+      // turned on, or the wallet locked, during the calls above (D6). Then
+      // it is not placed without the user's confirmation.
+      final noPinGrant = aiGate;
+      if (noPinGrant != null && noPinGrant.withoutPin) {
+        final pinNow = AiControlService.instance.settings.pinRequiredForAi;
+        final locked = !IBITIVaultService.instance.isUnlocked;
+        if (pinNow || locked) {
+          final msg = LocalizationService.instance.t(
+              pinNow ? 'aiExecStopPinTurnedOn' : 'aiExecStopVaultLocked', {
+            'default': pinNow
+                ? 'PIN confirmation was turned on, so the AI did not place the order.'
+                : 'The wallet is locked, so the AI did not place the order.',
+          });
           return ExchangeOrderResult(isSuccess: false, errorMessage: msg);
         }
       }

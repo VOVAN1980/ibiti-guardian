@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "AIの操作のPIN確認がオンになったため、AIはあなたの確認なしに続行しませんでした。",
   "aiExecStopVaultLocked": "ウォレットがロックされたため、AIはあなたの確認なしに続行しませんでした。",
   "aiExecStopBackground": "アプリがバックグラウンドに移ったため、AIはあなたの確認なしに続行しませんでした。",
-  "dispatchTokenNotVerified": "{asset}は{network}でアプリの検証済みトークンリストにないため、AIは自分では購入しません（偽のトークンが同じ名前を持つことがあります）。「ウォレット」または「市場」タブでご自身で購入できます。"
+  "dispatchTokenNotVerified": "{asset}は{network}でアプリの検証済みトークンリストにないため、AIは自分では購入しません（偽のトークンが同じ名前を持つことがあります）。「ウォレット」または「市場」タブでご自身で購入できます。",
+  "swapAiCoinUnavailable": "このネットワークでは{symbol}を選択できません。コインを選び、金額をご自身で入力してください。",
+  "swapAiQuoteNotChecked": "コインと金額を確認してから、スワップボタンをタップしてください。"
 }

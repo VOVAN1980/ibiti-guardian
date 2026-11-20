@@ -1255,13 +1255,18 @@ class GuardianAssistantService {
   /// whatever the amount mode (SwapVoiceOrchestrator), so the USD value is
   /// that amount of the paying token ([_payingValueUsd]); unknown only
   /// when the paying token has no price (an exact-out amount of a
-  /// stablecoin still counts as at least that many dollars).
+  /// stablecoin still counts as at least that many dollars). Then what the
+  /// window will really pay ([_swapWindowCheck]): the named token only when
+  /// the window can pick it on this network, else the coin it keeps, with
+  /// the amount it will use.
   AssistantResponse? _aiSwapWindowRefusal(
     IntentData intent,
     AssistantInputSource source,
     String lang, {
     String? preface,
   }) {
+    // A new check: no quote approved before it stands (SwapWindowLink).
+    SwapWindowLink.instance.revokeAiQuote();
     final from = _tradeSymbol(intent.sourceTokenSymbol);
     final to = _tradeSymbol(intent.targetTokenSymbol);
     final fromStable = from != null && _stableSymbols.contains(from);
@@ -1284,11 +1289,26 @@ class GuardianAssistantService {
         (valueUsd == null || valueUsd < amount)) {
       valueUsd = amount;
     }
-    return _aiWindowRefusal(
+    final refusal = _aiWindowRefusal(
       kind: kind,
       asset: from,
       target: to,
       valueUsd: valueUsd,
+      source: source,
+      lang: lang,
+      preface: preface,
+    );
+    if (refusal != null) return refusal;
+    // SwapVoiceOrchestrator opens the swap window and fills the amount (and
+    // asks for the quote) only with an amount.
+    final filled = amount != null && amount.isFinite && amount > 0;
+    return _swapWindowCheck(
+      window: 'wallet_swap',
+      opensWindow: true,
+      namedFrom: intent.sourceTokenSymbol,
+      amount: filled ? amount : null,
+      runsQuote: filled,
+      target: to,
       source: source,
       lang: lang,
       preface: preface,
@@ -1344,7 +1364,8 @@ class GuardianAssistantService {
 
   /// [amount] in a window whose paying token is not named: its default is
   /// a stablecoin or the network's native coin (WalletTradeModal), so the
-  /// higher of the two values counts — never the lower.
+  /// higher of the two values counts — never the lower. Only an estimate:
+  /// the coin a window really keeps is checked too ([_swapWindowCheck]).
   double _unnamedPayingValueUsd(double amount) {
     final chain =
         PrivyChainRegistry.getChain(IBITIVaultService.instance.chainKey);
@@ -1353,6 +1374,227 @@ class GuardianAssistantService {
         ? null
         : _payingValueUsd(native, amount);
     return nativeValue != null && nativeValue > amount ? nativeValue : amount;
+  }
+
+  /// The larger of two amounts; null when neither is known.
+  static double? _largerAmount(double? a, double? b) {
+    if (a == null) return b;
+    if (b == null) return a;
+    return a >= b ? a : b;
+  }
+
+  /// The coins swap-type windows (wallet_swap, wallet_buy, wallet_sell)
+  /// will really pay with after AI commands, and the amounts they will use
+  /// there — not only what the commands name. A window takes a named paying
+  /// coin only when it can pick it on its network; otherwise it keeps its
+  /// own (WalletSwapModal then also keeps the amount out, WalletTradeModal
+  /// pays with its own coin):
+  /// - a window open now gets the commands live (ScreenContextService, and
+  ///   an open Swap window through SwapWindowLink even under another one).
+  ///   It takes the named coin when it is a wallet asset of the network,
+  ///   the coin it already has or (Swap) the native coin, else keeps its
+  ///   own; the named one counts anyway (its list may hold coins this check
+  ///   does not see). Sell never takes one. Its amount: the commanded one,
+  ///   else for a quote the larger of its field (Swap) and the amount
+  ///   waiting on the bus;
+  /// - a window [opensWindow] opens — or, with none open, the one that
+  ///   opens while the commands wait on the bus (60 s) — reads the named
+  ///   coin (else the one waiting on the bus) when it can pick it, else
+  ///   starts with its default ([_freshPayingDefault]). Its amount: the
+  ///   commanded one, else the one waiting on the bus.
+  /// Without the wallet's assets of this network both the named coin and
+  /// the window's own count. [symbol] null: an open Swap window on another
+  /// network — neither its coin nor its value is known here.
+  List<({String window, String? symbol, double? amount})>
+      _swapWindowPayments({
+    required String window,
+    required bool opensWindow,
+    required String? namedFrom,
+    required double? amount,
+    required bool runsQuote,
+  }) {
+    final chainKey = IBITIVaultService.instance.chainKey;
+    final native = (PrivyChainRegistry.getChain(chainKey).nativeSymbol ?? '')
+        .trim()
+        .toUpperCase();
+    final summary = VaultPortfolioListener.instance.summary;
+    final assets = summary != null && summary.chainKey == chainKey
+        ? summary.allAssets
+        : null;
+    bool held(String symbol) {
+      final upper = symbol.trim().toUpperCase();
+      return assets != null &&
+          assets.any((a) => a.symbol.trim().toUpperCase() == upper);
+    }
+
+    final bus = UICommandBus.instance;
+    final cached = _commandAmount(bus.latestFieldValue('swap_amount'));
+    final named = _tradeSymbol(namedFrom);
+    final payments = <({String window, String? symbol, double? amount})>[];
+    void add(String kind, String? symbol, double? used) {
+      if (payments.any(
+          (p) => p.window == kind && p.symbol == symbol && p.amount == used)) {
+        return;
+      }
+      payments.add((window: kind, symbol: symbol, amount: used));
+    }
+
+    final screen = ScreenContextService.instance;
+    final link = SwapWindowLink.instance;
+    final active = screen.activeModal;
+    final openWindows = <String>{
+      if (active != null && _swapWindows.contains(active)) active,
+      if (link.isOpen) 'wallet_swap',
+    };
+    for (final open in openWindows) {
+      final swapLink = open == 'wallet_swap' && link.isOpen;
+      final own = _tradeSymbol(
+              swapLink ? link.payingSymbol : screen.selectedFromSymbol) ??
+          native;
+      final used = amount ??
+          (runsQuote
+              ? _largerAmount(cached, swapLink ? link.amount : null)
+              : null);
+      if (swapLink && link.chainKey != chainKey) {
+        add(open, null, used);
+        continue;
+      }
+      if (named == null || open == 'wallet_sell') {
+        add(open, own, used);
+        continue;
+      }
+      // The named coin counts even when it looks unpickable: an open
+      // window's list can hold coins this check does not see.
+      add(open, named, used);
+      final picks = named == own ||
+          (open == 'wallet_swap' && named == native) ||
+          held(named);
+      if (!picks || assets == null) add(open, own, used);
+    }
+
+    if (opensWindow || openWindows.isEmpty) {
+      final freshRaw = namedFrom ??
+          bus.latestPayload('swap_from_token')?['symbol']?.toString();
+      final fresh = _tradeSymbol(freshRaw);
+      final used = amount ?? cached;
+      final picks = fresh != null &&
+          switch (window) {
+            'wallet_swap' => fresh == native || held(fresh),
+            // WalletTradeModal (Sell) matches the symbol as it was sent.
+            'wallet_sell' => held(freshRaw!),
+            _ => held(fresh),
+          };
+      if (picks || (fresh != null && assets == null)) add(window, fresh, used);
+      if (!picks || assets == null) {
+        add(window, _freshPayingDefault(window, assets, native), used);
+      }
+    }
+    return payments;
+  }
+
+  /// The paying coin a swap-type window starts with when it cannot pick the
+  /// one asked for: the native coin (Swap as the assistant opens it, Sell),
+  /// for Buy the first stablecoin or native coin held, else the first asset
+  /// (WalletTradeModal).
+  static String _freshPayingDefault(
+    String window,
+    List<WalletAsset>? assets,
+    String native,
+  ) {
+    if (window != 'wallet_buy' || assets == null || assets.isEmpty) {
+      return native;
+    }
+    WalletAsset? pick;
+    for (final a in assets) {
+      final symbol = a.symbol.trim().toUpperCase();
+      if (symbol == 'USDT' || symbol == 'USDC' || a.isNative) {
+        pick = a;
+        break;
+      }
+    }
+    return _tradeSymbol((pick ?? assets.first).symbol) ?? native;
+  }
+
+  /// «Автономный»: [_aiWindowRefusal] for every coin swap-type windows will
+  /// really pay with after these commands ([_swapWindowPayments]) — «AI
+  /// Мандат» for that coin, and its USD value at the amount the window uses
+  /// for the position cap and the daily limit — whenever the window gets an
+  /// amount or a quote from them. A coin a window only keeps is checked as
+  /// strictly as the one asked for. When all pass and the
+  /// commands ask for a quote ([runsQuote]), the Swap window may quote by
+  /// itself for the coins whose value is known, up to their amounts
+  /// (SwapWindowLink); an unknown value leaves the quote to the user's tap.
+  /// Null = the windows may be prepared.
+  AssistantResponse? _swapWindowCheck({
+    required String window,
+    required bool opensWindow,
+    required String? namedFrom,
+    required double? amount,
+    required bool runsQuote,
+    required String? target,
+    required AssistantInputSource source,
+    required String lang,
+    String? preface,
+  }) {
+    final settings = AiControlService.instance.settings;
+    if (settings.mode != AiMode.fullAutonomy ||
+        source == AssistantInputSource.automated) {
+      return null;
+    }
+    final payments = _swapWindowPayments(
+      window: window,
+      opensWindow: opensWindow,
+      namedFrom: namedFrom,
+      amount: amount,
+      runsQuote: runsQuote,
+    );
+    final to = _tradeSymbol(target);
+    final toStable = to != null && _stableSymbols.contains(to);
+    final approved = <String, double>{};
+    for (final p in payments) {
+      final from = p.symbol;
+      final paid = p.amount;
+      // No amount and no quote: the window pays nothing the AI prepared
+      // (the user enters the amount and taps the button).
+      if (paid == null && !runsQuote) continue;
+      final fromStable = from != null && _stableSymbols.contains(from);
+      final kind = switch (p.window) {
+        'wallet_buy' => AiActionKind.onChainBuy,
+        'wallet_sell' => AiActionKind.onChainSell,
+        _ => fromStable && !toStable
+            ? AiActionKind.onChainBuy
+            : (from != null && !fromStable && toStable
+                ? AiActionKind.onChainSell
+                : AiActionKind.onChainSwap),
+      };
+      final valueUsd =
+          from == null || paid == null ? null : _payingValueUsd(from, paid);
+      final refusal = _aiWindowRefusal(
+        kind: kind,
+        asset: from,
+        target: to,
+        valueUsd: valueUsd,
+        source: source,
+        lang: lang,
+        preface: preface,
+      );
+      if (refusal != null) return refusal;
+      if (from != null &&
+          paid != null &&
+          valueUsd != null &&
+          valueUsd.isFinite &&
+          valueUsd > 0) {
+        final previous = approved[from];
+        approved[from] = previous == null || paid > previous ? paid : previous;
+      }
+    }
+    if (runsQuote && approved.isNotEmpty) {
+      SwapWindowLink.instance.approveAiQuote(
+        chainKey: IBITIVaultService.instance.chainKey,
+        amounts: approved,
+      );
+    }
+    return null;
   }
 
   /// The windows whose amount is on the paying side (swap, Buy / Sell).
@@ -1377,7 +1619,11 @@ class GuardianAssistantService {
   /// fill a money window (swap, Buy / Sell, send, exchange order). Such a
   /// window is the user's own, so it passes [_aiWindowRefusal] like every
   /// window the AI prepares (D6). A window only opened, with nothing filled
-  /// in, prepares nothing: the user fills it in. Null = may be dispatched.
+  /// in, prepares nothing: the user fills it in. A swap-type window is also
+  /// checked for what it will really pay ([_swapWindowCheck]): the coin it
+  /// keeps when it cannot pick the named one, and the amount in its field or
+  /// waiting on the bus when the commands carry none. Null = may be
+  /// dispatched.
   AssistantResponse? _preparedWindowRefusal(
     List<UICommand> commands,
     AssistantInputSource source,
@@ -1417,16 +1663,19 @@ class GuardianAssistantService {
     final fromCmd = last(UICommandType.selectToken, 'swap_from_token');
     final toCmd = last(UICommandType.selectToken, 'swap_to_token');
     final amountCmd = last(UICommandType.fillField, 'swap_amount');
-    if (fromCmd != null ||
-        toCmd != null ||
-        amountCmd != null ||
-        runs(const {'wallet_swap_quote', 'swap_quote', 'swap_preview'})) {
+    final quotes =
+        runs(const {'wallet_swap_quote', 'swap_quote', 'swap_preview'});
+    if (fromCmd != null || toCmd != null || amountCmd != null || quotes) {
+      // A new check: no quote approved before it stands (SwapWindowLink).
+      SwapWindowLink.instance.revokeAiQuote();
       final activeModal = ScreenContextService.instance.activeModal;
-      final window = openedWindow(_swapWindows.contains) ??
+      final opened = openedWindow(_swapWindows.contains);
+      final window = opened ??
           (activeModal != null && _swapWindows.contains(activeModal)
               ? activeModal
               : 'wallet_swap');
-      final from = _tradeSymbol(fromCmd?.payload?['symbol']?.toString());
+      final rawFrom = fromCmd?.payload?['symbol']?.toString();
+      final from = _tradeSymbol(rawFrom);
       final to = _tradeSymbol(toCmd?.payload?['symbol']?.toString());
       final amount = _commandAmount(amountCmd?.payload?['value']);
       final fromStable = from != null && _stableSymbols.contains(from);
@@ -1454,6 +1703,21 @@ class GuardianAssistantService {
         lang: lang,
       );
       if (refusal != null) return refusal;
+      // What the windows will really pay: a named coin only when they can
+      // pick it on this network (else the coin they keep), and the amount
+      // they will use — this one, else the field or the one waiting on the
+      // bus. A quote is approved for exactly what passes here.
+      final paysRefusal = _swapWindowCheck(
+        window: window,
+        opensWindow: opened != null,
+        namedFrom: rawFrom,
+        amount: amount,
+        runsQuote: quotes,
+        target: to,
+        source: source,
+        lang: lang,
+      );
+      if (paysRefusal != null) return paysRefusal;
     }
 
     // The send window.
@@ -2922,16 +3186,31 @@ class GuardianAssistantService {
           // «Автономный»: the prefilled swap window is the user's own and
           // checks no AI limit — never prepared around «AI Мандат», a
           // limit, EPK or the AI permissions (D6). It pays with USDT and
-          // fills [amount] on that side (below), so that is its USD value.
+          // fills [amount] on that side (below), so that is its USD value —
+          // when it can pick USDT on this network; otherwise it keeps its
+          // own coin, which is checked too ([_swapWindowCheck]).
+          SwapWindowLink.instance.revokeAiQuote();
+          final buyAmount = amount != null && amount > 0 ? amount : null;
           final refusal = _aiWindowRefusal(
-            kind: AiActionKind.onChainBuy,
-            asset: null,
-            target: symbol,
-            valueUsd: amount != null && amount > 0 ? amount : null,
-            source: source,
-            lang: effectiveLang,
-            preface: fullPlan,
-          );
+                kind: AiActionKind.onChainBuy,
+                asset: null,
+                target: symbol,
+                valueUsd: buyAmount,
+                source: source,
+                lang: effectiveLang,
+                preface: fullPlan,
+              ) ??
+              _swapWindowCheck(
+                window: 'wallet_swap',
+                opensWindow: true,
+                namedFrom: 'USDT',
+                amount: buyAmount,
+                runsQuote: false,
+                target: symbol,
+                source: source,
+                lang: effectiveLang,
+                preface: fullPlan,
+              );
           if (refusal != null) return refusal;
 
           // «Ручной» / «Автономный»: show plan + open swap modal with prefill

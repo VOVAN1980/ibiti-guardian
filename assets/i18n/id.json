@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "Konfirmasi PIN untuk tindakan AI diaktifkan, jadi AI tidak melanjutkan tanpa konfirmasi Anda.",
   "aiExecStopVaultLocked": "Dompet terkunci, jadi AI tidak melanjutkan tanpa konfirmasi Anda.",
   "aiExecStopBackground": "Aplikasi berpindah ke latar belakang, jadi AI tidak melanjutkan tanpa konfirmasi Anda.",
-  "dispatchTokenNotVerified": "{asset} tidak ada dalam daftar token terverifikasi aplikasi di {network}, jadi AI tidak membelinya sendiri (token palsu bisa memiliki nama yang sama). Anda dapat membelinya sendiri di tab “Dompet” atau “Pasar”."
+  "dispatchTokenNotVerified": "{asset} tidak ada dalam daftar token terverifikasi aplikasi di {network}, jadi AI tidak membelinya sendiri (token palsu bisa memiliki nama yang sama). Anda dapat membelinya sendiri di tab “Dompet” atau “Pasar”.",
+  "swapAiCoinUnavailable": "{symbol} tidak bisa dipilih di jaringan ini. Pilih koin dan masukkan jumlahnya sendiri.",
+  "swapAiQuoteNotChecked": "Periksa koin dan jumlahnya, lalu ketuk tombol tukar."
 }

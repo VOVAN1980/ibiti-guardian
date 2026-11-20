@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "PIN confirmation of AI actions was turned on, so the AI did not go on without your confirmation.",
   "aiExecStopVaultLocked": "The wallet was locked, so the AI did not go on without your confirmation.",
   "aiExecStopBackground": "The app went to the background, so the AI did not go on without your confirmation.",
-  "dispatchTokenNotVerified": "{asset} is not in the app's verified token list on {network}, so the AI does not buy it by itself (a fake token can have the same name). You can buy it yourself in the Wallet or Market window."
+  "dispatchTokenNotVerified": "{asset} is not in the app's verified token list on {network}, so the AI does not buy it by itself (a fake token can have the same name). You can buy it yourself in the Wallet or Market window.",
+  "swapAiCoinUnavailable": "{symbol} can't be picked on this network. Choose the coins and enter the amount yourself.",
+  "swapAiQuoteNotChecked": "Check the coins and the amount, then tap the swap button."
 }

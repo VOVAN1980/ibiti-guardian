@@ -1535,9 +1535,25 @@ class GuardianExecutionController {
     required bool epkActive,
     required String activeChainKey,
     Iterable<String> ownAddresses = const [],
+    bool pinRequired = false,
+    bool vaultUnlocked = true,
   }) {
     if (tx.type == TransactionType.revoke) return null;
     final loc = LocalizationService.instance;
+
+    // The PIN setting was turned on, or the wallet locked, after the grant:
+    // a no-PIN action must not be signed any more (D6).
+    if (pinRequired) {
+      return loc.t('aiExecStopPinTurnedOn', {
+        'default':
+            'PIN confirmation was turned on, so the AI did not carry this out. Ask again to confirm it.',
+      });
+    }
+    if (!vaultUnlocked) {
+      return loc.t('aiExecStopVaultLocked', {
+        'default': 'The wallet is locked, so the AI did not carry this out.',
+      });
+    }
 
     if (tx.chainKey != activeChainKey) {
       return loc.t('aiNoPinWrongNetwork', {
@@ -1608,6 +1624,8 @@ class GuardianExecutionController {
         vault.addressForChain(tx.chainKey),
         ...vault.evmCardAddresses,
       ],
+      pinRequired: AiControlService.instance.settings.pinRequiredForAi,
+      vaultUnlocked: vault.isUnlocked,
     );
   }
 

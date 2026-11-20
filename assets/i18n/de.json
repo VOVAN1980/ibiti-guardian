@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "Die PIN-Bestätigung für KI-Aktionen wurde eingeschaltet, daher hat die KI ohne Ihre Bestätigung nicht weitergemacht.",
   "aiExecStopVaultLocked": "Das Wallet wurde gesperrt, daher hat die KI ohne Ihre Bestätigung nicht weitergemacht.",
   "aiExecStopBackground": "Die App wurde in den Hintergrund verschoben, daher hat die KI ohne Ihre Bestätigung nicht weitergemacht.",
-  "dispatchTokenNotVerified": "{asset} steht nicht in der Liste verifizierter Token der App für {network}, daher kauft die KI ihn nicht selbst (ein gefälschter Token kann denselben Namen tragen). Sie können ihn selbst im Tab „Wallet“ oder „Markt“ kaufen."
+  "dispatchTokenNotVerified": "{asset} steht nicht in der Liste verifizierter Token der App für {network}, daher kauft die KI ihn nicht selbst (ein gefälschter Token kann denselben Namen tragen). Sie können ihn selbst im Tab „Wallet“ oder „Markt“ kaufen.",
+  "swapAiCoinUnavailable": "{symbol} kann in diesem Netzwerk nicht gewählt werden. Wählen Sie die Coins und geben Sie den Betrag selbst ein.",
+  "swapAiQuoteNotChecked": "Prüfen Sie die Coins und den Betrag und tippen Sie dann auf die Tausch-Schaltfläche."
 }

@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "Se activó la confirmación con PIN de las acciones de la IA, así que la IA no siguió sin tu confirmación.",
   "aiExecStopVaultLocked": "La billetera se bloqueó, así que la IA no siguió sin tu confirmación.",
   "aiExecStopBackground": "La app pasó a segundo plano, así que la IA no siguió sin tu confirmación.",
-  "dispatchTokenNotVerified": "{asset} no está en la lista de tokens verificados de la app en {network}, así que la IA no lo compra por su cuenta (un token falso puede tener el mismo nombre). Puedes comprarlo tú mismo en la pestaña «Billetera» o «Mercado»."
+  "dispatchTokenNotVerified": "{asset} no está en la lista de tokens verificados de la app en {network}, así que la IA no lo compra por su cuenta (un token falso puede tener el mismo nombre). Puedes comprarlo tú mismo en la pestaña «Billetera» o «Mercado».",
+  "swapAiCoinUnavailable": "{symbol} no se puede elegir en esta red. Elige las monedas e introduce el importe tú mismo.",
+  "swapAiQuoteNotChecked": "Revisa las monedas y el importe y luego pulsa el botón de intercambio."
 }

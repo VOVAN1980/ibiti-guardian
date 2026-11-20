@@ -1562,5 +1562,7 @@
   "aiExecStopPinTurnedOn": "AI 操作的 PIN 码确认已开启，因此 AI 未经您确认没有继续。",
   "aiExecStopVaultLocked": "钱包已锁定，因此 AI 未经您确认没有继续。",
   "aiExecStopBackground": "应用已转入后台，因此 AI 未经您确认没有继续。",
-  "dispatchTokenNotVerified": "{asset} 不在应用在 {network} 上的已验证代币列表中，因此 AI 不会自行买入（假代币可能使用相同的名称）。您可以在“钱包”或“市场”标签页中自行购买。"
+  "dispatchTokenNotVerified": "{asset} 不在应用在 {network} 上的已验证代币列表中，因此 AI 不会自行买入（假代币可能使用相同的名称）。您可以在“钱包”或“市场”标签页中自行购买。",
+  "swapAiCoinUnavailable": "此网络上无法选择 {symbol}。请自行选择币种并输入金额。",
+  "swapAiQuoteNotChecked": "请核对币种和金额，然后点按兑换按钮。"
 }

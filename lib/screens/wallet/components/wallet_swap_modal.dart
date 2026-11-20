@@ -15,8 +15,12 @@ import 'package:ibiti_guardian/models/intent_data.dart';
 import 'package:ibiti_guardian/models/execution_path.dart';
 import 'package:ibiti_guardian/models/swap_execution_plan.dart';
 import 'package:ibiti_guardian/services/adapters/vault_portfolio_listener.dart';
+import 'package:ibiti_guardian/services/assistant/swap_voice_orchestrator.dart'
+    show SwapWindowLink;
 import 'package:ibiti_guardian/services/assistant/ui_command_bus.dart';
 import 'package:ibiti_guardian/services/execution/guardian_execution_controller.dart';
+import 'package:ibiti_guardian/services/security/ai_control_service.dart'
+    show AiControlService, AiMode;
 import 'package:ibiti_guardian/services/vault/ibiti_vault_service.dart';
 import 'package:ibiti_guardian/config/privy_chain_registry.dart';
 import 'package:ibiti_guardian/config/chains.dart';
@@ -99,6 +103,58 @@ class WalletSwapModal extends StatefulWidget {
     final prefs = await SharedPreferences.getInstance();
     voiceGuideMuted = prefs.getBool(_muteKey) ?? false;
   }
+
+  /// The asset an assistant command's coin [symbol] (normalized) selects on
+  /// the paying ([isFrom]) or the receiving side: a coin of the window's
+  /// network list, the coin already on that side (on the paying side no coin
+  /// is the native one), or the native coin. Null = the window cannot pick
+  /// it there; it then never switches to another coin silently.
+  static ({WalletAsset? asset})? pickForAiCommand({
+    required String symbol,
+    required List<WalletAsset> pickerAssets,
+    required WalletAsset? current,
+    required bool isFrom,
+    required String nativeSymbol,
+    required WalletAsset Function() nativeAsset,
+  }) {
+    final upper = symbol.trim().toUpperCase();
+    if (upper.isEmpty) return null;
+    for (final asset in pickerAssets) {
+      if (asset.symbol.toUpperCase() == upper) return (asset: asset);
+    }
+    final currentSymbol =
+        isFrom ? (current?.symbol ?? nativeSymbol) : current?.symbol;
+    if (currentSymbol != null && currentSymbol.trim().toUpperCase() == upper) {
+      return (asset: current);
+    }
+    if (upper == nativeSymbol.trim().toUpperCase()) {
+      return (asset: nativeAsset());
+    }
+    return null;
+  }
+
+  /// Whether a quote the assistant asked for (a command, not the user's tap)
+  /// runs now. Never while a coin the AI named waits for the user's pick
+  /// ([held]). In «Автономный» the window's swap counts as the user's own,
+  /// so the only AI-limit check is the one before the window was prepared:
+  /// the quote runs only for the coin, the network and up to the amount that
+  /// check valued (SwapWindowLink); an unknown value, another coin or a
+  /// larger amount waits for the user's tap.
+  static bool mayQuoteForAi({
+    required AiMode mode,
+    required bool held,
+    required String chainKey,
+    required String payingSymbol,
+    required double amount,
+  }) {
+    if (held) return false;
+    if (mode != AiMode.fullAutonomy) return true;
+    return SwapWindowLink.instance.takeAiQuoteApproval(
+      chainKey: chainKey,
+      payingSymbol: payingSymbol,
+      amount: amount,
+    );
+  }
 }
 
 class _WalletSwapModalState extends State<WalletSwapModal> {
@@ -125,6 +181,18 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
 
   /// Single-shot guard — prevents double guide execution on race/reopen.
   bool _guideStarted = false;
+
+  /// A coin the assistant named for the paying / receiving side that this
+  /// window cannot pick on its network. The window keeps its coins (never a
+  /// silent switch to another one): the amount is cleared and the AI's
+  /// amounts and quotes wait until the user picks that side.
+  bool _aiFromUnavailable = false;
+  bool _aiToUnavailable = false;
+
+  bool get _aiHeld => _aiFromUnavailable || _aiToUnavailable;
+
+  /// A short note why the window did not take what the assistant asked.
+  String? _aiNote;
 
   /// Assets for the current swap chain only.
   List<WalletAsset> get _assets {
@@ -217,14 +285,17 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
     _fromAsset = widget.initialFromAsset;
     _toAsset = widget.initialToAsset;
     ScreenContextService.instance.setModal('wallet_swap');
+    _amountController.addListener(_publishWindowState);
     _publishTokenContext();
     final bus = UICommandBus.instance;
-    final cachedAmount = bus.latestFieldValue('swap_amount');
-    if (cachedAmount != null && cachedAmount.isNotEmpty) {
-      _amountController.text = cachedAmount;
-    }
+    // The coins first: a coin the assistant named that this window cannot
+    // pick keeps its amount out (the user picks).
     _applyTokenPayload(bus.latestPayload('swap_from_token'), true);
     _applyTokenPayload(bus.latestPayload('swap_to_token'), false);
+    final cachedAmount = bus.latestFieldValue('swap_amount');
+    if (!_aiHeld && cachedAmount != null && cachedAmount.isNotEmpty) {
+      _amountController.text = cachedAmount;
+    }
     _cmdSub = bus.commands.listen(_handleCommand);
     final shouldQuote = bus.consumePendingAction('wallet_swap_quote') ||
         bus.consumePendingAction('swap_quote') ||
@@ -232,7 +303,7 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
     if (shouldQuote) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) {
-          _executeInlineSwap();
+          _aiQuote();
         }
       });
     }
@@ -246,7 +317,9 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
     TtsService.instance.stop();
     _highlightTimer?.cancel();
     ScreenContextService.instance.clearModal();
+    SwapWindowLink.instance.clear(this);
     _cmdSub?.cancel();
+    _amountController.removeListener(_publishWindowState);
     _amountController.dispose();
     super.dispose();
   }
@@ -328,6 +401,18 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
       _fromAsset?.symbol.toUpperCase() ?? _nativeSymbol,
     );
     ctx.setSelectedToSymbol(_toAsset?.symbol.toUpperCase());
+    _publishWindowState();
+  }
+
+  /// What this window pays and fills, for the assistant's checks of the
+  /// windows it prepares (SwapWindowLink).
+  void _publishWindowState() {
+    SwapWindowLink.instance.publish(
+      this,
+      chainKey: _swapChainKey,
+      payingSymbol: _fromAsset?.symbol ?? _nativeSymbol,
+      amountText: _amountController.text,
+    );
   }
 
   void _handleCommand(UICommand cmd) {
@@ -335,6 +420,9 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
     if (cmd.type == UICommandType.fillField &&
         cmd.target == 'swap_amount' &&
         cmd.payload?['value'] != null) {
+      // A coin the window could not pick keeps the AI's amount out: the
+      // user picks the coins first.
+      if (_aiHeld) return;
       setState(() {
         _amountController.text = cmd.payload!['value'].toString();
       });
@@ -354,7 +442,7 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
         (cmd.target == 'wallet_swap_quote' ||
             cmd.target == 'swap_quote' ||
             cmd.target == 'swap_preview')) {
-      _executeInlineSwap();
+      _aiQuote();
       return;
     }
     if (cmd.type == UICommandType.executeAction &&
@@ -364,23 +452,117 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
     }
   }
 
+  /// An assistant command's coin for the paying ([isFrom]) or receiving
+  /// side. The window takes it only when it can pick it on its network
+  /// ([WalletSwapModal.pickForAiCommand]). Otherwise it never switches to
+  /// another coin silently: it keeps its coins, clears the amount, the AI's
+  /// amounts and quotes wait until the user picks that side, and a short
+  /// note says why.
   void _applyTokenPayload(Map<String, dynamic>? payload, bool isFrom) {
     final rawSymbol = payload?['symbol']?.toString();
-    if (rawSymbol == null || rawSymbol.isEmpty) return;
+    if (rawSymbol == null || rawSymbol.trim().isEmpty) return;
     final symbol = TokenSymbolNormalizer.normalize(rawSymbol);
-    final match = _pickerAssets.cast<WalletAsset?>().firstWhere(
-          (asset) => asset?.symbol.toUpperCase() == symbol,
-          orElse: () => null,
-        );
-    if (match == null) {
+    final pick = WalletSwapModal.pickForAiCommand(
+      symbol: symbol,
+      pickerAssets: _pickerAssets,
+      current: isFrom ? _fromAsset : _toAsset,
+      isFrom: isFrom,
+      nativeSymbol: _nativeSymbol,
+      nativeAsset: _nativeAsset,
+    );
+    if (pick == null) {
+      if (isFrom) {
+        _aiFromUnavailable = true;
+      } else {
+        _aiToUnavailable = true;
+      }
+      _amountController.clear();
+      _aiNote = _coinUnavailableNote(symbol);
+      _publishTokenContext();
       return;
     }
     if (isFrom) {
-      _fromAsset = match;
+      _fromAsset = pick.asset;
+      _aiFromUnavailable = false;
     } else {
-      _toAsset = match;
+      _toAsset = pick.asset;
+      _aiToUnavailable = false;
     }
+    if (!_aiHeld) _aiNote = null;
     _publishTokenContext();
+  }
+
+  /// A quote the assistant asked for (a command, not the user's tap): only
+  /// when [WalletSwapModal.mayQuoteForAi] allows it; otherwise a short note
+  /// asks the user to check the window and tap the button.
+  void _aiQuote() {
+    if (!mounted || _inputAmount <= 0 || _toAsset == null) return;
+    final allowed = WalletSwapModal.mayQuoteForAi(
+      mode: AiControlService.instance.settings.mode,
+      held: _aiHeld,
+      chainKey: _swapChainKey,
+      payingSymbol: _fromAsset?.symbol ?? _nativeSymbol,
+      amount: _inputAmount,
+    );
+    if (!allowed) {
+      if (!_aiHeld) setState(() => _aiNote = _checkAndTapNote());
+      return;
+    }
+    _executeInlineSwap();
+  }
+
+  String _coinUnavailableNote(String symbol) => LocalizationService.instance
+      .t('swapAiCoinUnavailable', {
+        'symbol': symbol,
+        'default': "{symbol} can't be picked on this network. Choose the "
+            'coins and enter the amount yourself.',
+      })
+      .replaceAll('{symbol}', symbol);
+
+  String _checkAndTapNote() =>
+      LocalizationService.instance.t('swapAiQuoteNotChecked', {
+        'default': 'Check the coins and the amount, then tap the swap button.',
+      });
+
+  /// The native coin of the swap network: the wallet's own entry, else a
+  /// zero-balance stand-in (as the picker's native row).
+  WalletAsset _nativeAsset() {
+    final held = _assets
+        .cast<WalletAsset?>()
+        .firstWhere((a) => a?.isNative == true, orElse: () => null);
+    return held ??
+        WalletAsset(
+          name: _nativeSymbol,
+          symbol: _nativeSymbol,
+          address: '',
+          balance: 0,
+          logoUrl: _nativeLogoUrl,
+          priceUsd: _nativePriceUsd,
+          valueUsd: 0,
+          decimals: _nativeDecimals,
+          isNative: true,
+          chainId: PrivyChainRegistry.getChain(_swapChainKey).evmChainId ?? 0,
+          chainKey: _swapChainKey,
+        );
+  }
+
+  /// The user arranged the coins: what the assistant named no longer holds
+  /// the window.
+  void _clearAiHold() {
+    _aiFromUnavailable = false;
+    _aiToUnavailable = false;
+    _aiNote = null;
+  }
+
+  /// The user picked the coin of one side: the AI's coin for that side no
+  /// longer holds the window.
+  void _userPicked(bool isFrom) {
+    if (isFrom) {
+      _aiFromUnavailable = false;
+    } else {
+      _aiToUnavailable = false;
+    }
+    if (!_aiHeld) _aiNote = null;
   }
 
   void _swapDirection() {
@@ -390,6 +572,7 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
       _fromAsset = _toAsset;
       _toAsset = tmp;
       _amountController.clear();
+      _clearAiHold();
       _publishTokenContext();
     });
   }
@@ -451,6 +634,9 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
       _flowState = _SwapFlowState.quoting;
       _swapError = null;
       _txHash = null;
+      // Quoting what the window shows (the user's tap, or an AI quote it
+      // allowed): nothing the assistant named holds it any more.
+      _clearAiHold();
     });
 
     try {
@@ -609,12 +795,14 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
               _toAsset = null;
               _amountController.clear();
               _resetSwapFlowStateOnly();
+              _clearAiHold();
               _publishTokenContext();
             });
           }
         },
         onSelected: (asset) {
           setState(() {
+            _userPicked(isFrom);
             if (isFrom) {
               _fromAsset = asset;
               _toAsset = null;
@@ -639,25 +827,9 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
           });
         },
         onNative: () {
-          final nativeAsset = _assets
-              .cast<WalletAsset?>()
-              .firstWhere((a) => a?.isNative == true, orElse: () => null);
-          final synthNative = nativeAsset ??
-              WalletAsset(
-                name: _nativeSymbol,
-                symbol: _nativeSymbol,
-                address: '',
-                balance: 0,
-                logoUrl: _nativeLogoUrl,
-                priceUsd: _nativePriceUsd,
-                valueUsd: 0,
-                decimals: _nativeDecimals,
-                isNative: true,
-                chainId:
-                    PrivyChainRegistry.getChain(_swapChainKey).evmChainId ?? 0,
-                chainKey: _swapChainKey,
-              );
+          final synthNative = _nativeAsset();
           setState(() {
+            _userPicked(isFrom);
             if (isFrom) {
               _fromAsset = synthNative;
               _toAsset = null;
@@ -872,6 +1044,28 @@ class _WalletSwapModalState extends State<WalletSwapModal> {
                       hintText: _estimatedOutput?.toStringAsFixed(6),
                     ),
                   ),
+
+                  // ── Why the window did not take an AI request ─────────────────
+                  if (_aiNote != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8, bottom: 12),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.info_outline_rounded,
+                              size: 16, color: GuardianColors.warning),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _aiNote!,
+                              style: GuardianTextStyles.caption.copyWith(
+                                color: GuardianColors.warning,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
 
                   // ── Route Tracker ──────────────────────────────────────────────
                   if (_inputAmount > 0 && _toAsset != null)

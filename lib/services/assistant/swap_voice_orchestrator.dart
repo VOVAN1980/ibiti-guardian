@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:ibiti_guardian/models/assistant_directive.dart';
 import 'package:ibiti_guardian/services/assistant/screen_context_service.dart';
 import 'package:ibiti_guardian/services/market/token_discovery_service.dart';
@@ -306,5 +307,149 @@ class SwapVoiceOrchestrator {
     ];
     final speech = isRu ? 'Запрашиваю котировку.' : 'Requesting quote.';
     return SwapVoiceResult(speechText: speech, commands: commands);
+  }
+}
+
+// ─── Swap Window Link ───────────────────────────────────────────────────────────
+///
+/// The open wallet Swap window (WalletSwapModal) and the assistant's checks of
+/// the swap windows it prepares.
+///
+/// «Автономный»: a swap the user confirms in the window counts as the user's
+/// own, so the only AI-limit check of a window the AI prepares is the one
+/// before it is prepared (GuardianAssistantService). That check values what
+/// the window will really pay — the coin it can pick on its network or the
+/// one it keeps, and the amount it will use (this open window's field, the
+/// amount waiting on the bus) — and approves the quote for exactly those coins
+/// up to those amounts. The window asks for a quote by itself (an AI command,
+/// not the user's tap) in «Автономный» only within such an approval: an
+/// unknown value, another coin, another network or a larger amount leaves the
+/// quote to the user's tap. One approval, one quote.
+class SwapWindowLink {
+  SwapWindowLink._();
+  static final SwapWindowLink instance = SwapWindowLink._();
+
+  /// How long an approval waits for its window: the UICommandBus cache TTL,
+  /// within which a window opened later still reads the AI's commands.
+  static const approvalTtl = Duration(seconds: 60);
+
+  // ── The open window ─────────────────────────────────────────────────────
+
+  Object? _owner;
+  String? _chainKey;
+  String? _payingSymbol;
+  String _amountText = '';
+
+  /// Whether a Swap window is open (it published itself).
+  bool get isOpen => _owner != null;
+
+  /// The open window's own network (it can differ from the wallet's).
+  String? get chainKey => _chainKey;
+
+  /// The coin the open window pays with (upper case; the native coin when
+  /// it has none selected).
+  String? get payingSymbol => _payingSymbol;
+
+  /// The amount in the open window's field; null when empty or not a number.
+  double? get amount {
+    if (!isOpen) return null;
+    final value = double.tryParse(
+        _amountText.replaceAll(RegExp(r'\s'), '').replaceAll(',', '.'));
+    return value != null && value.isFinite && value > 0 ? value : null;
+  }
+
+  /// Called by the window whenever its network, paying coin or amount
+  /// changes. [owner]: the window's state, so a late close of another
+  /// window never clears this one.
+  void publish(
+    Object owner, {
+    required String chainKey,
+    required String payingSymbol,
+    required String amountText,
+  }) {
+    _owner = owner;
+    _chainKey = chainKey;
+    _payingSymbol = payingSymbol.trim().toUpperCase();
+    _amountText = amountText;
+  }
+
+  /// Called by the window when it closes.
+  void clear(Object owner) {
+    if (!identical(_owner, owner)) return;
+    _owner = null;
+    _chainKey = null;
+    _payingSymbol = null;
+    _amountText = '';
+  }
+
+  // ── The approved AI quote ───────────────────────────────────────────────
+
+  String? _approvedChainKey;
+  Map<String, double> _approvedAmounts = const {};
+  DateTime? _approvedAt;
+
+  /// The check passed: the window may quote by itself on [chainKey], paying
+  /// one of [amounts]' coins, up to its amount. Replaces any earlier one.
+  void approveAiQuote({
+    required String chainKey,
+    required Map<String, double> amounts,
+    DateTime? now,
+  }) {
+    final clean = <String, double>{};
+    amounts.forEach((symbol, amount) {
+      final key = _key(symbol);
+      if (key.isEmpty || !amount.isFinite || amount <= 0) return;
+      final previous = clean[key];
+      clean[key] = previous == null || amount > previous ? amount : previous;
+    });
+    if (clean.isEmpty) {
+      revokeAiQuote();
+      return;
+    }
+    _approvedChainKey = chainKey;
+    _approvedAmounts = clean;
+    _approvedAt = now ?? DateTime.now();
+  }
+
+  /// No AI quote is approved any more (a new check started, or one failed).
+  void revokeAiQuote() {
+    _approvedChainKey = null;
+    _approvedAmounts = const {};
+    _approvedAt = null;
+  }
+
+  /// Whether the window may quote by itself now: paying [payingSymbol] on
+  /// [chainKey], [amount] at most what was approved, within [approvalTtl].
+  /// Takes the approval (one quote).
+  bool takeAiQuoteApproval({
+    required String chainKey,
+    required String payingSymbol,
+    required double amount,
+    DateTime? now,
+  }) {
+    final at = _approvedAt;
+    if (at == null) return false;
+    if ((now ?? DateTime.now()).difference(at) > approvalTtl) {
+      revokeAiQuote();
+      return false;
+    }
+    if (chainKey != _approvedChainKey) return false;
+    final approved = _approvedAmounts[_key(payingSymbol)];
+    if (approved == null || !amount.isFinite || amount <= 0) return false;
+    if (amount > approved * (1 + 1e-9)) return false;
+    revokeAiQuote();
+    return true;
+  }
+
+  static String _key(String symbol) =>
+      TokenSymbolNormalizer.normalize(symbol).trim().toUpperCase();
+
+  @visibleForTesting
+  void resetForTest() {
+    _owner = null;
+    _chainKey = null;
+    _payingSymbol = null;
+    _amountText = '';
+    revokeAiQuote();
   }
 }
